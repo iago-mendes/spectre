@@ -12,4 +12,4 @@ Machine:
   DefaultProcsPerTasks: 28
   DefaultQueue: "expansion"
   DefaultTimeLimit: "1-00:00:00"
-  LaunchCommandSingleNode: ["mpirun", "-n", "1"]
+  LaunchCommandSingleNode: ["mpirun", "-n", "2"]

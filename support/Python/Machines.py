@@ -62,6 +62,8 @@ class Machine(yaml.YAMLObject):
     # The YAML machine files can have these attributes:
     Name: str
     Description: str
+    DefaultTasksPerNode: int
+    DefaultProcsPerTasks: int
     DefaultProcsPerNode: int
     DefaultQueue: str
     DefaultTimeLimit: str
@@ -81,6 +83,16 @@ class Machine(yaml.YAMLObject):
             return self.LaunchCommandSingleNode
         else:
             return []
+
+    @property
+    def charm_nodes(self) -> int:
+        """Number of charm nodes per physical node."""
+        return self.DefaultTasksPerNode
+
+    @property
+    def charm_ppn(self) -> int:
+        """Number of worker threads per charm node."""
+        return self.DefaultProcsPerTasks - 1
 
 
 # Parse YAML machine files as Machine objects

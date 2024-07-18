@@ -576,25 +576,78 @@ def schedule(
             "Set the 'scheduler' ('--scheduler') to submit a multi-node job "
             "to the queue."
         )
+        split_into_charm_nodes = True  # add this as argument (False by default)
+        machine = this_machine(raise_exception=False)
+        charm_procs = machine.charm_nodes * machine.charm_ppn if machine else 0
+        if split_into_charm_nodes and (
+            machine is None
+            or not machine.on_computer_node()
+            or charm_procs == 0
+        ):
+            split_into_charm_nodes = False
+        # if split_into_charm_nodes:
+        #     assert machine is not None and machine.on_computer_node()
+        # and charm_procs > 0, (
+        #         "When running executables directly, it is only supported to "
+        #         "split the physical node into charm nodes if: \n"
+        #         " - it is running in a computer node; and \n"
+        #         " - DefaultTasksPerNode and DefaultProcsPerTasks are
+        # specified "
+        #         "in the machine definition (see "
+        #         "support/Machines/CaltechHpc.yaml for an example)."
+        #     )
         auto_provision = num_procs is None
         provision_info = (
-            "all available cores"
-            if auto_provision
-            else f"{num_procs} core{'s'[:num_procs!=1]}"
+            f"{charm_procs} core{'s'[:charm_procs!=1]}"
+            if split_into_charm_nodes
+            else (
+                "all available cores"
+                if auto_provision
+                else f"{num_procs} core{'s'[:num_procs!=1]}"
+            )
         )
         logger.info(
             f"Run '{executable.name}' in '{run_dir}' on {provision_info}."
         )
-        machine = this_machine(raise_exception=False)
         run_command = (machine.launch_command if machine else []) + [
             str(executable),
             "--input-file",
             str(input_file_path.resolve()),
         ]
-        if auto_provision:
+        if split_into_charm_nodes:
+            run_command += ["+ppn", str(machine.charm_ppn)]
+            run_command += ["+setcpuaffinity"]
+        elif auto_provision:
             run_command += ["+auto-provision"]
         else:
             run_command += ["+p", str(num_procs)]
+        # machine = this_machine(raise_exception=False)
+        # on_compute_node = False
+        # charm_procs = machine.charm_nodes * machine.charm_ppn if machine else0
+        # provision_info = (
+        #     f"{num_procs} core{'s'[:num_procs!=1]}"
+        #     if num_procs is not None
+        #     else (
+        #         f"{charm_procs} core{'s'[:charm_procs!=1]}"
+        #         if on_compute_node
+        #         else "all available cores"
+        #     )
+        # )
+        # logger.info(
+        #     f"Run '{executable.name}' in '{run_dir}' on {provision_info}."
+        # )
+        # run_command = (machine.launch_command if machine else []) + [
+        #     str(executable),
+        #     "--input-file",
+        #     str(input_file_path.resolve()),
+        # ]
+        # if num_procs is not None:
+        #     run_command += ["+p", str(num_procs)]
+        # elif on_compute_node:
+        #     run_command += ["+ppn", str(machine.charm_ppn)]
+        #     run_command += ["+setcpuaffinity"]
+        # else:
+        #     run_command += ["+auto-provision"]
         if from_checkpoint:
             run_command += ["+restart", str(from_checkpoint)]
         logger.debug(f"Run command: {run_command}")
