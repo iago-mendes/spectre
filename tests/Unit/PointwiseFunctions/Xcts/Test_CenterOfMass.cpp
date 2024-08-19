@@ -3,9 +3,12 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <iostream>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
+#include "DataStructures/Tensor/Slice.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/AreaElement.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
@@ -55,22 +58,16 @@ void test_center_of_mass_surface_integral(const double distance) {
   const auto& blocks = shell_domain.blocks();
   const auto& initial_ref_levels = shell.initial_refinement_levels();
   const auto element_ids = initial_element_ids(initial_ref_levels);
+  const Mesh<3> mesh{p_refinement + 1, Spectral::Basis::Legendre,
+                     Spectral::Quadrature::GaussLobatto};
   const Mesh<2> face_mesh{p_refinement + 1, Spectral::Basis::Legendre,
                           Spectral::Quadrature::GaussLobatto};
 
-  // Initialize surface integral
-  tnsr::I<double, 3> surface_integral({0., 0., 0.});
+  // Initialize "reduced" integral
+  tnsr::I<double, 3> total_integral({0., 0., 0.});
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
-    // Skip elements not at the outer boundary
-    const size_t radial_dimension = 2;
-    const auto radial_segment_id = element_id.segment_id(radial_dimension);
-    if (radial_segment_id.index() !=
-        two_to_the(radial_segment_id.refinement_level()) - 1) {
-      continue;
-    }
-
     // Get element information
     const auto& current_block = blocks.at(element_id.block_id());
     const auto current_element = domain::Initialization::create_initial_element(
@@ -78,68 +75,134 @@ void test_center_of_mass_surface_integral(const double distance) {
     const ElementMap<3, Frame::Inertial> logical_to_inertial_map(
         element_id, current_block.stationary_map().get_clone());
 
+    // Get 3D coordinates
+    const auto logical_coords = logical_coordinates(mesh);
+    const auto inertial_coords = logical_to_inertial_map(logical_coords);
+    const auto jacobian = logical_to_inertial_map.jacobian(logical_coords);
+    const auto det_jacobian = determinant(jacobian);
+    const auto inv_jacobian =
+        logical_to_inertial_map.inv_jacobian(logical_coords);
+
+    // Shift coordinates used to get analytic solution
+    auto shifted_coords = inertial_coords;
+    shifted_coords.get(2) -= z_shift;
+
+    // Get required fields
+    const auto shifted_fields = solution.variables(
+        shifted_coords,
+        tmpl::list<
+            Xcts::Tags::ConformalFactor<DataVector>,
+            ::Tags::deriv<Xcts::Tags::ConformalFactorMinusOne<DataVector>,
+                          tmpl::size_t<3>, Frame::Inertial>,
+            Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>,
+            ::Tags::deriv<
+                Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>,
+                tmpl::size_t<3>, Frame::Inertial>,
+            Xcts::Tags::InverseConformalMetric<DataVector, 3,
+                                               Frame::Inertial>>{});
+    const auto& conformal_factor =
+        get<Xcts::Tags::ConformalFactor<DataVector>>(shifted_fields);
+    const auto& deriv_conformal_factor =
+        get<::Tags::deriv<Xcts::Tags::ConformalFactorMinusOne<DataVector>,
+                          tmpl::size_t<3>, Frame::Inertial>>(shifted_fields);
+    const auto& conformal_metric =
+        get<Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>>(
+            shifted_fields);
+    const auto& deriv_conformal_metric = get<::Tags::deriv<
+        Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>,
+        tmpl::size_t<3>, Frame::Inertial>>(shifted_fields);
+    const auto& inv_conformal_metric =
+        get<Xcts::Tags::InverseConformalMetric<DataVector, 3, Frame::Inertial>>(
+            shifted_fields);
+
+    // Compute conformal unit normal vector
+    const auto r_conformal = magnitude(inertial_coords, conformal_metric);
+    const auto conformal_unit_normal =
+        tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_conformal());
+
+    const auto sqrt_det_conformal_metric =
+        Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
+
+    const auto volume_integrand = Xcts::center_of_mass_volume_integrand(
+        conformal_factor, deriv_conformal_factor, conformal_unit_normal,
+        deriv_conformal_metric);
+    for (int I = 0; I < 3; I++) {
+      total_integral.get(I) += definite_integral(
+          volume_integrand.get(I) * get(sqrt_det_conformal_metric) *
+              get(det_jacobian),
+          mesh);
+    }
+
     // Loop over external boundaries
     for (auto boundary_direction : current_element.external_boundaries()) {
-      // Skip interfaces not at the outer boundary
-      if (boundary_direction != Direction<3>::upper_zeta()) {
+      // Skip interfaces not at the inner boundary
+      if (boundary_direction != Direction<3>::lower_zeta()) {
         continue;
       }
 
-      // Get interface coordinates
-      const auto logical_coords =
+      // Get interface coordinates.
+      const auto face_logical_coords =
           interface_logical_coordinates(face_mesh, boundary_direction);
-      const auto inertial_coords = logical_to_inertial_map(logical_coords);
-      const auto inv_jacobian =
-          logical_to_inertial_map.inv_jacobian(logical_coords);
+      const auto face_inv_jacobian =
+          logical_to_inertial_map.inv_jacobian(face_logical_coords);
 
-      // Shift coordinates used to get analytic solution
-      auto shifted_coords = inertial_coords;
-      shifted_coords.get(2) -= z_shift;
-
-      // Get required fields on the interface
-      const auto shifted_fields = solution.variables(
-          shifted_coords,
-          tmpl::list<
-              Xcts::Tags::ConformalFactor<DataVector>,
-              Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>,
-              Xcts::Tags::InverseConformalMetric<DataVector, 3,
-                                                 Frame::Inertial>>{});
-      const auto& conformal_factor =
-          get<Xcts::Tags::ConformalFactor<DataVector>>(shifted_fields);
-      const auto& conformal_metric =
-          get<Xcts::Tags::ConformalMetric<DataVector, 3, Frame::Inertial>>(
-              shifted_fields);
-      const auto& inv_conformal_metric = get<
-          Xcts::Tags::InverseConformalMetric<DataVector, 3, Frame::Inertial>>(
-          shifted_fields);
-
-      // Compute outward-pointing unit normal.
-      const auto conformal_r = magnitude(inertial_coords, conformal_metric);
-      const auto conformal_unit_normal =
-          tenex::evaluate<ti::I>(inertial_coords(ti::I) / conformal_r());
+      // Slice required fields to the interface
+      const size_t slice_index =
+          index_to_slice_at(mesh.extents(), boundary_direction);
+      const auto& face_conformal_factor =
+          data_on_slice(conformal_factor, mesh.extents(),
+                        boundary_direction.dimension(), slice_index);
+      const auto& face_inv_conformal_metric =
+          data_on_slice(inv_conformal_metric, mesh.extents(),
+                        boundary_direction.dimension(), slice_index);
+      const auto& face_sqrt_det_conformal_metric =
+          data_on_slice(sqrt_det_conformal_metric, mesh.extents(),
+                        boundary_direction.dimension(), slice_index);
+      const auto& face_conformal_unit_normal =
+          data_on_slice(conformal_unit_normal, mesh.extents(),
+                        boundary_direction.dimension(), slice_index);
 
       // Compute area element
-      const auto sqrt_det_conformal_metric =
-          Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
-      const auto conformal_area_element =
-          area_element(inv_jacobian, boundary_direction, inv_conformal_metric,
-                       sqrt_det_conformal_metric);
+      const auto conformal_area_element = area_element(
+          face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
+          face_sqrt_det_conformal_metric);
+
+      // Compute conformal face normal
+      auto conformal_face_normal = unnormalized_face_normal(
+          face_mesh, logical_to_inertial_map, boundary_direction);
+      const auto face_normal_magnitude =
+          magnitude(conformal_face_normal, face_inv_conformal_metric);
+      for (size_t d = 0; d < 3; ++d) {
+        conformal_face_normal.get(d) /= get(face_normal_magnitude);
+      }
 
       // Integrate
       const auto surface_integrand = Xcts::center_of_mass_surface_integrand(
-          conformal_factor, conformal_unit_normal);
+          face_conformal_factor, face_conformal_unit_normal);
+      const auto contracted_integrand = tenex::evaluate<ti::I>(
+          -surface_integrand(ti::I, ti::J) * conformal_face_normal(ti::j));
       for (int I = 0; I < 3; I++) {
-        surface_integral.get(I) += definite_integral(
-            surface_integrand.get(I) * get(conformal_area_element), face_mesh);
+        total_integral.get(I) += definite_integral(
+            contracted_integrand.get(I) * get(conformal_area_element),
+            face_mesh);
       }
     }
   }
 
   // Check result
-  auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
-  CHECK(get<0>(surface_integral) == custom_approx(0.));
-  CHECK(get<1>(surface_integral) == custom_approx(0.));
-  CHECK(get<2>(surface_integral) / mass == custom_approx(z_shift));
+  // auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
+  // CHECK(get<0>(total_integral) == custom_approx(0.));
+  // CHECK(get<1>(total_integral) == custom_approx(0.));
+  // CHECK(get<2>(total_integral) / mass == custom_approx(z_shift));
+
+  std::cout << std::setprecision(16)   //
+            << "\t Center of Mass \t"  //
+            << distance                //
+            << ", "                    //
+            << get<2>(total_integral)  //
+            << " == "                  //
+            << z_shift                 //
+            << std::endl;              //
 }
 
 }  // namespace

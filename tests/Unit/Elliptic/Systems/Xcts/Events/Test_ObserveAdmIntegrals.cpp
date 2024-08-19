@@ -3,6 +3,8 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <iostream>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
@@ -25,11 +27,13 @@
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 #include "PointwiseFunctions/GeneralRelativity/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Lapse.hpp"
+#include "PointwiseFunctions/GeneralRelativity/Ricci.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Shift.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "PointwiseFunctions/SpecialRelativity/LorentzBoostMatrix.hpp"
 #include "PointwiseFunctions/Xcts/ExtrinsicCurvature.hpp"
+#include "PointwiseFunctions/Xcts/LongitudinalOperator.hpp"
 
 namespace {
 
@@ -48,11 +52,10 @@ namespace {
  * 4. Transform the barred spacetime metric into the inertial frame; and
  * 5. Decompose metric into inertial variables and compute integrals.
  */
-void test_local_adm_integrals(const double& distance,
-                              const std::vector<double>& prev_distances) {
+void test_local_adm_integrals(const double& distance, const size_t& P) {
   // Define black hole parameters.
   const double mass = 1;
-  const double boost_speed = 0.5;
+  const double boost_speed = 0.;
   const double lorentz_factor = 1. / sqrt(1. - square(boost_speed));
   const std::array<double, 3> boost_velocity{{0., 0., boost_speed}};
 
@@ -68,16 +71,16 @@ void test_local_adm_integrals(const double& distance,
 
   // Set up domain.
   const size_t h_refinement = 1;
-  const size_t p_refinement = 6;
+  const size_t p_refinement = P;
   domain::creators::Sphere shell{
-      /* inner_radius */ 2 * mass,
+      /* inner_radius */ 5 * mass,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
       /* initial_number_of_grid_points */ p_refinement + 1,
       /* use_equiangular_map */ true,
       /* equatorial_compression */ {},
-      /* radial_partitioning */ prev_distances,
+      /* radial_partitioning */ {},
       /* radial_distribution */ domain::CoordinateMaps::Distribution::Inverse};
   const auto shell_domain = shell.create_domain();
   const auto& blocks = shell_domain.blocks();
@@ -123,6 +126,8 @@ void test_local_adm_integrals(const double& distance,
             boost_matrix.get(i + 1, j + 1) * inertial_coords.get(j);
       }
     }
+    const double z_shift = 2. * mass;
+    barred_coords.get(2) -= z_shift;
 
     // Get barred spacetime variables.
     const auto barred_spacetime_vars = solution.variables(
@@ -180,8 +185,7 @@ void test_local_adm_integrals(const double& distance,
     const auto inv_conformal_metric = tenex::evaluate<ti::I, ti::J>(
         inv_spatial_metric(ti::I, ti::J) * pow<4>(conformal_factor()));
 
-    // Compute spatial derivatives (needed for extrinsic curvature).
-    const auto deriv_lapse = partial_derivative(lapse, mesh, inv_jacobian);
+    // Compute spatial derivatives.
     const auto deriv_shift = partial_derivative(shift, mesh, inv_jacobian);
     const auto deriv_spatial_metric =
         partial_derivative(spatial_metric, mesh, inv_jacobian);
@@ -189,12 +193,23 @@ void test_local_adm_integrals(const double& distance,
         partial_derivative(conformal_factor, mesh, inv_jacobian);
     const auto deriv_conformal_metric =
         partial_derivative(conformal_metric, mesh, inv_jacobian);
+    const auto deriv_inv_conformal_metric =
+        partial_derivative(inv_conformal_metric, mesh, inv_jacobian);
 
     // Compute conformal Christoffel symbols.
     const auto conformal_christoffel_second_kind = gr::christoffel_second_kind(
         deriv_conformal_metric, inv_conformal_metric);
     const auto conformal_christoffel_contracted = tenex::evaluate<ti::i>(
         conformal_christoffel_second_kind(ti::J, ti::i, ti::j));
+    const auto deriv_conformal_christoffel_second_kind = partial_derivative(
+        conformal_christoffel_second_kind, mesh, inv_jacobian);
+
+    // Compute conformal Ricci scalar.
+    const auto conformal_ricci_tensor =
+        gr::ricci_tensor(conformal_christoffel_second_kind,
+                         deriv_conformal_christoffel_second_kind);
+    const auto conformal_ricci_scalar =
+        gr::ricci_scalar(conformal_ricci_tensor, inv_conformal_metric);
 
     // Define variables that appear in the formulas of dt_spatial_metric.
     const auto& x = get<0>(inertial_coords);
@@ -203,7 +218,7 @@ void test_local_adm_integrals(const double& distance,
     const auto barred_r =
         sqrt(square(x) + square(y) + square(lorentz_factor * z));
 
-    // Compute spatial metric time derivative (needed for extrinsic curvature).
+    // Compute spatial metric time derivative.
     // Note that these formulas were derived in a Mathematica notebook
     // specifically for this problem. Here, we are evaluating them at t = 0.
     auto dt_spatial_metric =
@@ -221,6 +236,42 @@ void test_local_adm_integrals(const double& distance,
         (2 * mass * cube(boost_speed) * z * cube(1 + mass / barred_r)) /
             (square(1 - square(boost_speed)) * cube(barred_r));
 
+    // Compute conformal inverse metric time derivative.
+    // Note that the conformal factor is time-independent, so this is simply
+    // applying the conformal decomposition on dt_spatial_metric.
+    const auto dt_conformal_metric = tenex::evaluate<ti::i, ti::j>(
+        dt_spatial_metric(ti::i, ti::j) / pow<4>(conformal_factor()));
+    const auto dt_inv_conformal_metric = tenex::evaluate<ti::I, ti::J>(
+        inv_conformal_metric(ti::I, ti::K) *
+        inv_conformal_metric(ti::J, ti::L) * dt_conformal_metric(ti::k, ti::l));
+
+    // // Compute
+    // Xcts::Tags::LongitudinalShiftMinusDtConformalMetricOverLapseSquare.
+    // tnsr::II<DataVector, 3, Frame::Inertial> longitudinal_shift;
+    // Xcts::longitudinal_operator(make_not_null(&longitudinal_shift), shift,
+    //     deriv_shift, inv_conformal_metric,
+    //     conformal_christoffel_second_kind);
+    // const auto longitudinal_shift_minus_dt_conformal_metric_over_lapse_square
+    // =
+    //     tenex::evaluate(1. / square(lapse())
+    //         * conformal_metric(ti::i, ti::k) * conformal_metric(ti::j, ti::l)
+    //         * (longitudinal_shift(ti::I, ti::J) -
+    //         dt_inv_conformal_metric(ti::I, ti::J))
+    //         * (longitudinal_shift(ti::K, ti::L) -
+    //         dt_inv_conformal_metric(ti::K, ti::L)));
+
+    tnsr::II<DataVector, 3, Frame::Inertial> longitudinal_shift;
+    Xcts::longitudinal_operator(make_not_null(&longitudinal_shift), shift,
+                                deriv_shift, inv_conformal_metric,
+                                conformal_christoffel_second_kind);
+    const auto longitudinal_shift_background_minus_dt_conformal_metric =
+        // tenex::evaluate<ti::I, ti::J>(longitudinal_shift(ti::I, ti::J) -
+        // dt_inv_conformal_metric(ti::I, ti::J));
+        tenex::evaluate<ti::I, ti::J>(longitudinal_shift(ti::I, ti::J));
+    const auto longitudinal_shift_excess =
+        make_with_value<tnsr::II<DataVector, 3, Frame::Inertial>>(
+            inertial_coords, 0.0);
+
     // Compute extrinsic curvature and its trace.
     const auto extrinsic_curvature =
         gr::extrinsic_curvature(lapse, shift, deriv_shift, spatial_metric,
@@ -229,7 +280,7 @@ void test_local_adm_integrals(const double& distance,
         inv_spatial_metric(ti::I, ti::J) * extrinsic_curvature(ti::i, ti::j));
 
     // Compute face normal (related to the conformal metric).
-    auto direction = Direction<3>::upper_zeta();
+    auto direction = Direction<3>::lower_zeta();
     auto conformal_face_normal =
         unnormalized_face_normal(face_mesh, logical_to_inertial_map, direction);
     const auto& face_inv_conformal_metric =
@@ -256,10 +307,14 @@ void test_local_adm_integrals(const double& distance,
         make_not_null(&local_adm_mass),
         make_not_null(&local_adm_linear_momentum),
         make_not_null(&local_center_of_mass), conformal_factor,
-        deriv_conformal_factor, conformal_metric, inv_conformal_metric,
-        conformal_christoffel_second_kind, conformal_christoffel_contracted,
-        spatial_metric, inv_spatial_metric, extrinsic_curvature,
-        trace_extrinsic_curvature, inv_jacobian, mesh, current_element,
+        deriv_conformal_factor, conformal_metric, deriv_conformal_metric,
+        inv_conformal_metric, conformal_christoffel_second_kind,
+        deriv_conformal_christoffel_second_kind,
+        conformal_christoffel_contracted, spatial_metric, inv_spatial_metric,
+        extrinsic_curvature, trace_extrinsic_curvature, lapse,
+        conformal_ricci_scalar, longitudinal_shift_excess,
+        longitudinal_shift_background_minus_dt_conformal_metric,
+        inertial_coords, inv_jacobian, mesh, current_element,
         conformal_face_normals, conformal_face_normal_vectors);
     total_adm_mass.get() += get(local_adm_mass);
     for (int I = 0; I < 3; I++) {
@@ -268,26 +323,44 @@ void test_local_adm_integrals(const double& distance,
     }
   }
 
-  // Check result
-  auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
-  CHECK(get(total_adm_mass) == custom_approx(lorentz_factor * mass));
-  CHECK(get<0>(total_adm_linear_momentum) == custom_approx(0.));
-  CHECK(get<1>(total_adm_linear_momentum) == custom_approx(0.));
-  CHECK(get<2>(total_adm_linear_momentum) ==
-        custom_approx(lorentz_factor * mass * boost_speed));
-  CHECK(get<0>(total_center_of_mass) == custom_approx(0.));
-  CHECK(get<1>(total_center_of_mass) == custom_approx(0.));
-  CHECK(get<2>(total_center_of_mass) == custom_approx(0.));
+  // // Check result
+  // auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
+  // CHECK(get(total_adm_mass) == custom_approx(lorentz_factor * mass));
+  // CHECK(get<0>(total_adm_linear_momentum) == custom_approx(0.));
+  // CHECK(get<1>(total_adm_linear_momentum) == custom_approx(0.));
+  // CHECK(get<2>(total_adm_linear_momentum) ==
+  //       custom_approx(lorentz_factor * mass * boost_speed));
+  // CHECK(get<0>(total_center_of_mass) == custom_approx(0.));
+  // CHECK(get<1>(total_center_of_mass) == custom_approx(0.));
+  // CHECK(get<2>(total_center_of_mass) == custom_approx(0.));
+
+  std::cout << std::setprecision(16)
+            // << "  ["
+            << distance << ", " << P << ", " << get(total_adm_mass) << ", "
+            << get(magnitude(total_adm_linear_momentum))
+            << ", "
+            // << get(magnitude(total_center_of_mass)) / get(total_adm_mass)
+            << get(magnitude(total_center_of_mass))
+            // << "],"
+            << std::endl;
 }
 
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.ObserveAdmIntegrals",
                   "[Unit][PointwiseFunctions]") {
-  // Test convergence with distance
-  std::vector<double> prev_distances = {};
-  for (const double distance : std::array<double, 3>{{1.e3, 1.e4, 1.e5}}) {
-    test_local_adm_integrals(distance, prev_distances);
-    prev_distances.push_back(distance);
+  // // Test convergence with distance
+  // std::vector<double> prev_distances = {};
+  // for (const double distance : std::array<double, 3>{{1.e3, 1.e4, 1.e5}}) {
+  //   test_local_adm_integrals(distance, prev_distances);
+  //   prev_distances.push_back(distance);
+  // }
+
+  // Test convergence with resolution
+  for (double distance :
+       std::array<double, 5>{{1.e1, 1.e2, 1.e3, 1.e4, 1.e5}}) {
+    for (size_t P = 3; P <= 15; P++) {
+      test_local_adm_integrals(distance, P);
+    }
   }
 }

@@ -214,7 +214,10 @@ struct FirstOrderSystem
                       Tags::ConformalChristoffelFirstKind<DataVector, 3,
                                                           Frame::Inertial>,
                       Tags::ConformalChristoffelSecondKind<DataVector, 3,
-                                                           Frame::Inertial>>,
+                                                           Frame::Inertial>,
+                      ::Tags::deriv<Tags::ConformalChristoffelSecondKind<
+                                        DataVector, 3, Frame::Inertial>,
+                                    tmpl::size_t<3>, Frame::Inertial>>,
                   tmpl::list<>>>,
           tmpl::list<>>>>;
   using inv_metric_tag = tmpl::conditional_t<

@@ -24,13 +24,21 @@ void local_adm_integrals(
     const Scalar<DataVector>& conformal_factor,
     const tnsr::i<DataVector, 3>& deriv_conformal_factor,
     const tnsr::ii<DataVector, 3>& conformal_metric,
+    const tnsr::ijj<DataVector, 3>& deriv_conformal_metric,
     const tnsr::II<DataVector, 3>& inv_conformal_metric,
     const tnsr::Ijj<DataVector, 3>& conformal_christoffel_second_kind,
+    const tnsr::iJkk<DataVector, 3>& deriv_conformal_christoffel_second_kind,
     const tnsr::i<DataVector, 3>& conformal_christoffel_contracted,
     const tnsr::ii<DataVector, 3>& spatial_metric,
     const tnsr::II<DataVector, 3>& inv_spatial_metric,
     const tnsr::ii<DataVector, 3>& extrinsic_curvature,
     const Scalar<DataVector>& trace_extrinsic_curvature,
+    const Scalar<DataVector>& lapse,
+    const Scalar<DataVector>& conformal_ricci_scalar,
+    const tnsr::II<DataVector, 3>& longitudinal_shift_excess,
+    const tnsr::II<DataVector, 3>&
+        longitudinal_shift_background_minus_dt_conformal_metric,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords,
     const InverseJacobian<DataVector, 3, Frame::ElementLogical,
                           Frame::Inertial>& inv_jacobian,
     const Mesh<3>& mesh, const Element<3>& element,
@@ -44,18 +52,79 @@ void local_adm_integrals(
     center_of_mass->get(I) = 0;
   }
 
-  // Skip elements not at the outer boundary
-  const size_t radial_dimension = 2;
-  const auto radial_segment_id = element.id().segment_id(radial_dimension);
-  if (radial_segment_id.index() !=
-      two_to_the(radial_segment_id.refinement_level()) - 1) {
-    return;
+  // Compute the inverse extrinsic curvature
+  tnsr::II<DataVector, 3> inv_extrinsic_curvature;
+  tenex::evaluate<ti::I, ti::J>(make_not_null(&inv_extrinsic_curvature),
+                                inv_spatial_metric(ti::I, ti::K) *
+                                    inv_spatial_metric(ti::J, ti::L) *
+                                    extrinsic_curvature(ti::k, ti::l));
+
+  const auto linear_momentum_surface_integrand =
+      Xcts::adm_linear_momentum_surface_integrand(
+          conformal_factor, inv_spatial_metric, inv_extrinsic_curvature,
+          trace_extrinsic_curvature);
+
+  const auto r_conformal = magnitude(inertial_coords, conformal_metric);
+  const auto conformal_unit_normal_vector =
+      tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_conformal());
+
+  const auto deriv_inv_conformal_metric = tenex::evaluate<ti::i, ti::J, ti::K>(
+      inv_conformal_metric(ti::J, ti::L) * inv_conformal_metric(ti::K, ti::M) *
+      deriv_conformal_metric(ti::i, ti::l, ti::m));
+
+  const auto longitudinal_shift_minus_dt_conformal_metric_over_lapse_square =
+      tenex::evaluate(conformal_metric(ti::i, ti::k) *
+                      conformal_metric(ti::j, ti::l) *
+                      (longitudinal_shift_excess(ti::I, ti::J) +
+                       longitudinal_shift_background_minus_dt_conformal_metric(
+                           ti::I, ti::J)) *
+                      (longitudinal_shift_excess(ti::K, ti::L) +
+                       longitudinal_shift_background_minus_dt_conformal_metric(
+                           ti::K, ti::L)) /
+                      square(lapse()));
+
+  const auto sqrt_det_conformal_metric =
+      Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
+
+  // Get volume integrands.
+  const auto mass_volume_integrand = Xcts::adm_mass_volume_integrand(
+      conformal_factor, conformal_ricci_scalar, trace_extrinsic_curvature,
+      longitudinal_shift_minus_dt_conformal_metric_over_lapse_square,
+      inv_conformal_metric, deriv_inv_conformal_metric,
+      conformal_christoffel_second_kind,
+      deriv_conformal_christoffel_second_kind);
+  const auto linear_momentum_volume_integrand =
+      Xcts::adm_linear_momentum_volume_integrand(
+          linear_momentum_surface_integrand, conformal_factor,
+          deriv_conformal_factor, conformal_metric, inv_conformal_metric,
+          conformal_christoffel_second_kind, conformal_christoffel_contracted);
+  const auto center_of_mass_volume_integrand =
+      Xcts::center_of_mass_volume_integrand(
+          conformal_factor, deriv_conformal_factor,
+          conformal_unit_normal_vector, deriv_conformal_metric);
+
+  // Evaluate volume integrals.
+  const auto det_jacobian =
+      Scalar<DataVector>(1. / get(determinant(inv_jacobian)));
+  adm_mass->get() +=
+      definite_integral(get(mass_volume_integrand) *
+                            get(sqrt_det_conformal_metric) * get(det_jacobian),
+                        mesh);
+  for (int I = 0; I < 3; I++) {
+    adm_linear_momentum->get(I) += definite_integral(
+        linear_momentum_volume_integrand.get(I) *
+            get(sqrt_det_conformal_metric) * get(det_jacobian),
+        mesh);
+    center_of_mass->get(I) += definite_integral(
+        center_of_mass_volume_integrand.get(I) *
+            get(sqrt_det_conformal_metric) * get(det_jacobian),
+        mesh);
   }
 
   // Loop over external boundaries
   for (const auto boundary_direction : element.external_boundaries()) {
-    // Skip interfaces not at the outer boundary
-    if (boundary_direction != Direction<3>::upper_zeta()) {
+    // Skip interfaces not at the inner boundary
+    if (boundary_direction != Direction<3>::lower_zeta()) {
       continue;
     }
 
@@ -91,13 +160,8 @@ void local_adm_integrals(
     // conformal metric.
     const auto face_inv_jacobian =
         dg::project_tensor_to_boundary(inv_jacobian, mesh, boundary_direction);
-
-    // Compute the inverse extrinsic curvature
-    tnsr::II<DataVector, 3> face_inv_extrinsic_curvature;
-    tenex::evaluate<ti::I, ti::J>(make_not_null(&face_inv_extrinsic_curvature),
-                                  face_inv_spatial_metric(ti::I, ti::K) *
-                                      face_inv_spatial_metric(ti::J, ti::L) *
-                                      face_extrinsic_curvature(ti::k, ti::l));
+    const auto face_sqrt_det_conformal_metric = dg::project_tensor_to_boundary(
+        sqrt_det_conformal_metric, mesh, boundary_direction);
 
     // Get interface mesh and normal
     const auto& face_mesh = mesh.slice_away(boundary_direction.dimension());
@@ -107,30 +171,31 @@ void local_adm_integrals(
         conformal_face_normal_vectors.at(boundary_direction);
 
     // Compute curved area element
-    const auto face_sqrt_det_conformal_metric =
-        Scalar<DataVector>(sqrt(get(determinant(face_conformal_metric))));
     const auto conformal_area_element =
         area_element(face_inv_jacobian, boundary_direction,
                      face_inv_conformal_metric, face_sqrt_det_conformal_metric);
 
-    // Compute surface integrands
-    const auto mass_integrand = Xcts::adm_mass_surface_integrand(
+    // Get surface integrands.
+    const auto face_mass_surface_integrand = Xcts::adm_mass_surface_integrand(
         face_deriv_conformal_factor, face_inv_conformal_metric,
         face_conformal_christoffel_second_kind,
         face_conformal_christoffel_contracted);
-    const auto linear_momentum_integrand =
-        Xcts::adm_linear_momentum_surface_integrand(
-            face_conformal_factor, face_inv_spatial_metric,
-            face_inv_extrinsic_curvature, face_trace_extrinsic_curvature);
-    const auto center_of_mass_integrand =
+    const auto face_linear_momentum_surface_integrand =
+        dg::project_tensor_to_boundary(linear_momentum_surface_integrand, mesh,
+                                       boundary_direction);
+    const auto face_center_of_mass_surface_integrand =
         Xcts::center_of_mass_surface_integrand(face_conformal_factor,
                                                conformal_face_normal_vector);
 
-    // Contract surface integrands with face normal
-    const auto contracted_mass_integrand =
-        tenex::evaluate(mass_integrand(ti::I) * conformal_face_normal(ti::i));
+    // Contract surface integrands with face normal.
+    const auto contracted_mass_integrand = tenex::evaluate(
+        -face_mass_surface_integrand(ti::I) * conformal_face_normal(ti::i));
     const auto contracted_linear_momentum_integrand = tenex::evaluate<ti::I>(
-        linear_momentum_integrand(ti::I, ti::J) * conformal_face_normal(ti::j));
+        -face_linear_momentum_surface_integrand(ti::I, ti::J) *
+        conformal_face_normal(ti::j));
+    const auto contracted_center_of_mass_integrand = tenex::evaluate<ti::I>(
+        -face_center_of_mass_surface_integrand(ti::I, ti::J) *
+        conformal_face_normal(ti::j));
 
     // Take integrals
     adm_mass->get() += definite_integral(
@@ -141,9 +206,10 @@ void local_adm_integrals(
           definite_integral(contracted_linear_momentum_integrand.get(I) *
                                 get(conformal_area_element),
                             face_mesh);
-      center_of_mass->get(I) += definite_integral(
-          center_of_mass_integrand.get(I) * get(conformal_area_element),
-          face_mesh);
+      center_of_mass->get(I) +=
+          definite_integral(contracted_center_of_mass_integrand.get(I) *
+                                get(conformal_area_element),
+                            face_mesh);
     }
   }
 }

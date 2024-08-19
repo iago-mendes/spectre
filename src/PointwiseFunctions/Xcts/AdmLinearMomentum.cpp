@@ -47,26 +47,27 @@ void adm_linear_momentum_volume_integrand(
     gsl::not_null<tnsr::I<DataVector, 3>*> result,
     const tnsr::II<DataVector, 3>& surface_integrand,
     const Scalar<DataVector>& conformal_factor,
-    const tnsr::i<DataVector, 3>& conformal_factor_deriv,
+    const tnsr::i<DataVector, 3>& deriv_conformal_factor,
     const tnsr::ii<DataVector, 3>& conformal_metric,
     const tnsr::II<DataVector, 3>& inv_conformal_metric,
     const tnsr::Ijj<DataVector, 3>& conformal_christoffel_second_kind,
     const tnsr::i<DataVector, 3>& conformal_christoffel_contracted) {
   tenex::evaluate<ti::I>(
-      result,
-      -(conformal_christoffel_second_kind(ti::I, ti::j, ti::k) *
-            surface_integrand(ti::J, ti::K) +
-        conformal_christoffel_contracted(ti::k) *
-            surface_integrand(ti::I, ti::K) -
-        2. * conformal_metric(ti::j, ti::k) * surface_integrand(ti::J, ti::K) *
-            inv_conformal_metric(ti::I, ti::L) * conformal_factor_deriv(ti::l) /
-            conformal_factor()));
+      result, -1. / (8. * M_PI) *
+                  (conformal_christoffel_second_kind(ti::I, ti::j, ti::k) *
+                       surface_integrand(ti::J, ti::K) +
+                   conformal_christoffel_contracted(ti::k) *
+                       surface_integrand(ti::I, ti::K) -
+                   2. * conformal_metric(ti::j, ti::k) *
+                       surface_integrand(ti::J, ti::K) *
+                       inv_conformal_metric(ti::I, ti::L) *
+                       deriv_conformal_factor(ti::l) / conformal_factor()));
 }
 
 tnsr::I<DataVector, 3> adm_linear_momentum_volume_integrand(
     const tnsr::II<DataVector, 3>& surface_integrand,
     const Scalar<DataVector>& conformal_factor,
-    const tnsr::i<DataVector, 3>& conformal_factor_deriv,
+    const tnsr::i<DataVector, 3>& deriv_conformal_factor,
     const tnsr::ii<DataVector, 3>& conformal_metric,
     const tnsr::II<DataVector, 3>& inv_conformal_metric,
     const tnsr::Ijj<DataVector, 3>& conformal_christoffel_second_kind,
@@ -74,7 +75,7 @@ tnsr::I<DataVector, 3> adm_linear_momentum_volume_integrand(
   tnsr::I<DataVector, 3> result;
   adm_linear_momentum_volume_integrand(
       make_not_null(&result), surface_integrand, conformal_factor,
-      conformal_factor_deriv, conformal_metric, inv_conformal_metric,
+      deriv_conformal_factor, conformal_metric, inv_conformal_metric,
       conformal_christoffel_second_kind, conformal_christoffel_contracted);
   return result;
 }
