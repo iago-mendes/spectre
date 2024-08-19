@@ -115,21 +115,17 @@ void test_center_of_mass_surface_integral(const double distance) {
         get<Xcts::Tags::InverseConformalMetric<DataVector, 3, Frame::Inertial>>(
             shifted_fields);
 
-    // Compute conformal unit normal vector
-    const auto r_conformal = magnitude(inertial_coords, conformal_metric);
-    const auto conformal_unit_normal =
-        tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_conformal());
-
-    const auto sqrt_det_conformal_metric =
-        Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
+    // Compute Euclidean unit normal vector
+    const auto r_coordinate = magnitude(inertial_coords);
+    const auto euclidean_unit_normal =
+        tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_coordinate());
 
     const auto volume_integrand = Xcts::center_of_mass_volume_integrand(
-        conformal_factor, deriv_conformal_factor, conformal_unit_normal,
+        conformal_factor, deriv_conformal_factor, euclidean_unit_normal,
         deriv_conformal_metric);
     for (int I = 0; I < 3; I++) {
       total_integral.get(I) += definite_integral(
-          volume_integrand.get(I) * get(sqrt_det_conformal_metric) *
-              get(det_jacobian),
+          volume_integrand.get(I) * get(det_jacobian),
           mesh);
     }
 
@@ -155,35 +151,30 @@ void test_center_of_mass_surface_integral(const double distance) {
       const auto& face_inv_conformal_metric =
           data_on_slice(inv_conformal_metric, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
-      const auto& face_sqrt_det_conformal_metric =
-          data_on_slice(sqrt_det_conformal_metric, mesh.extents(),
-                        boundary_direction.dimension(), slice_index);
-      const auto& face_conformal_unit_normal =
-          data_on_slice(conformal_unit_normal, mesh.extents(),
+      const auto& face_euclidean_unit_normal =
+          data_on_slice(euclidean_unit_normal, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
 
-      // Compute area element
-      const auto conformal_area_element = area_element(
-          face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
-          face_sqrt_det_conformal_metric);
+      // Compute Euclidean area element
+      const auto area_element = euclidean_area_element(
+          face_inv_jacobian, boundary_direction);
 
-      // Compute conformal face normal
-      auto conformal_face_normal = unnormalized_face_normal(
+      // Compute Euclidean face normal
+      auto euclidean_face_normal = unnormalized_face_normal(
           face_mesh, logical_to_inertial_map, boundary_direction);
-      const auto face_normal_magnitude =
-          magnitude(conformal_face_normal, face_inv_conformal_metric);
+      const auto face_normal_magnitude = magnitude(euclidean_face_normal);
       for (size_t d = 0; d < 3; ++d) {
-        conformal_face_normal.get(d) /= get(face_normal_magnitude);
+        euclidean_face_normal.get(d) /= get(face_normal_magnitude);
       }
 
       // Integrate
       const auto surface_integrand = Xcts::center_of_mass_surface_integrand(
-          face_conformal_factor, face_conformal_unit_normal);
+          face_conformal_factor, face_euclidean_unit_normal);
       const auto contracted_integrand = tenex::evaluate<ti::I>(
-          -surface_integrand(ti::I, ti::J) * conformal_face_normal(ti::j));
+          -surface_integrand(ti::I, ti::J) * euclidean_face_normal(ti::j));
       for (int I = 0; I < 3; I++) {
         total_integral.get(I) += definite_integral(
-            contracted_integrand.get(I) * get(conformal_area_element),
+            contracted_integrand.get(I) * get(area_element),
             face_mesh);
       }
     }

@@ -143,9 +143,6 @@ void test_mass_surface_integral(const double distance, const double mass,
             inv_conformal_metric(ti::K, ti::M) *
             deriv_conformal_metric(ti::i, ti::l, ti::m));
 
-    const auto sqrt_det_conformal_metric =
-        Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
-
     // Evaluate volume integral.
     const auto volume_integrand = Xcts::adm_mass_volume_integrand(
         conformal_factor, conformal_ricci_scalar, trace_extrinsic_curvature,
@@ -154,8 +151,7 @@ void test_mass_surface_integral(const double distance, const double mass,
         conformal_christoffel_second_kind,
         deriv_conformal_christoffel_second_kind);
     total_integral.get() += definite_integral(
-        get(volume_integrand) * get(sqrt_det_conformal_metric) *
-            get(det_jacobian),
+        get(volume_integrand) * get(det_jacobian),
         mesh);
 
     // Loop over external boundaries.
@@ -180,9 +176,6 @@ void test_mass_surface_integral(const double distance, const double mass,
       const auto& face_conformal_metric =
           data_on_slice(conformal_metric, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
-      const auto& face_sqrt_det_conformal_metric =
-          data_on_slice(sqrt_det_conformal_metric, mesh.extents(),
-                        boundary_direction.dimension(), slice_index);
       const auto& face_inv_conformal_metric =
           data_on_slice(inv_conformal_metric, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
@@ -193,18 +186,16 @@ void test_mass_surface_integral(const double distance, const double mass,
           data_on_slice(conformal_christoffel_contracted, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
 
-      // Compute conformal area element
-      const auto conformal_area_element = area_element(
-          face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
-          face_sqrt_det_conformal_metric);
+      // Compute Euclidean area element
+      const auto area_element = euclidean_area_element(
+          face_inv_jacobian, boundary_direction);
 
-      // Compute conformal face normal
-      auto conformal_face_normal = unnormalized_face_normal(
+      // Compute Euclidean face normal
+      auto euclidean_face_normal = unnormalized_face_normal(
           face_mesh, logical_to_inertial_map, boundary_direction);
-      const auto face_normal_magnitude =
-          magnitude(conformal_face_normal, face_inv_conformal_metric);
+      const auto face_normal_magnitude = magnitude(euclidean_face_normal);
       for (size_t d = 0; d < 3; ++d) {
-        conformal_face_normal.get(d) /= get(face_normal_magnitude);
+        euclidean_face_normal.get(d) /= get(face_normal_magnitude);
       }
 
       // Evaluate surface integral.
@@ -213,11 +204,11 @@ void test_mass_surface_integral(const double distance, const double mass,
           face_conformal_christoffel_second_kind,
           face_conformal_christoffel_contracted);
       const auto contracted_integrand = tenex::evaluate(
-          -surface_integrand(ti::I) * conformal_face_normal(ti::i));
+          -surface_integrand(ti::I) * euclidean_face_normal(ti::i));
 
       // Compute contribution to surface integral
       total_integral.get() += definite_integral(
-          get(contracted_integrand) * get(conformal_area_element), face_mesh);
+          get(contracted_integrand) * get(area_element), face_mesh);
     }
   }
 
