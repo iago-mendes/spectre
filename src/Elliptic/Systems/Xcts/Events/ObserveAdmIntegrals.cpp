@@ -70,7 +70,15 @@ void local_adm_integrals(
 
   const auto deriv_inv_conformal_metric = tenex::evaluate<ti::i, ti::J, ti::K>(
       inv_conformal_metric(ti::J, ti::L) * inv_conformal_metric(ti::K, ti::M) *
-      deriv_conformal_metric(ti::i, ti::l, ti::m));
+          (deriv_conformal_metric(ti::i, ti::l, ti::m) -
+           conformal_christoffel_second_kind(ti::N, ti::i, ti::l) *
+               conformal_metric(ti::n, ti::m) -
+           conformal_christoffel_second_kind(ti::N, ti::i, ti::m) *
+               conformal_metric(ti::l, ti::n)) -
+      conformal_christoffel_second_kind(ti::J, ti::i, ti::l) *
+          inv_conformal_metric(ti::L, ti::K) -
+      conformal_christoffel_second_kind(ti::K, ti::i, ti::l) *
+          inv_conformal_metric(ti::J, ti::L));
 
   const auto longitudinal_shift_minus_dt_conformal_metric_over_lapse_square =
       tenex::evaluate(conformal_metric(ti::i, ti::k) *

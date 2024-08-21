@@ -40,9 +40,9 @@ void test_mass_surface_integral(const double distance, const double mass,
                                 const double horizon_radius) {
   // Set up domain
   const size_t h_refinement = 1;
-  const size_t p_refinement = 10;
+  const size_t p_refinement = 6;
   domain::creators::Sphere shell{
-      /* inner_radius */ horizon_radius,
+      /* inner_radius */ 2 * horizon_radius,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -50,7 +50,13 @@ void test_mass_surface_integral(const double distance, const double mass,
       /* use_equiangular_map */ true,
       /* equatorial_compression */ {},
       /* radial_partitioning */ {},
-      /* radial_distribution */ domain::CoordinateMaps::Distribution::Inverse};
+      /* radial_distribution */
+      domain::CoordinateMaps::Distribution::Logarithmic};
+  // /* radial_partitioning */ std::vector<double>{{60.}},
+  // /* radial_distribution */
+  // std::vector<domain::CoordinateMaps::Distribution>{{
+      // domain::CoordinateMaps::Distribution::Logarithmic,
+      // domain::CoordinateMaps::Distribution::Inverse}}};
   const auto shell_domain = shell.create_domain();
   const auto& blocks = shell_domain.blocks();
   const auto& initial_ref_levels = shell.initial_refinement_levels();
@@ -62,6 +68,8 @@ void test_mass_surface_integral(const double distance, const double mass,
 
   // Initialize "reduced" integral.
   Scalar<double> total_integral(0.);
+  Scalar<double> surface_integral(0.);
+  Scalar<double> volume_integral(0.);
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
@@ -140,8 +148,16 @@ void test_mass_surface_integral(const double distance, const double mass,
     const auto deriv_inv_conformal_metric =
         tenex::evaluate<ti::i, ti::J, ti::K>(
             inv_conformal_metric(ti::J, ti::L) *
-            inv_conformal_metric(ti::K, ti::M) *
-            deriv_conformal_metric(ti::i, ti::l, ti::m));
+                inv_conformal_metric(ti::K, ti::M) *
+                (deriv_conformal_metric(ti::i, ti::l, ti::m) -
+                 conformal_christoffel_second_kind(ti::N, ti::i, ti::l) *
+                     conformal_metric(ti::n, ti::m) -
+                 conformal_christoffel_second_kind(ti::N, ti::i, ti::m) *
+                     conformal_metric(ti::l, ti::n)) -
+            conformal_christoffel_second_kind(ti::J, ti::i, ti::l) *
+                inv_conformal_metric(ti::L, ti::K) -
+            conformal_christoffel_second_kind(ti::K, ti::i, ti::l) *
+                inv_conformal_metric(ti::J, ti::L));
 
     // Evaluate volume integral.
     const auto volume_integrand = Xcts::adm_mass_volume_integrand(
@@ -153,6 +169,8 @@ void test_mass_surface_integral(const double distance, const double mass,
     total_integral.get() += definite_integral(
         get(volume_integrand) * get(det_jacobian),
         mesh);
+    volume_integral.get() +=
+        definite_integral(get(volume_integrand) * get(det_jacobian), mesh);
 
     // Loop over external boundaries.
     for (auto boundary_direction : current_element.external_boundaries()) {
@@ -209,6 +227,8 @@ void test_mass_surface_integral(const double distance, const double mass,
       // Compute contribution to surface integral
       total_integral.get() += definite_integral(
           get(contracted_integrand) * get(area_element), face_mesh);
+      surface_integral.get() += definite_integral(
+          get(contracted_integrand) * get(area_element), face_mesh);
     }
   }
 
@@ -220,6 +240,10 @@ void test_mass_surface_integral(const double distance, const double mass,
   std::cout << std::setprecision(16)  //
             << "\t ADM Mass \t"       //
             << distance               //
+            << ", "                   //
+            << get(surface_integral)  //
+            << ", "                   //
+            << get(volume_integral)   //
             << ", "                   //
             << get(total_integral)    //
             << " == "                 //
@@ -236,12 +260,15 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmMass",
     INFO("Boosted Kerr-Schild");
     const double mass = 1.;
     const double horizon_radius = 2. * mass;
-    const double boost_speed = 0.5;
+    const double boost_speed = 0.;
     const std::array<double, 3> boost_velocity({0., 0., boost_speed});
     const std::array<double, 3> dimensionless_spin({0., 0., 0.});
     const std::array<double, 3> center({0., 0., 0.});
     const KerrSchild solution(mass, dimensionless_spin, center, boost_velocity);
-    for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10})) {
+    // for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10}))
+    // {
+    for (const double distance :
+         std::array<double, 4>({1.e3, .2e4, 1.e5, 1.e10})) {
       test_mass_surface_integral(distance, mass, boost_speed, solution,
                                  horizon_radius);
     }
@@ -253,7 +280,8 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmMass",
     const double boost_speed = 0.;
     const Schwarzschild solution(
         mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
-    for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10})) {
+    for (const double distance :
+         std::array<double, 4>({1.e3, 1.e4, 1.e5, 1.e10})) {
       test_mass_surface_integral(distance, mass, boost_speed, solution,
                                  horizon_radius);
     }

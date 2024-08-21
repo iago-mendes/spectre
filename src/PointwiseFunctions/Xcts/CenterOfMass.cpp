@@ -30,12 +30,15 @@ void center_of_mass_volume_integrand(
     const tnsr::I<DataVector, 3>& unit_normal,
     const tnsr::ijj<DataVector, 3, Frame::Inertial>& deriv_conformal_metric) {
   tenex::evaluate<ti::I>(
-      result, 4. * pow<3>(conformal_factor()) * deriv_conformal_factor(ti::j) *
-                      unit_normal(ti::I) * unit_normal(ti::J) -
-                  pow<4>(conformal_factor()) *
-                      deriv_conformal_metric(ti::j, ti::k, ti::l) *
-                      unit_normal(ti::I) * unit_normal(ti::J) *
-                      unit_normal(ti::K) * unit_normal(ti::L));
+      result,
+      3. / (8. * M_PI) *
+          (4. * pow<3>(conformal_factor()) * deriv_conformal_factor(ti::j) *
+           unit_normal(ti::I) * unit_normal(ti::J)
+           // - pow<4>(conformal_factor()) *
+           //     deriv_conformal_metric(ti::j, ti::k, ti::l) *
+           //     unit_normal(ti::I) * unit_normal(ti::J) *
+           //     unit_normal(ti::K) * unit_normal(ti::L)
+           ));
 }
 
 tnsr::I<DataVector, 3> center_of_mass_volume_integrand(

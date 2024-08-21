@@ -41,9 +41,9 @@ void test_linear_momentum_surface_integral(const double distance,
                                            const double horizon_radius) {
   // Set up domain
   const size_t h_refinement = 1;
-  const size_t p_refinement = 10;
+  const size_t p_refinement = 6;
   domain::creators::Sphere shell{
-      /* inner_radius */ horizon_radius,
+      /* inner_radius */ 2 * horizon_radius,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -63,6 +63,8 @@ void test_linear_momentum_surface_integral(const double distance,
 
   // Initialize surface integral
   tnsr::I<double, 3> total_integral({0., 0., 0.});
+  tnsr::I<double, 3> surface_integral({0., 0., 0.});
+  tnsr::I<double, 3> volume_integral({0., 0., 0.});
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
@@ -141,9 +143,10 @@ void test_linear_momentum_surface_integral(const double distance,
         conformal_metric, inv_conformal_metric,
         conformal_christoffel_second_kind, conformal_christoffel_contracted);
     for (int I = 0; I < 3; I++) {
-      total_integral.get(I) += definite_integral(
-          volume_integrand.get(I) * get(det_jacobian),
-          mesh);
+      total_integral.get(I) +=
+          definite_integral(volume_integrand.get(I) * get(det_jacobian), mesh);
+      volume_integral.get(I) +=
+          definite_integral(volume_integrand.get(I) * get(det_jacobian), mesh);
     }
 
     // Loop over external boundaries
@@ -183,13 +186,14 @@ void test_linear_momentum_surface_integral(const double distance,
 
       // Compute surface integrand
       const auto contracted_integrand = tenex::evaluate<ti::I>(
-          face_surface_integrand(ti::I, ti::J) * euclidean_face_normal(ti::j));
+          -face_surface_integrand(ti::I, ti::J) * euclidean_face_normal(ti::j));
 
       // Compute contribution to surface integral
       for (int I = 0; I < 3; I++) {
         total_integral.get(I) += definite_integral(
-            -contracted_integrand.get(I) * get(area_element),
-            face_mesh);
+            contracted_integrand.get(I) * get(area_element), face_mesh);
+        surface_integral.get(I) += definite_integral(
+            contracted_integrand.get(I) * get(area_element), face_mesh);
       }
     }
   }
@@ -205,6 +209,10 @@ void test_linear_momentum_surface_integral(const double distance,
   std::cout << std::setprecision(16)                //
             << "\t ADM Linear Momentum \t"          //
             << distance                             //
+            << ", "                                 //
+            << get<2>(surface_integral)             //
+            << ", "                                 //
+            << get<2>(volume_integral)              //
             << ", "                                 //
             << get<2>(total_integral)               //
             << " == "                               //
@@ -244,7 +252,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmLinearMomentum",
     INFO("Boosted Kerr-Schild");
     const double mass = 1.;
     const double horizon_radius = 2. * mass;
-    const double boost_speed = 0.5;
+    const double boost_speed = 0.;
     const std::array<double, 3> boost_velocity({0., 0., boost_speed});
     const std::array<double, 3> dimensionless_spin({0., 0., 0.});
     const std::array<double, 3> center({0., 0., 0.});

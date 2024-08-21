@@ -45,7 +45,7 @@ void test_center_of_mass_surface_integral(const double distance) {
   const size_t h_refinement = 1;
   const size_t p_refinement = 6;
   const domain::creators::Sphere shell{
-      /* inner_radius */ z_shift + horizon_radius,
+      /* inner_radius */ z_shift + 2 * horizon_radius,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -65,6 +65,8 @@ void test_center_of_mass_surface_integral(const double distance) {
 
   // Initialize "reduced" integral
   tnsr::I<double, 3> total_integral({0., 0., 0.});
+  tnsr::I<double, 3> surface_integral({0., 0., 0.});
+  tnsr::I<double, 3> volume_integral({0., 0., 0.});
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
@@ -127,6 +129,8 @@ void test_center_of_mass_surface_integral(const double distance) {
       total_integral.get(I) += definite_integral(
           volume_integrand.get(I) * get(det_jacobian),
           mesh);
+      volume_integral.get(I) +=
+          definite_integral(volume_integrand.get(I) * get(det_jacobian), mesh);
     }
 
     // Loop over external boundaries
@@ -176,6 +180,8 @@ void test_center_of_mass_surface_integral(const double distance) {
         total_integral.get(I) += definite_integral(
             contracted_integrand.get(I) * get(area_element),
             face_mesh);
+        surface_integral.get(I) += definite_integral(
+            contracted_integrand.get(I) * get(area_element), face_mesh);
       }
     }
   }
@@ -186,14 +192,18 @@ void test_center_of_mass_surface_integral(const double distance) {
   // CHECK(get<1>(total_integral) == custom_approx(0.));
   // CHECK(get<2>(total_integral) / mass == custom_approx(z_shift));
 
-  std::cout << std::setprecision(16)   //
-            << "\t Center of Mass \t"  //
-            << distance                //
-            << ", "                    //
-            << get<2>(total_integral)  //
-            << " == "                  //
-            << z_shift                 //
-            << std::endl;              //
+  std::cout << std::setprecision(16)     //
+            << "\t Center of Mass \t"    //
+            << distance                  //
+            << ", "                      //
+            << get<2>(surface_integral)  //
+            << ", "                      //
+            << get<2>(volume_integral)   //
+            << ", "                      //
+            << get<2>(total_integral)    //
+            << " == "                    //
+            << z_shift                   //
+            << std::endl;                //
 }
 
 }  // namespace
@@ -201,7 +211,9 @@ void test_center_of_mass_surface_integral(const double distance) {
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.CenterOfMass",
                   "[Unit][PointwiseFunctions]") {
   // Test that integral converges with distance.
-  for (const double distance : std::array<double, 3>({1.e3, 1.e4, 1.e5})) {
+  // for (const double distance : std::array<double, 3>({1.e3, 1.e4, 1.e5})) {
+  for (const double distance :
+       std::array<double, 5>({1.e1, 1.e2, 1.e3, 1.e5, 1.e10})) {
     test_center_of_mass_surface_integral(distance);
   }
 }
