@@ -64,9 +64,9 @@ void local_adm_integrals(
           conformal_factor, inv_spatial_metric, inv_extrinsic_curvature,
           trace_extrinsic_curvature);
 
-  const auto r_conformal = magnitude(inertial_coords, conformal_metric);
-  const auto conformal_unit_normal_vector =
-      tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_conformal());
+  const auto r_coordinate = magnitude(inertial_coords);
+  const auto euclidean_unit_normal_vector =
+      tenex::evaluate<ti::I>(inertial_coords(ti::I) / r_coordinate());
 
   const auto deriv_inv_conformal_metric = tenex::evaluate<ti::i, ti::J, ti::K>(
       inv_conformal_metric(ti::J, ti::L) * inv_conformal_metric(ti::K, ti::M) *
@@ -91,9 +91,6 @@ void local_adm_integrals(
                            ti::K, ti::L)) /
                       square(lapse()));
 
-  const auto sqrt_det_conformal_metric =
-      Scalar<DataVector>(sqrt(get(determinant(conformal_metric))));
-
   // Get volume integrands.
   const auto mass_volume_integrand = Xcts::adm_mass_volume_integrand(
       conformal_factor, conformal_ricci_scalar, trace_extrinsic_curvature,
@@ -109,24 +106,18 @@ void local_adm_integrals(
   const auto center_of_mass_volume_integrand =
       Xcts::center_of_mass_volume_integrand(
           conformal_factor, deriv_conformal_factor,
-          conformal_unit_normal_vector, deriv_conformal_metric);
+          euclidean_unit_normal_vector, deriv_conformal_metric);
 
   // Evaluate volume integrals.
   const auto det_jacobian =
       Scalar<DataVector>(1. / get(determinant(inv_jacobian)));
   adm_mass->get() +=
-      definite_integral(get(mass_volume_integrand) *
-                            get(sqrt_det_conformal_metric) * get(det_jacobian),
-                        mesh);
+      definite_integral(get(mass_volume_integrand) * get(det_jacobian), mesh);
   for (int I = 0; I < 3; I++) {
     adm_linear_momentum->get(I) += definite_integral(
-        linear_momentum_volume_integrand.get(I) *
-            get(sqrt_det_conformal_metric) * get(det_jacobian),
-        mesh);
+        linear_momentum_volume_integrand.get(I) * get(det_jacobian), mesh);
     center_of_mass->get(I) += definite_integral(
-        center_of_mass_volume_integrand.get(I) *
-            get(sqrt_det_conformal_metric) * get(det_jacobian),
-        mesh);
+        center_of_mass_volume_integrand.get(I) * get(det_jacobian), mesh);
   }
 
   // Loop over external boundaries
@@ -168,20 +159,23 @@ void local_adm_integrals(
     // conformal metric.
     const auto face_inv_jacobian =
         dg::project_tensor_to_boundary(inv_jacobian, mesh, boundary_direction);
-    const auto face_sqrt_det_conformal_metric = dg::project_tensor_to_boundary(
-        sqrt_det_conformal_metric, mesh, boundary_direction);
+    const auto face_euclidean_unit_normal_vector =
+        dg::project_tensor_to_boundary(euclidean_unit_normal_vector, mesh,
+                                       boundary_direction);
 
     // Get interface mesh and normal
     const auto& face_mesh = mesh.slice_away(boundary_direction.dimension());
-    const auto& conformal_face_normal =
-        conformal_face_normals.at(boundary_direction);
-    const auto& conformal_face_normal_vector =
-        conformal_face_normal_vectors.at(boundary_direction);
 
-    // Compute curved area element
-    const auto conformal_area_element =
-        area_element(face_inv_jacobian, boundary_direction,
-                     face_inv_conformal_metric, face_sqrt_det_conformal_metric);
+    // Compute Euclidean face normal
+    auto euclidean_face_normal = conformal_face_normals.at(boundary_direction);
+    const auto face_normal_magnitude = magnitude(euclidean_face_normal);
+    for (size_t d = 0; d < 3; ++d) {
+      euclidean_face_normal.get(d) /= get(face_normal_magnitude);
+    }
+
+    // Compute Euclidean area element
+    const auto area_element =
+        euclidean_area_element(face_inv_jacobian, boundary_direction);
 
     // Get surface integrands.
     const auto face_mass_surface_integrand = Xcts::adm_mass_surface_integrand(
@@ -192,32 +186,29 @@ void local_adm_integrals(
         dg::project_tensor_to_boundary(linear_momentum_surface_integrand, mesh,
                                        boundary_direction);
     const auto face_center_of_mass_surface_integrand =
-        Xcts::center_of_mass_surface_integrand(face_conformal_factor,
-                                               conformal_face_normal_vector);
+        Xcts::center_of_mass_surface_integrand(
+            face_conformal_factor, face_euclidean_unit_normal_vector);
 
     // Contract surface integrands with face normal.
     const auto contracted_mass_integrand = tenex::evaluate(
-        -face_mass_surface_integrand(ti::I) * conformal_face_normal(ti::i));
+        -face_mass_surface_integrand(ti::I) * euclidean_face_normal(ti::i));
     const auto contracted_linear_momentum_integrand = tenex::evaluate<ti::I>(
         -face_linear_momentum_surface_integrand(ti::I, ti::J) *
-        conformal_face_normal(ti::j));
+        euclidean_face_normal(ti::j));
     const auto contracted_center_of_mass_integrand = tenex::evaluate<ti::I>(
         -face_center_of_mass_surface_integrand(ti::I, ti::J) *
-        conformal_face_normal(ti::j));
+        euclidean_face_normal(ti::j));
 
     // Take integrals
     adm_mass->get() += definite_integral(
-        get(contracted_mass_integrand) * get(conformal_area_element),
-        face_mesh);
+        get(contracted_mass_integrand) * get(area_element), face_mesh);
     for (int I = 0; I < 3; I++) {
-      adm_linear_momentum->get(I) +=
-          definite_integral(contracted_linear_momentum_integrand.get(I) *
-                                get(conformal_area_element),
-                            face_mesh);
-      center_of_mass->get(I) +=
-          definite_integral(contracted_center_of_mass_integrand.get(I) *
-                                get(conformal_area_element),
-                            face_mesh);
+      adm_linear_momentum->get(I) += definite_integral(
+          contracted_linear_momentum_integrand.get(I) * get(area_element),
+          face_mesh);
+      center_of_mass->get(I) += definite_integral(
+          contracted_center_of_mass_integrand.get(I) * get(area_element),
+          face_mesh);
     }
   }
 }

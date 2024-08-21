@@ -55,7 +55,7 @@ namespace {
 void test_local_adm_integrals(const double& distance, const size_t& P) {
   // Define black hole parameters.
   const double mass = 1;
-  const double boost_speed = 0.;
+  const double boost_speed = 0.5;
   const double lorentz_factor = 1. / sqrt(1. - square(boost_speed));
   const std::array<double, 3> boost_velocity{{0., 0., boost_speed}};
 
@@ -126,8 +126,8 @@ void test_local_adm_integrals(const double& distance, const size_t& P) {
             boost_matrix.get(i + 1, j + 1) * inertial_coords.get(j);
       }
     }
-    const double z_shift = 2. * mass;
-    barred_coords.get(2) -= z_shift;
+    // const double z_shift = 2. * mass;
+    // barred_coords.get(2) -= z_shift;
 
     // Get barred spacetime variables.
     const auto barred_spacetime_vars = solution.variables(
