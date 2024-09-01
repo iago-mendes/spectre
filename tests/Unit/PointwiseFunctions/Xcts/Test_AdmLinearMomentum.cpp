@@ -30,6 +30,8 @@
 
 namespace {
 
+std::ofstream output_file("Test_AdmLinearMomentum.output");
+
 using Schwarzschild = Xcts::Solutions::Schwarzschild;
 using KerrSchild = Xcts::Solutions::WrappedGr<gr::Solutions::KerrSchild>;
 
@@ -38,10 +40,11 @@ void test_linear_momentum_surface_integral(const double distance,
                                            const double mass,
                                            const double boost_speed,
                                            const Solution& solution,
-                                           const double horizon_radius) {
+                                           const double horizon_radius,
+                                           const size_t L, const size_t P) {
   // Set up domain
-  const size_t h_refinement = 1;
-  const size_t p_refinement = 6;
+  const size_t h_refinement = L;
+  const size_t p_refinement = P;
   domain::creators::Sphere shell{
       /* inner_radius */ 2 * horizon_radius,
       /* outer_radius */ distance,
@@ -206,6 +209,18 @@ void test_linear_momentum_surface_integral(const double distance,
   // CHECK(get<2>(total_integral) ==
   //       custom_approx(lorentz_factor * mass * boost_speed));
 
+  output_file << std::setprecision(16)                //
+              << distance                             //
+              << ", "                                 //
+              << L                                    //
+              << ", "                                 //
+              << P                                    //
+              << ", "                                 //
+              << get(magnitude(total_integral))       //
+              << ", "                                 //
+              << lorentz_factor * mass * boost_speed  //
+              << std::endl;                           //
+
   std::cout << std::setprecision(16)                //
             << "\t ADM Linear Momentum \t"          //
             << distance                             //
@@ -252,26 +267,40 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmLinearMomentum",
     INFO("Boosted Kerr-Schild");
     const double mass = 1.;
     const double horizon_radius = 2. * mass;
-    const double boost_speed = 0.;
+    const double boost_speed = 0.5;
     const std::array<double, 3> boost_velocity({0., 0., boost_speed});
     const std::array<double, 3> dimensionless_spin({0., 0., 0.});
     const std::array<double, 3> center({0., 0., 0.});
     const KerrSchild solution(mass, dimensionless_spin, center, boost_velocity);
-    for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10})) {
-      test_linear_momentum_surface_integral(distance, mass, boost_speed,
-                                            solution, horizon_radius);
+    // for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10}))
+    // {
+    for (const double distance : std::array<double, 8>(
+             {1.e1, 1.e2, 1.e3, 1.e4, 1.e5, 1.e6, 1.e7, 1.e8})) {
+      for (size_t L = 0; L <= 2; L++) {
+        for (size_t P = 2; P <= 15; P++) {
+          test_linear_momentum_surface_integral(distance, mass, boost_speed,
+                                                solution, horizon_radius, L, P);
+        }
+      }
     }
   }
-  {
-    INFO("Isotropic Schwarzschild");
-    const double mass = 1.;
-    const double horizon_radius = 0.5 * mass;
-    const double boost_speed = 0.;
-    const Schwarzschild solution(
-        mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
-    for (const double distance : std::array<double, 3>({1.e3, 1.e5, 1.e10})) {
-      test_linear_momentum_surface_integral(distance, mass, boost_speed,
-                                            solution, horizon_radius);
-    }
-  }
+  // {
+  //   INFO("Isotropic Schwarzschild");
+  //   const double mass = 1.;
+  //   const double horizon_radius = 0.5 * mass;
+  //   const double boost_speed = 0.;
+  //   const Schwarzschild solution(
+  //       mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
+  //   for (const double distance :
+  //        std::array<double,
+  //        8>({1.e1, 1.e2, 1.e3, 1.e4, 1.e5, 1.e6, 1.e7, 1.e8})) {
+  //     for (size_t L = 0; L <= 2; L++) {
+  //       for (size_t P = 2; P <= 15; P++) {
+  //         test_linear_momentum_surface_integral(distance, mass, boost_speed,
+  //                                               solution, horizon_radius, L,
+  //                                               P);
+  //       }
+  //     }
+  //   }
+  // }
 }

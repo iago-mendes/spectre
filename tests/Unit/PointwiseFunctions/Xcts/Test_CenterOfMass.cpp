@@ -22,28 +22,42 @@
 #include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Xcts/Schwarzschild.hpp"
+#include "PointwiseFunctions/AnalyticSolutions/Xcts/WrappedGr.hpp"
 #include "PointwiseFunctions/Xcts/CenterOfMass.hpp"
 
 namespace {
+
+std::ofstream output_file("Test_CenterOfMass.output");
+using KerrSchild = Xcts::Solutions::WrappedGr<gr::Solutions::KerrSchild>;
 
 /**
  * This test shifts the isotropic Schwarzschild solution and checks that the
  * center of mass corresponds to the coordinate shift.
  */
-void test_center_of_mass_surface_integral(const double distance) {
+void test_center_of_mass_surface_integral(const double distance, const size_t L,
+                                          const size_t P) {
   // Get Schwarzschild solution in isotropic coordinates.
-  const double mass = 1;
-  const Xcts::Solutions::Schwarzschild solution(
-      mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
-  const double horizon_radius = 0.5 * mass;
+  // const double mass = 1;
+  // const Xcts::Solutions::Schwarzschild solution(
+  //     mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
+  // const double horizon_radius = 0.5 * mass;
+
+  const double mass = 1.;
+  const double horizon_radius = 2. * mass;
+  const double boost_speed = 0.5;
+  const std::array<double, 3> boost_velocity({0., 0., boost_speed});
+  const std::array<double, 3> dimensionless_spin({0., 0., 0.});
+  const std::array<double, 3> center({0., 0., 0.});
+  const KerrSchild solution(mass, dimensionless_spin, center, boost_velocity);
 
   // Define z-shift applied to the coordinates.
-  const double z_shift = 2. * mass;
+  const double z_shift = 0. * mass;
 
   // Set up domain
-  const size_t h_refinement = 1;
-  const size_t p_refinement = 6;
+  const size_t h_refinement = L;
+  const size_t p_refinement = P;
   const domain::creators::Sphere shell{
       /* inner_radius */ z_shift + 2 * horizon_radius,
       /* outer_radius */ distance,
@@ -192,6 +206,18 @@ void test_center_of_mass_surface_integral(const double distance) {
   // CHECK(get<1>(total_integral) == custom_approx(0.));
   // CHECK(get<2>(total_integral) / mass == custom_approx(z_shift));
 
+  output_file << std::setprecision(16)           //
+              << distance                        //
+              << ", "                            //
+              << L                               //
+              << ", "                            //
+              << P                               //
+              << ", "                            //
+              << get(magnitude(total_integral))  //
+              << ", "                            //
+              << z_shift                         //
+              << std::endl;                      //
+
   std::cout << std::setprecision(16)     //
             << "\t Center of Mass \t"    //
             << distance                  //
@@ -212,8 +238,14 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.CenterOfMass",
                   "[Unit][PointwiseFunctions]") {
   // Test that integral converges with distance.
   // for (const double distance : std::array<double, 3>({1.e3, 1.e4, 1.e5})) {
-  for (const double distance :
-       std::array<double, 5>({1.e1, 1.e2, 1.e3, 1.e5, 1.e10})) {
-    test_center_of_mass_surface_integral(distance);
+  // for (const double distance :
+  //      std::array<double, 5>({1.e1, 1.e2, 1.e3, 1.e5, 1.e10})) {
+  for (const double distance : std::array<double, 8>(
+           {1.e1, 1.e2, 1.e3, 1.e4, 1.e5, 1.e6, 1.e7, 1.e8})) {
+    for (size_t L = 0; L <= 2; L++) {
+      for (size_t P = 2; P <= 15; P++) {
+        test_center_of_mass_surface_integral(distance, L, P);
+      }
+    }
   }
 }

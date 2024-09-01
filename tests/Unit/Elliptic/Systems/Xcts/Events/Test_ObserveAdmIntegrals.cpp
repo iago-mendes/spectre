@@ -37,6 +37,10 @@
 
 namespace {
 
+std::ofstream output_file1("Test_AdmMass.output");
+std::ofstream output_file2("Test_AdmLinearMomentum.output");
+std::ofstream output_file3("Test_CenterOfMass.output");
+
 /**
  * This functions tests the ADM integrals using a boosted Schwarzschild
  * solution in isotropic coordinates. To do this, we consider two frames:
@@ -52,7 +56,8 @@ namespace {
  * 4. Transform the barred spacetime metric into the inertial frame; and
  * 5. Decompose metric into inertial variables and compute integrals.
  */
-void test_local_adm_integrals(const double& distance, const size_t& P) {
+void test_local_adm_integrals(const double& distance, const size_t& L,
+                              const size_t& P) {
   // Define black hole parameters.
   const double mass = 1;
   const double boost_speed = 0.5;
@@ -62,6 +67,7 @@ void test_local_adm_integrals(const double& distance, const size_t& P) {
   // Get Schwarzschild solution in isotropic coordinates.
   const Xcts::Solutions::Schwarzschild solution(
       mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
+  const double horizon_radius = 0.5 * mass;
 
   // Get Lorentz boost matrix.
   // Note that `-boost_velocity` gives us a matrix in which the upper index is
@@ -70,10 +76,10 @@ void test_local_adm_integrals(const double& distance, const size_t& P) {
   const auto boost_matrix = sr::lorentz_boost_matrix(-boost_velocity);
 
   // Set up domain.
-  const size_t h_refinement = 1;
+  const size_t h_refinement = L;
   const size_t p_refinement = P;
   domain::creators::Sphere shell{
-      /* inner_radius */ 5 * mass,
+      /* inner_radius */ 2 * horizon_radius,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -334,10 +340,46 @@ void test_local_adm_integrals(const double& distance, const size_t& P) {
   // CHECK(get<1>(total_center_of_mass) == custom_approx(0.));
   // CHECK(get<2>(total_center_of_mass) == custom_approx(0.));
 
+  output_file1 << std::setprecision(16)  //
+               << distance               //
+               << ", "                   //
+               << L                      //
+               << ", "                   //
+               << P                      //
+               << ", "                   //
+               << get(total_adm_mass)    //
+               << ", "                   //
+               << lorentz_factor * mass  //
+               << std::endl;             //
+
+  output_file2 << std::setprecision(16)                      //
+               << distance                                   //
+               << ", "                                       //
+               << L                                          //
+               << ", "                                       //
+               << P                                          //
+               << ", "                                       //
+               << get(magnitude(total_adm_linear_momentum))  //
+               << ", "                                       //
+               << lorentz_factor * mass * boost_speed        //
+               << std::endl;                                 //
+
+  output_file3 << std::setprecision(16)                 //
+               << distance                              //
+               << ", "                                  //
+               << L                                     //
+               << ", "                                  //
+               << P                                     //
+               << ", "                                  //
+               << get(magnitude(total_center_of_mass))  //
+               << ", "                                  //
+               << 0.                                    //
+               << std::endl;                            //
+
   std::cout << std::setprecision(16)
             // << "  ["
-            << distance << ", " << P << ", " << get(total_adm_mass) << ", "
-            << get(magnitude(total_adm_linear_momentum))
+            << distance << ", " << L << ", " << P << ", " << get(total_adm_mass)
+            << ", " << get(magnitude(total_adm_linear_momentum))
             << ", "
             // << get(magnitude(total_center_of_mass)) / get(total_adm_mass)
             << get(magnitude(total_center_of_mass))
@@ -357,10 +399,12 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.ObserveAdmIntegrals",
   // }
 
   // Test convergence with resolution
-  for (double distance :
-       std::array<double, 5>{{1.e1, 1.e2, 1.e3, 1.e4, 1.e5}}) {
-    for (size_t P = 3; P <= 15; P++) {
-      test_local_adm_integrals(distance, P);
+  for (const double distance : std::array<double, 8>(
+           {1.e1, 1.e2, 1.e3, 1.e4, 1.e5, 1.e6, 1.e7, 1.e8})) {
+    for (size_t L = 0; L <= 2; L++) {
+      for (size_t P = 2; P <= 15; P++) {
+        test_local_adm_integrals(distance, L, P);
+      }
     }
   }
 }
