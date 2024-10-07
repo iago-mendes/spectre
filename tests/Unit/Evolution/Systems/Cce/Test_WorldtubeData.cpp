@@ -687,6 +687,7 @@ void test_reduced_spec_worldtube_buffer_updater(
       extraction_radius_in_filename
           ? BondiWorldtubeH5BufferUpdater{filename}
           : BondiWorldtubeH5BufferUpdater{filename, extraction_radius};
+  CHECK(buffer_updater.get_l_max() == file_l_max);
   auto serialized_and_deserialized_updater =
       serialize_and_deserialize(buffer_updater);
   size_t time_span_start = 0;

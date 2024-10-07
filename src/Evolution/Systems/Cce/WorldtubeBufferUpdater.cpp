@@ -85,7 +85,14 @@ void set_time_buffer_and_lmax(const gsl::not_null<DataVector*> time_buffer,
   }
 
   // Avoid compiler warning
-  size_t l_plus_one_squared = data_table_dimensions[1] / 2;
+  if (data_table_dimensions[1] % 2 != 1) {
+    ERROR("Dimensions of subfile "
+          << data.subfile_path()
+          << " are incorrect. Was expecting an odd number of columns (because "
+             "of the time), but got "
+          << data_table_dimensions[1] << " instead.");
+  }
+  size_t l_plus_one_squared = (data_table_dimensions[1] - 1) / 2;
   l_max =
       static_cast<size_t>(sqrt(static_cast<double>(l_plus_one_squared)) - 1);
 }
