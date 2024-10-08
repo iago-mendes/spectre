@@ -438,16 +438,6 @@ double BondiWorldtubeH5BufferUpdater::update_buffers_for_time(
       cce_data_file_);
 }
 
-void BondiWorldtubeH5BufferUpdater::update_buffer(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t time_span_start, const size_t time_span_end,
-    const bool is_real) const {
-  detail::update_buffer_with_modal_data(
-      buffer_to_update, read_data, computation_l_max, l_max_, time_span_start,
-      time_span_end, is_real);
-}
-
 void BondiWorldtubeH5BufferUpdater::pup(PUP::er& p) {
   p | time_buffer_;
   p | filename_;
@@ -492,16 +482,6 @@ double KleinGordonWorldtubeH5BufferUpdater::update_buffers_for_time(
       buffers, time_span_start, time_span_end, time, computation_l_max, l_max_,
       interpolator_length, buffer_depth, time_buffer_, dataset_names_,
       cce_data_file_);
-}
-
-void KleinGordonWorldtubeH5BufferUpdater::update_buffer(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t time_span_start, const size_t time_span_end) const {
-  // We assume the scalar field is real-valued
-  detail::update_buffer_with_modal_data(buffer_to_update, read_data,
-                                        computation_l_max, l_max_,
-                                        time_span_start, time_span_end, true);
 }
 
 void KleinGordonWorldtubeH5BufferUpdater::pup(PUP::er& p) {

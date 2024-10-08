@@ -347,11 +347,6 @@ class BondiWorldtubeH5BufferUpdater
   void pup(PUP::er& p) override;
 
  private:
-  void update_buffer(gsl::not_null<ComplexModalVector*> buffer_to_update,
-                     const h5::Dat& read_data, size_t computation_l_max,
-                     size_t time_span_start, size_t time_span_end,
-                     bool is_real) const;
-
   std::optional<double> extraction_radius_ = std::nullopt;
   size_t l_max_ = 0;
 
@@ -440,11 +435,6 @@ class KleinGordonWorldtubeH5BufferUpdater
   void pup(PUP::er& p) override;
 
  private:
-  // The scalar field is assumed to be real-valued.
-  void update_buffer(gsl::not_null<ComplexModalVector*> buffer_to_update,
-                     const h5::Dat& read_data, size_t computation_l_max,
-                     size_t time_span_start, size_t time_span_end) const;
-
   std::optional<double> extraction_radius_ = std::nullopt;
   size_t l_max_ = 0;
 
