@@ -18,7 +18,7 @@ namespace Xcts {
  *
  * \begin{equation}
  *   P_\text{ADM}^i = \frac{1}{8\pi}
- *                    \oint_{S_\infty} \psi^10 \Big(
+ *                    \oint_{S_\infty} \psi^{10} \Big(
  *                      K^{ij} - K \gamma^{ij}
  *                    \Big) \, dS_j.
  * \end{equation}
@@ -101,6 +101,79 @@ tnsr::I<DataVector, 3> adm_linear_momentum_volume_integrand(
     const tnsr::II<DataVector, 3>& inv_conformal_metric,
     const tnsr::Ijj<DataVector, 3>& conformal_christoffel_second_kind,
     const tnsr::i<DataVector, 3>& conformal_christoffel_contracted);
+/// @}
+
+/// @{
+/*!
+ * \brief Surface integrand for the z-component of the ADM angular momentum.
+ *
+ * We define the ADM angular momentum surface integral as (see Eq. 23 in
+ * \cite Ossokine2015yla):
+ *
+ * \begin{equation}
+ *   J_\text{ADM}^z = \frac{1}{8\pi}
+ *                    \oint_{S_\infty} \Big(
+ *                      x P^{yj} - y P^{xj}
+ *                    \Big) \, dS_j,
+ * \end{equation}
+ *
+ * where $1/(8\pi) P^{jk}$ is the result from
+ * `adm_linear_momentum_surface_integrand`.
+ *
+ * \note For consistency with `adm_angular_momentum_z_volume_integrand`, this
+ * integrand needs to be contracted with the Euclidean face normal and
+ * integrated with the Euclidean area element.
+ *
+ * \param result output pointer
+ * \param linear_momentum_surface_integrand the quantity $1/(8\pi) P^{ij}$
+ * (result of `adm_linear_momentum_surface_integrand`)
+ * \param coords the inertial coordinates $x^i$
+ */
+void adm_angular_momentum_z_surface_integrand(
+    gsl::not_null<tnsr::I<DataVector, 3>*> result,
+    const tnsr::II<DataVector, 3>& linear_momentum_surface_integrand,
+    const tnsr::I<DataVector, 3>& coords);
+
+/// Return-by-value overload
+tnsr::I<DataVector, 3> adm_angular_momentum_z_surface_integrand(
+    const tnsr::II<DataVector, 3>& linear_momentum_surface_integrand,
+    const tnsr::I<DataVector, 3>& coords);
+/// @}
+
+/// @{
+/*!
+ * \brief Volume integrand for the z-component of the ADM angular momentum.
+ *
+ * We define the ADM angular momentum volume integral as (see Eq. 23 in
+ * \cite Ossokine2015yla):
+ *
+ * \begin{equation}
+ *   J_\text{ADM}^z = - \frac{1}{8\pi}
+ *                      \int_{V_\infty} \Big(
+ *                        x G^y - y G^x
+ *                      \Big) \, dV,
+ * \end{equation}
+ *
+ * where $-1/(8\pi) G^i$ is the result from
+ * `adm_linear_momentum_volume_integrand`.
+ *
+ * \note For consistency with `adm_angular_momentum_z_surface_integrand`, this
+ * integrand needs to be integrated with the Euclidean volume element.
+ *
+ * \param result output pointer
+ * \param linear_momentum_volume_integrand the quantity $-1/(8\pi) G^i$ (result
+ * of `adm_linear_momentum_volume_integrand`)
+ * \param coords the inertial coordinates $x^i$
+ */
+void adm_angular_momentum_z_volume_integrand(
+    gsl::not_null<Scalar<DataVector>*> result,
+    const tnsr::I<DataVector, 3>& linear_momentum_volume_integrand,
+    const tnsr::I<DataVector, 3>& coords);
+
+/// Return-by-value overload
+Scalar<DataVector> adm_angular_momentum_z_volume_integrand(
+    const tnsr::I<DataVector, 3>& linear_momentum_volume_integrand,
+    const tnsr::I<DataVector, 3>& coords);
 /// @}
 
 }  // namespace Xcts

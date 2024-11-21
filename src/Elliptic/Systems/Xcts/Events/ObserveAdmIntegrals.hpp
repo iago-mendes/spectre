@@ -38,13 +38,11 @@ namespace Events {
  *
  * To get the total ADM integrals, the results need to be summed over in a
  * reduction.
- *
- * See `Xcts::adm_linear_momentum_surface_integrand` for details on the formula
- * for each integrand.
  */
 void local_adm_integrals(
     gsl::not_null<Scalar<double>*> adm_mass,
     gsl::not_null<tnsr::I<double, 3>*> adm_linear_momentum,
+    gsl::not_null<Scalar<double>*> adm_angular_momentum_z,
     gsl::not_null<tnsr::I<double, 3>*> center_of_mass,
     const Scalar<DataVector>& conformal_factor,
     const tnsr::i<DataVector, 3>& deriv_conformal_factor,
@@ -74,6 +72,7 @@ void local_adm_integrals(
  * - Number of points in the domain
  * - ADM mass
  * - ADM linear momentum
+ * - ADM angular momentum (z-component)
  * - Center of mass
  */
 template <typename ArraySectionIdTag = void>
@@ -89,6 +88,8 @@ class ObserveAdmIntegrals : public Event {
       // ADM Linear Momentum (y-component)
       Parallel::ReductionDatum<double, funcl::Plus<>>,
       // ADM Linear Momentum (z-component)
+      Parallel::ReductionDatum<double, funcl::Plus<>>,
+      // ADM Angular Momentum (z-component)
       Parallel::ReductionDatum<double, funcl::Plus<>>,
       // Center of Mass (x-component)
       Parallel::ReductionDatum<double, funcl::Plus<>, funcl::Divides<>,
@@ -115,6 +116,7 @@ class ObserveAdmIntegrals : public Event {
       "- Number of points in the domain\n"
       "- ADM mass\n"
       "- ADM linear momentum\n"
+      "- ADM angular momentum (z-component)\n"
       "- Center of mass";
 
   ObserveAdmIntegrals() = default;
@@ -179,27 +181,30 @@ class ObserveAdmIntegrals : public Event {
 
     Scalar<double> adm_mass;
     tnsr::I<double, 3> adm_linear_momentum;
+    Scalar<double> adm_angular_momentum_z;
     tnsr::I<double, 3> center_of_mass;
     local_adm_integrals(
         make_not_null(&adm_mass), make_not_null(&adm_linear_momentum),
-        make_not_null(&center_of_mass), conformal_factor,
-        deriv_conformal_factor, conformal_metric, inv_conformal_metric,
-        conformal_christoffel_second_kind, conformal_christoffel_contracted,
-        spatial_metric, inv_spatial_metric, extrinsic_curvature,
-        trace_extrinsic_curvature, inertial_coords, inv_jacobian, mesh, element,
-        conformal_face_normals);
+        make_not_null(&adm_angular_momentum_z), make_not_null(&center_of_mass),
+        conformal_factor, deriv_conformal_factor, conformal_metric,
+        inv_conformal_metric, conformal_christoffel_second_kind,
+        conformal_christoffel_contracted, spatial_metric, inv_spatial_metric,
+        extrinsic_curvature, trace_extrinsic_curvature, inertial_coords,
+        inv_jacobian, mesh, element, conformal_face_normals);
 
     // Save components of linear momentum as reduction data
     ReductionData reduction_data{
         mesh.number_of_grid_points(), get(adm_mass),
         get<0>(adm_linear_momentum),  get<1>(adm_linear_momentum),
-        get<2>(adm_linear_momentum),  get<0>(center_of_mass),
-        get<1>(center_of_mass),       get<2>(center_of_mass)};
+        get<2>(adm_linear_momentum),  get(adm_angular_momentum_z),
+        get<0>(center_of_mass),       get<1>(center_of_mass),
+        get<2>(center_of_mass)};
     std::vector<std::string> legend{
         "NumberOfPoints",      "AdmMass",
         "AdmLinearMomentum_x", "AdmLinearMomentum_y",
-        "AdmLinearMomentum_z", "CenterOfMass_x",
-        "CenterOfMass_y",      "CenterOfMass_z"};
+        "AdmLinearMomentum_z", "AdmAngularMomentum_z",
+        "CenterOfMass_x",      "CenterOfMass_y",
+        "CenterOfMass_z"};
 
     // Get information required for reduction
     auto& local_observer = *Parallel::local_branch(

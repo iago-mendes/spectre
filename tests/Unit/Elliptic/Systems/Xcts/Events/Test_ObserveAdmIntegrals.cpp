@@ -94,6 +94,8 @@ void test_local_adm_integrals(const double& distance,
   Scalar<double> total_adm_mass;
   total_adm_mass.get() = 0.;
   tnsr::I<double, 3> total_adm_linear_momentum;
+  Scalar<double> total_adm_angular_momentum_z;
+  total_adm_angular_momentum_z.get() = 0.;
   tnsr::I<double, 3> total_center_of_mass;
   for (int I = 0; I < 3; I++) {
     total_adm_linear_momentum.get(I) = 0.;
@@ -246,10 +248,12 @@ void test_local_adm_integrals(const double& distance,
     // Compute local integrals.
     Scalar<double> local_adm_mass;
     tnsr::I<double, 3> local_adm_linear_momentum;
+    Scalar<double> local_adm_angular_momentum_z;
     tnsr::I<double, 3> local_center_of_mass;
     Events::local_adm_integrals(
         make_not_null(&local_adm_mass),
         make_not_null(&local_adm_linear_momentum),
+        make_not_null(&local_adm_angular_momentum_z),
         make_not_null(&local_center_of_mass), conformal_factor,
         deriv_conformal_factor, conformal_metric, inv_conformal_metric,
         conformal_christoffel_second_kind, conformal_christoffel_contracted,
@@ -257,6 +261,7 @@ void test_local_adm_integrals(const double& distance,
         trace_extrinsic_curvature, inertial_coords, inv_jacobian, mesh,
         current_element, conformal_face_normals);
     total_adm_mass.get() += get(local_adm_mass);
+    total_adm_angular_momentum_z.get() += get(local_adm_angular_momentum_z);
     for (int I = 0; I < 3; I++) {
       total_adm_linear_momentum.get(I) += local_adm_linear_momentum.get(I);
       total_center_of_mass.get(I) += local_center_of_mass.get(I);
@@ -270,6 +275,7 @@ void test_local_adm_integrals(const double& distance,
   CHECK(get<1>(total_adm_linear_momentum) == custom_approx(0.));
   CHECK(get<2>(total_adm_linear_momentum) ==
         custom_approx(lorentz_factor * mass * boost_speed));
+  CHECK(get(total_adm_angular_momentum_z) == custom_approx(0.));
   CHECK(get<0>(total_center_of_mass) == custom_approx(0.));
   CHECK(get<1>(total_center_of_mass) == custom_approx(0.));
   CHECK(get<2>(total_center_of_mass) == custom_approx(0.));
