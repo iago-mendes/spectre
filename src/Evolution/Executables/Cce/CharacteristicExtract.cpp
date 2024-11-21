@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "DataStructures/ComplexModalVector.hpp"
 #include "Evolution/Systems/Cce/Initialize/RegisterInitializeJWithCharm.hpp"
 #include "NumericalAlgorithms/Interpolation/BarycentricRationalSpanInterpolator.hpp"
 #include "NumericalAlgorithms/Interpolation/CubicSpanInterpolator.hpp"
@@ -21,8 +22,8 @@ extern "C" void CkRegisterMainModule() {
   Parallel::charmxx::register_init_node_and_proc(
       {&Cce::register_initialize_j_with_charm<
            metavariables::evolve_ccm, metavariables::cce_boundary_component>,
-       &register_derived_classes_with_charm<
-           Cce::WorldtubeBufferUpdater<Cce::cce_metric_input_tags>>,
+       &register_derived_classes_with_charm<Cce::WorldtubeBufferUpdater<
+           Cce::cce_metric_input_tags<ComplexModalVector>>>,
        &register_derived_classes_with_charm<Cce::WorldtubeBufferUpdater<
            Cce::Tags::worldtube_boundary_tags_for_writing<
                Spectral::Swsh::Tags::SwshTransform>>>,

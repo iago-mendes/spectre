@@ -5,8 +5,10 @@
 
 #include <boost/iterator/zip_iterator.hpp>
 #include <cstddef>
+#include <type_traits>
 
 #include "DataStructures/ComplexDataVector.hpp"
+#include "DataStructures/ComplexModalVector.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
@@ -20,9 +22,9 @@
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeMetric.hpp"
 #include "Utilities/FileSystem.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/TMPL.hpp"
 
-namespace Cce {
-namespace TestHelpers {
+namespace Cce::TestHelpers {
 template <typename... Structure>
 Tensor<ComplexModalVector, Structure...> tensor_to_goldberg_coefficients(
     const Tensor<DataVector, Structure...>& nodal_data, size_t l_max) {
@@ -117,24 +119,23 @@ void create_fake_time_varying_gh_nodal_data(
          dt_spatial_metric, *phi);
 }
 
-template <typename AnalyticSolution>
-void create_fake_time_varying_modal_data(
-    const gsl::not_null<tnsr::ii<ComplexModalVector, 3>*>
-        spatial_metric_coefficients,
-    const gsl::not_null<tnsr::ii<ComplexModalVector, 3>*>
-        dt_spatial_metric_coefficients,
-    const gsl::not_null<tnsr::ii<ComplexModalVector, 3>*>
-        dr_spatial_metric_coefficients,
-    const gsl::not_null<tnsr::I<ComplexModalVector, 3>*> shift_coefficients,
-    const gsl::not_null<tnsr::I<ComplexModalVector, 3>*> dt_shift_coefficients,
-    const gsl::not_null<tnsr::I<ComplexModalVector, 3>*> dr_shift_coefficients,
-    const gsl::not_null<Scalar<ComplexModalVector>*> lapse_coefficients,
-    const gsl::not_null<Scalar<ComplexModalVector>*> dt_lapse_coefficients,
-    const gsl::not_null<Scalar<ComplexModalVector>*> dr_lapse_coefficients,
+template <typename AnalyticSolution, typename T = ComplexModalVector>
+void create_fake_time_varying_data(
+    const gsl::not_null<tnsr::ii<T, 3>*> spatial_metric_coefficients,
+    const gsl::not_null<tnsr::ii<T, 3>*> dt_spatial_metric_coefficients,
+    const gsl::not_null<tnsr::ii<T, 3>*> dr_spatial_metric_coefficients,
+    const gsl::not_null<tnsr::I<T, 3>*> shift_coefficients,
+    const gsl::not_null<tnsr::I<T, 3>*> dt_shift_coefficients,
+    const gsl::not_null<tnsr::I<T, 3>*> dr_shift_coefficients,
+    const gsl::not_null<Scalar<T>*> lapse_coefficients,
+    const gsl::not_null<Scalar<T>*> dt_lapse_coefficients,
+    const gsl::not_null<Scalar<T>*> dr_lapse_coefficients,
     const AnalyticSolution& solution, const double extraction_radius,
     const double amplitude, const double frequency, const double time,
     const size_t l_max, const bool convert_to_goldberg = true,
     const bool apply_normalization_bug = false) {
+  static_assert(std::is_same_v<T, ComplexModalVector> or
+                std::is_same_v<T, DataVector>);
   const size_t number_of_angular_points =
       Spectral::Swsh::number_of_swsh_collocation_points(l_max);
   // create the vector of collocation points that we want to interpolate to
@@ -220,66 +221,92 @@ void create_fake_time_varying_modal_data(
     }
   }
 
-  if (convert_to_goldberg) {
-    *lapse_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(lapse, l_max);
-    *dt_lapse_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dt_lapse, l_max);
-    *dr_lapse_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dr_lapse, l_max);
+  if constexpr (std::is_same_v<T, ComplexModalVector>) {
+    if (convert_to_goldberg) {
+      *lapse_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(lapse, l_max);
+      *dt_lapse_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dt_lapse, l_max);
+      *dr_lapse_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dr_lapse, l_max);
 
-    *shift_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(shift, l_max);
-    *dt_shift_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dt_shift, l_max);
-    *dr_shift_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dr_shift, l_max);
+      *shift_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(shift, l_max);
+      *dt_shift_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dt_shift, l_max);
+      *dr_shift_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dr_shift, l_max);
 
-    *spatial_metric_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(spatial_metric, l_max);
-    *dt_spatial_metric_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dt_spatial_metric, l_max);
-    *dr_spatial_metric_coefficients =
-        TestHelpers::tensor_to_goldberg_coefficients(dr_spatial_metric, l_max);
+      *spatial_metric_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(spatial_metric, l_max);
+      *dt_spatial_metric_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dt_spatial_metric,
+                                                       l_max);
+      *dr_spatial_metric_coefficients =
+          TestHelpers::tensor_to_goldberg_coefficients(dr_spatial_metric,
+                                                       l_max);
+    } else {
+      *lapse_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(lapse, l_max);
+      *dt_lapse_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dt_lapse, l_max);
+      *dr_lapse_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dr_lapse, l_max);
+
+      *shift_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(shift, l_max);
+      *dt_shift_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dt_shift, l_max);
+      *dr_shift_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dr_shift, l_max);
+
+      *spatial_metric_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(spatial_metric, l_max);
+      *dt_spatial_metric_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dt_spatial_metric,
+                                                       l_max);
+      *dr_spatial_metric_coefficients =
+          TestHelpers::tensor_to_libsharp_coefficients(dr_spatial_metric,
+                                                       l_max);
+    }
   } else {
-    *lapse_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(lapse, l_max);
-    *dt_lapse_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dt_lapse, l_max);
-    *dr_lapse_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dr_lapse, l_max);
+    get(*lapse_coefficients) = get(lapse);
+    get(*dt_lapse_coefficients) = get(dt_lapse);
+    get(*dr_lapse_coefficients) = get(dr_lapse);
 
-    *shift_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(shift, l_max);
-    *dt_shift_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dt_shift, l_max);
-    *dr_shift_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dr_shift, l_max);
+    for (size_t i = 0; i < 3; i++) {
+      shift_coefficients->get(i) = shift.get(i);
+      dt_shift_coefficients->get(i) = dt_shift.get(i);
+      dr_shift_coefficients->get(i) = dr_shift.get(i);
 
-    *spatial_metric_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(spatial_metric, l_max);
-    *dt_spatial_metric_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dt_spatial_metric, l_max);
-    *dr_spatial_metric_coefficients =
-        TestHelpers::tensor_to_libsharp_coefficients(dr_spatial_metric, l_max);
+      for (size_t j = i; j < 3; j++) {
+        spatial_metric_coefficients->get(i, j) = spatial_metric.get(i, j);
+        dt_spatial_metric_coefficients->get(i, j) = dt_spatial_metric.get(i, j);
+        dr_spatial_metric_coefficients->get(i, j) = dr_spatial_metric.get(i, j);
+      }
+    }
   }
 }
 
-template <typename AnalyticSolution>
+template <typename T = ComplexModalVector, typename AnalyticSolution>
 void write_test_file(const AnalyticSolution& solution,
                      const std::string& filename, const double target_time,
                      const double extraction_radius, const double frequency,
-                     const double amplitude, const size_t l_max) {
-  const size_t goldberg_size = square(l_max + 1);
-  tnsr::ii<ComplexModalVector, 3> spatial_metric_coefficients{goldberg_size};
-  tnsr::ii<ComplexModalVector, 3> dt_spatial_metric_coefficients{goldberg_size};
-  tnsr::ii<ComplexModalVector, 3> dr_spatial_metric_coefficients{goldberg_size};
-  tnsr::I<ComplexModalVector, 3> shift_coefficients{goldberg_size};
-  tnsr::I<ComplexModalVector, 3> dt_shift_coefficients{goldberg_size};
-  tnsr::I<ComplexModalVector, 3> dr_shift_coefficients{goldberg_size};
-  Scalar<ComplexModalVector> lapse_coefficients{goldberg_size};
-  Scalar<ComplexModalVector> dt_lapse_coefficients{goldberg_size};
-  Scalar<ComplexModalVector> dr_lapse_coefficients{goldberg_size};
+                     const double amplitude, const size_t l_max,
+                     const bool spec_format = true) {
+  const bool is_modal = std::is_same_v<T, ComplexModalVector>;
+  const size_t size =
+      is_modal ? square(l_max + 1)
+               : Spectral::Swsh::number_of_swsh_collocation_points(l_max);
+  tnsr::ii<T, 3> spatial_metric_coefficients{size};
+  tnsr::ii<T, 3> dt_spatial_metric_coefficients{size};
+  tnsr::ii<T, 3> dr_spatial_metric_coefficients{size};
+  tnsr::I<T, 3> shift_coefficients{size};
+  tnsr::I<T, 3> dt_shift_coefficients{size};
+  tnsr::I<T, 3> dr_shift_coefficients{size};
+  Scalar<T> lapse_coefficients{size};
+  Scalar<T> dt_lapse_coefficients{size};
+  Scalar<T> dr_lapse_coefficients{size};
 
   // write times to file for several steps before and after the target time
   if (file_system::check_if_file_exists(filename)) {
@@ -287,10 +314,10 @@ void write_test_file(const AnalyticSolution& solution,
   }
   // scoped to close the file
   {
-    TestHelpers::WorldtubeModeRecorder recorder{filename, l_max};
+    TestHelpers::WorldtubeModeRecorder recorder{l_max, filename};
     for (size_t t = 0; t < 30; ++t) {
-      const double time = 0.1 * t + target_time - 1.5;
-      TestHelpers::create_fake_time_varying_modal_data(
+      const double time = 0.1 * static_cast<double>(t) + target_time - 1.5;
+      TestHelpers::create_fake_time_varying_data(
           make_not_null(&spatial_metric_coefficients),
           make_not_null(&dt_spatial_metric_coefficients),
           make_not_null(&dr_spatial_metric_coefficients),
@@ -305,35 +332,34 @@ void write_test_file(const AnalyticSolution& solution,
         for (size_t j = i; j < 3; ++j) {
           recorder.append_worldtube_mode_data(
               detail::dataset_name_for_component("/g", i, j), time,
-              spatial_metric_coefficients.get(i, j), l_max);
+              spatial_metric_coefficients.get(i, j), spec_format);
           recorder.append_worldtube_mode_data(
               detail::dataset_name_for_component("/Drg", i, j), time,
-              dr_spatial_metric_coefficients.get(i, j), l_max);
+              dr_spatial_metric_coefficients.get(i, j), spec_format);
           recorder.append_worldtube_mode_data(
               detail::dataset_name_for_component("/Dtg", i, j), time,
-              dt_spatial_metric_coefficients.get(i, j), l_max);
+              dt_spatial_metric_coefficients.get(i, j), spec_format);
         }
         recorder.append_worldtube_mode_data(
             detail::dataset_name_for_component("/Shift", i), time,
-            shift_coefficients.get(i), l_max);
+            shift_coefficients.get(i), spec_format);
         recorder.append_worldtube_mode_data(
             detail::dataset_name_for_component("/DrShift", i), time,
-            dr_shift_coefficients.get(i), l_max);
+            dr_shift_coefficients.get(i), spec_format);
         recorder.append_worldtube_mode_data(
             detail::dataset_name_for_component("/DtShift", i), time,
-            dt_shift_coefficients.get(i), l_max);
+            dt_shift_coefficients.get(i), spec_format);
       }
       recorder.append_worldtube_mode_data(
           detail::dataset_name_for_component("/Lapse"), time,
-          get(lapse_coefficients), l_max);
+          get(lapse_coefficients), spec_format);
       recorder.append_worldtube_mode_data(
           detail::dataset_name_for_component("/DrLapse"), time,
-          get(dr_lapse_coefficients), l_max);
+          get(dr_lapse_coefficients), spec_format);
       recorder.append_worldtube_mode_data(
           detail::dataset_name_for_component("/DtLapse"), time,
-          get(dt_lapse_coefficients), l_max);
+          get(dt_lapse_coefficients), spec_format);
     }
   }
 }
-}  // namespace TestHelpers
-}  // namespace Cce
+}  // namespace Cce::TestHelpers

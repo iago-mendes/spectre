@@ -35,124 +35,78 @@
 extern "C" void CkRegisterMainModule(void) {}
 
 namespace {
+using metric_input_tags = Cce::cce_metric_input_tags<ComplexModalVector>;
 // from a time-varies-fastest set of buffers provided by
 // `MetricWorldtubeH5BufferUpdater` extract the set of coefficients for a
 // particular time given by `buffer_time_offset` into the `time_span` size of
 // buffer.
 void slice_buffers_to_libsharp_modes(
-    const gsl::not_null<Variables<Cce::cce_metric_input_tags>*>
-        coefficients_set,
-    const Variables<Cce::cce_metric_input_tags>& coefficients_buffers,
+    const gsl::not_null<Variables<metric_input_tags>*> coefficients_set,
+    const Variables<metric_input_tags>& coefficients_buffers,
     const size_t time_span, const size_t buffer_time_offset, const size_t l_max,
     const size_t computation_l_max) {
   SpinWeighted<ComplexModalVector, 0> spin_weighted_buffer;
+
+  const auto convert_modes = [&](const ComplexModalVector& coefficients_buffer,
+                                 const auto& libsharp_mode) {
+    if (libsharp_mode.l > l_max) {
+      Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
+          libsharp_mode, make_not_null(&spin_weighted_buffer), 0, 0.0, 0.0);
+
+    } else {
+      Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
+          libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
+          coefficients_buffer[time_span *
+                                  Spectral::Swsh::goldberg_mode_index(
+                                      l_max, libsharp_mode.l,
+                                      static_cast<int>(libsharp_mode.m)) +
+                              buffer_time_offset],
+          coefficients_buffer[time_span *
+                                  Spectral::Swsh::goldberg_mode_index(
+                                      l_max, libsharp_mode.l,
+                                      -static_cast<int>(libsharp_mode.m)) +
+                              buffer_time_offset]);
+    }
+  };
 
   for (const auto& libsharp_mode :
        Spectral::Swsh::cached_coefficients_metadata(computation_l_max)) {
     for (size_t i = 0; i < 3; ++i) {
       for (size_t j = i; j < 3; ++j) {
-        tmpl::for_each<
-            tmpl::list<Cce::Tags::detail::SpatialMetric,
-                       Cce::Tags::detail::Dr<Cce::Tags::detail::SpatialMetric>,
-                       Tags::dt<Cce::Tags::detail::SpatialMetric>>>(
-            [&i, &j, &libsharp_mode, &spin_weighted_buffer,
-             &coefficients_buffers, &coefficients_set, &l_max,
-             &computation_l_max, &time_span, &buffer_time_offset](auto tag_v) {
+        tmpl::for_each<Cce::Tags::detail::apply_derivs<
+            Cce::Tags::detail::SpatialMetric<ComplexModalVector>>>(
+            [&](auto tag_v) {
               using tag = typename decltype(tag_v)::type;
               spin_weighted_buffer.set_data_ref(
                   get<tag>(*coefficients_set).get(i, j).data(),
                   Spectral::Swsh::size_of_libsharp_coefficient_vector(
                       computation_l_max));
-              if (libsharp_mode.l > l_max) {
-                Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                    libsharp_mode, make_not_null(&spin_weighted_buffer), 0, 0.0,
-                    0.0);
 
-              } else {
-                Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                    libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
-                    get<tag>(coefficients_buffers)
-                        .get(i, j)[time_span *
-                                       Spectral::Swsh::goldberg_mode_index(
-                                           l_max, libsharp_mode.l,
-                                           static_cast<int>(libsharp_mode.m)) +
-                                   buffer_time_offset],
-                    get<tag>(coefficients_buffers)
-                        .get(i, j)[time_span *
-                                       Spectral::Swsh::goldberg_mode_index(
-                                           l_max, libsharp_mode.l,
-                                           -static_cast<int>(libsharp_mode.m)) +
-                                   buffer_time_offset]);
-              }
+              convert_modes(get<tag>(coefficients_buffers).get(i, j),
+                            libsharp_mode);
             });
       }
-      tmpl::for_each<tmpl::list<Cce::Tags::detail::Shift,
-                                Cce::Tags::detail::Dr<Cce::Tags::detail::Shift>,
-                                Tags::dt<Cce::Tags::detail::Shift>>>(
-          [&i, &libsharp_mode, &spin_weighted_buffer, &coefficients_buffers,
-           &coefficients_set, &l_max, &computation_l_max, &time_span,
-           &buffer_time_offset](auto tag_v) {
-            using tag = typename decltype(tag_v)::type;
-            spin_weighted_buffer.set_data_ref(
-                get<tag>(*coefficients_set).get(i).data(),
-                Spectral::Swsh::size_of_libsharp_coefficient_vector(
-                    computation_l_max));
+      tmpl::for_each<Cce::Tags::detail::apply_derivs<
+          Cce::Tags::detail::Shift<ComplexModalVector>>>([&](auto tag_v) {
+        using tag = typename decltype(tag_v)::type;
+        spin_weighted_buffer.set_data_ref(
+            get<tag>(*coefficients_set).get(i).data(),
+            Spectral::Swsh::size_of_libsharp_coefficient_vector(
+                computation_l_max));
 
-            if (libsharp_mode.l > l_max) {
-              Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                  libsharp_mode, make_not_null(&spin_weighted_buffer), 0, 0.0,
-                  0.0);
-
-            } else {
-              Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                  libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
-                  get<tag>(coefficients_buffers)
-                      .get(i)[time_span *
-                                  Spectral::Swsh::goldberg_mode_index(
-                                      l_max, libsharp_mode.l,
-                                      static_cast<int>(libsharp_mode.m)) +
-                              buffer_time_offset],
-                  get<tag>(coefficients_buffers)
-                      .get(i)[time_span *
-                                  Spectral::Swsh::goldberg_mode_index(
-                                      l_max, libsharp_mode.l,
-                                      -static_cast<int>(libsharp_mode.m)) +
-                              buffer_time_offset]);
-            }
-          });
+        convert_modes(get<tag>(coefficients_buffers).get(i), libsharp_mode);
+      });
     }
-    tmpl::for_each<tmpl::list<Cce::Tags::detail::Lapse,
-                              Cce::Tags::detail::Dr<Cce::Tags::detail::Lapse>,
-                              Tags::dt<Cce::Tags::detail::Lapse>>>(
-        [&libsharp_mode, &spin_weighted_buffer, &coefficients_buffers,
-         &coefficients_set, &l_max, &computation_l_max, &time_span,
-         &buffer_time_offset](auto tag_v) {
-          using tag = typename decltype(tag_v)::type;
-          spin_weighted_buffer.set_data_ref(
-              get(get<tag>(*coefficients_set)).data(),
-              Spectral::Swsh::size_of_libsharp_coefficient_vector(
-                  computation_l_max));
+    tmpl::for_each<Cce::Tags::detail::apply_derivs<
+        Cce::Tags::detail::Lapse<ComplexModalVector>>>([&](auto tag_v) {
+      using tag = typename decltype(tag_v)::type;
+      spin_weighted_buffer.set_data_ref(
+          get(get<tag>(*coefficients_set)).data(),
+          Spectral::Swsh::size_of_libsharp_coefficient_vector(
+              computation_l_max));
 
-          if (libsharp_mode.l > l_max) {
-            Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                libsharp_mode, make_not_null(&spin_weighted_buffer), 0, 0.0,
-                0.0);
-
-          } else {
-            Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-                libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
-                get(get<tag>(coefficients_buffers))
-                    [time_span * Spectral::Swsh::goldberg_mode_index(
-                                     l_max, libsharp_mode.l,
-                                     static_cast<int>(libsharp_mode.m)) +
-                     buffer_time_offset],
-                get(get<tag>(coefficients_buffers))
-                    [time_span * Spectral::Swsh::goldberg_mode_index(
-                                     l_max, libsharp_mode.l,
-                                     -static_cast<int>(libsharp_mode.m)) +
-                     buffer_time_offset]);
-          }
-        });
+      convert_modes(get(get<tag>(coefficients_buffers)), libsharp_mode);
+    });
   }
 }
 
@@ -163,7 +117,8 @@ void perform_cce_worldtube_reduction(
     const std::string& input_file, const std::string& output_file,
     const size_t buffer_depth, const size_t l_max_factor,
     const bool fix_spec_normalization = false) {
-  Cce::MetricWorldtubeH5BufferUpdater buffer_updater{input_file};
+  Cce::MetricWorldtubeH5BufferUpdater<ComplexModalVector> buffer_updater{
+      input_file};
   const size_t l_max = buffer_updater.get_l_max();
   // Perform the boundary computation to scalars at twice the input l_max to be
   // absolutely certain that there are no problems associated with aliasing.
@@ -174,8 +129,8 @@ void perform_cce_worldtube_reduction(
   const size_t size_of_buffer = square(l_max + 1) * (buffer_depth);
   const DataVector& time_buffer = buffer_updater.get_time_buffer();
 
-  Variables<Cce::cce_metric_input_tags> coefficients_buffers{size_of_buffer};
-  Variables<Cce::cce_metric_input_tags> coefficients_set{
+  Variables<metric_input_tags> coefficients_buffers{size_of_buffer};
+  Variables<metric_input_tags> coefficients_set{
       Spectral::Swsh::size_of_libsharp_coefficient_vector(computation_l_max)};
 
   Variables<Cce::Tags::characteristic_worldtube_boundary_tags<
@@ -200,39 +155,24 @@ void perform_cce_worldtube_reduction(
         time_span_end - time_span_start, i - time_span_start, l_max,
         computation_l_max);
 
-    if (not buffer_updater.has_version_history() and fix_spec_normalization) {
-      Cce::create_bondi_boundary_data_from_unnormalized_spec_modes(
-          make_not_null(&boundary_data_variables),
-          get<Cce::Tags::detail::SpatialMetric>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::SpatialMetric>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::SpatialMetric>>(
-              coefficients_set),
-          get<Cce::Tags::detail::Shift>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::Shift>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::Shift>>(
-              coefficients_set),
-          get<Cce::Tags::detail::Lapse>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::Lapse>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::Lapse>>(
-              coefficients_set),
-          buffer_updater.get_extraction_radius(), computation_l_max);
-    } else {
-      Cce::create_bondi_boundary_data(
-          make_not_null(&boundary_data_variables),
-          get<Cce::Tags::detail::SpatialMetric>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::SpatialMetric>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::SpatialMetric>>(
-              coefficients_set),
-          get<Cce::Tags::detail::Shift>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::Shift>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::Shift>>(
-              coefficients_set),
-          get<Cce::Tags::detail::Lapse>(coefficients_set),
-          get<Tags::dt<Cce::Tags::detail::Lapse>>(coefficients_set),
-          get<Cce::Tags::detail::Dr<Cce::Tags::detail::Lapse>>(
-              coefficients_set),
-          buffer_updater.get_extraction_radius(), computation_l_max);
-    }
+    const auto create_boundary_data = [&](const auto&... tags) {
+      if (not buffer_updater.has_version_history() and fix_spec_normalization) {
+        Cce::create_bondi_boundary_data_from_unnormalized_spec_modes(
+            make_not_null(&boundary_data_variables),
+            get<tmpl::type_from<std::decay_t<decltype(tags)>>>(
+                coefficients_set)...,
+            buffer_updater.get_extraction_radius(), computation_l_max);
+      } else {
+        Cce::create_bondi_boundary_data(
+            make_not_null(&boundary_data_variables),
+            get<tmpl::type_from<std::decay_t<decltype(tags)>>>(
+                coefficients_set)...,
+            buffer_updater.get_extraction_radius(), computation_l_max);
+      }
+    };
+
+    tmpl::as_pack<metric_input_tags>(create_boundary_data);
+
     // loop over the tags that we want to dump.
     tmpl::for_each<Cce::Tags::worldtube_boundary_tags_for_writing<>>(
         [&recorder, &boundary_data_variables, &computation_l_max,

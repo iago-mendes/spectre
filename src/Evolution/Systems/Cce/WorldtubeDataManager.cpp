@@ -17,6 +17,7 @@
 #include "Evolution/Systems/Cce/BoundaryData.hpp"
 #include "Evolution/Systems/Cce/SpecBoundaryData.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
+#include "Evolution/Systems/Cce/WorldtubeBufferUpdater.hpp"
 #include "NumericalAlgorithms/Interpolation/SpanInterpolator.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshCoefficients.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshTransform.hpp"
@@ -162,8 +163,7 @@ void populate_hypersurface_boundary_data(
 }  // namespace detail
 
 MetricWorldtubeDataManager::MetricWorldtubeDataManager(
-    std::unique_ptr<WorldtubeBufferUpdater<cce_metric_input_tags>>
-        buffer_updater,
+    std::unique_ptr<WorldtubeBufferUpdater<input_tags>> buffer_updater,
     const size_t l_max, const size_t buffer_depth,
     std::unique_ptr<intrp::SpanInterpolator> interpolator,
     const bool fix_spec_normalization)
@@ -174,7 +174,7 @@ MetricWorldtubeDataManager::MetricWorldtubeDataManager(
           Spectral::Swsh::size_of_libsharp_coefficient_vector(l_max)},
       buffer_depth_{buffer_depth},
       interpolator_{std::move(interpolator)} {
-  detail::initialize_buffers<cce_metric_input_tags>(
+  detail::initialize_buffers<input_tags>(
       make_not_null(&buffer_depth_), make_not_null(&coefficients_buffers_),
       buffer_updater_->get_time_buffer().size(),
       interpolator_->required_number_of_points_before_and_after(), l_max);
@@ -240,9 +240,8 @@ bool MetricWorldtubeDataManager::populate_hypersurface_boundary_data(
        Spectral::Swsh::cached_coefficients_metadata(l_max_)) {
     for (size_t i = 0; i < 3; ++i) {
       for (size_t j = i; j < 3; ++j) {
-        tmpl::for_each<tmpl::list<Tags::detail::SpatialMetric,
-                                  Tags::detail::Dr<Tags::detail::SpatialMetric>,
-                                  ::Tags::dt<Tags::detail::SpatialMetric>>>(
+        tmpl::for_each<Tags::detail::apply_derivs_t<
+            Tags::detail::SpatialMetric<ComplexModalVector>>>(
             [this, &i, &j, &libsharp_mode, &interpolate_from_column,
              &spin_weighted_buffer](auto tag_v) {
               using tag = typename decltype(tag_v)::type;
@@ -263,9 +262,8 @@ bool MetricWorldtubeDataManager::populate_hypersurface_boundary_data(
                           -static_cast<int>(libsharp_mode.m))));
             });
       }
-      tmpl::for_each<
-          tmpl::list<Tags::detail::Shift, Tags::detail::Dr<Tags::detail::Shift>,
-                     ::Tags::dt<Tags::detail::Shift>>>(
+      tmpl::for_each<Tags::detail::apply_derivs_t<
+          Tags::detail::Shift<ComplexModalVector>>>(
           [this, &i, &libsharp_mode, &interpolate_from_column,
            &spin_weighted_buffer](auto tag_v) {
             using tag = typename decltype(tag_v)::type;
@@ -287,62 +285,52 @@ bool MetricWorldtubeDataManager::populate_hypersurface_boundary_data(
           });
     }
     tmpl::for_each<
-        tmpl::list<Tags::detail::Lapse, Tags::detail::Dr<Tags::detail::Lapse>,
-                   ::Tags::dt<Tags::detail::Lapse>>>([this, &libsharp_mode,
-                                                      &interpolate_from_column,
-                                                      &spin_weighted_buffer](
-                                                         auto tag_v) {
-      using tag = typename decltype(tag_v)::type;
-      spin_weighted_buffer.set_data_ref(
-          get(get<tag>(interpolated_coefficients_)).data(),
-          Spectral::Swsh::size_of_libsharp_coefficient_vector(l_max_));
-      Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
-          libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
-          interpolate_from_column(
-              get(get<tag>(coefficients_buffers_)).data(),
-              Spectral::Swsh::goldberg_mode_index(
-                  l_max_, libsharp_mode.l, static_cast<int>(libsharp_mode.m))),
-          interpolate_from_column(get(get<tag>(coefficients_buffers_)).data(),
-                                  Spectral::Swsh::goldberg_mode_index(
-                                      l_max_, libsharp_mode.l,
-                                      -static_cast<int>(libsharp_mode.m))));
-    });
+        Tags::detail::apply_derivs_t<Tags::detail::Lapse<ComplexModalVector>>>(
+        [this, &libsharp_mode, &interpolate_from_column,
+         &spin_weighted_buffer](auto tag_v) {
+          using tag = typename decltype(tag_v)::type;
+          spin_weighted_buffer.set_data_ref(
+              get(get<tag>(interpolated_coefficients_)).data(),
+              Spectral::Swsh::size_of_libsharp_coefficient_vector(l_max_));
+          Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
+              libsharp_mode, make_not_null(&spin_weighted_buffer), 0,
+              interpolate_from_column(
+                  get(get<tag>(coefficients_buffers_)).data(),
+                  Spectral::Swsh::goldberg_mode_index(
+                      l_max_, libsharp_mode.l,
+                      static_cast<int>(libsharp_mode.m))),
+              interpolate_from_column(
+                  get(get<tag>(coefficients_buffers_)).data(),
+                  Spectral::Swsh::goldberg_mode_index(
+                      l_max_, libsharp_mode.l,
+                      -static_cast<int>(libsharp_mode.m))));
+        });
   }
+
   // At this point, we have a collection of 9 tensors of libsharp
   // coefficients. This is what the boundary data calculation utility takes
   // as an input, so we now hand off the control flow to the boundary and
   // gauge transform utility
-  if (not buffer_updater_->has_version_history() and fix_spec_normalization_) {
-    create_bondi_boundary_data_from_unnormalized_spec_modes(
-        boundary_data_variables,
-        get<Tags::detail::SpatialMetric>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::SpatialMetric>>(
-            interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::SpatialMetric>>(
-            interpolated_coefficients_),
-        get<Tags::detail::Shift>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::Shift>>(interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::Shift>>(interpolated_coefficients_),
-        get<Tags::detail::Lapse>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::Lapse>>(interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::Lapse>>(interpolated_coefficients_),
-        buffer_updater_->get_extraction_radius(), l_max_);
-  } else {
-    create_bondi_boundary_data(
-        boundary_data_variables,
-        get<Tags::detail::SpatialMetric>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::SpatialMetric>>(
-            interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::SpatialMetric>>(
-            interpolated_coefficients_),
-        get<Tags::detail::Shift>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::Shift>>(interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::Shift>>(interpolated_coefficients_),
-        get<Tags::detail::Lapse>(interpolated_coefficients_),
-        get<::Tags::dt<Tags::detail::Lapse>>(interpolated_coefficients_),
-        get<Tags::detail::Dr<Tags::detail::Lapse>>(interpolated_coefficients_),
-        buffer_updater_->get_extraction_radius(), l_max_);
-  }
+  // This relies on the ordering of tags in the `input_tags` type alias
+  const auto create_boundary_data = [&](const auto&... tags) {
+    if (not buffer_updater_->has_version_history() and
+        fix_spec_normalization_) {
+      create_bondi_boundary_data_from_unnormalized_spec_modes(
+          boundary_data_variables,
+          get<tmpl::type_from<std::decay_t<decltype(tags)>>>(
+              interpolated_coefficients_)...,
+          buffer_updater_->get_extraction_radius(), l_max_);
+    } else {
+      create_bondi_boundary_data(
+          boundary_data_variables,
+          get<tmpl::type_from<std::decay_t<decltype(tags)>>>(
+              interpolated_coefficients_)...,
+          buffer_updater_->get_extraction_radius(), l_max_);
+    }
+  };
+
+  tmpl::as_pack<input_tags>(create_boundary_data);
+
   return true;
 }
 
@@ -367,7 +355,7 @@ void MetricWorldtubeDataManager::pup(PUP::er& p) {
   p | interpolator_;
   p | fix_spec_normalization_;
   if (p.isUnpacking()) {
-    detail::set_non_pupped_members<cce_metric_input_tags>(
+    detail::set_non_pupped_members<input_tags>(
         make_not_null(&time_span_start_), make_not_null(&time_span_end_),
         make_not_null(&coefficients_buffers_),
         make_not_null(&interpolated_coefficients_), buffer_depth_,
@@ -540,7 +528,7 @@ void KleinGordonWorldtubeDataManager::pup(PUP::er& p) {
   }
 }
 
-PUP::able::PUP_ID MetricWorldtubeDataManager::my_PUP_ID = 0;
-PUP::able::PUP_ID BondiWorldtubeDataManager::my_PUP_ID = 0;
+PUP::able::PUP_ID MetricWorldtubeDataManager::my_PUP_ID = 0;       // NOLINT
+PUP::able::PUP_ID BondiWorldtubeDataManager::my_PUP_ID = 0;        // NOLINT
 PUP::able::PUP_ID KleinGordonWorldtubeDataManager::my_PUP_ID = 0;  // NOLINT
 }  // namespace Cce

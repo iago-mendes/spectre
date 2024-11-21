@@ -175,7 +175,7 @@ void compute_psi0_of_bh_on_wt(const gsl::not_null<Generator*> gen) {
   Scalar<ComplexModalVector> lapse_coefficients{libsharp_size};
   Scalar<ComplexModalVector> dt_lapse_coefficients{libsharp_size};
   Scalar<ComplexModalVector> dr_lapse_coefficients{libsharp_size};
-  TestHelpers::create_fake_time_varying_modal_data(
+  TestHelpers::create_fake_time_varying_data(
       make_not_null(&spatial_metric_coefficients),
       make_not_null(&dt_spatial_metric_coefficients),
       make_not_null(&dr_spatial_metric_coefficients),

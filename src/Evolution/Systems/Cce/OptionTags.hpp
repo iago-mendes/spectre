@@ -7,6 +7,8 @@
 #include <limits>
 #include <optional>
 
+#include "DataStructures/ComplexDataVector.hpp"
+#include "DataStructures/ComplexModalVector.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "Evolution/Systems/Cce/AnalyticBoundaryDataManager.hpp"
 #include "Evolution/Systems/Cce/AnalyticSolutions/WorldtubeData.hpp"
@@ -338,8 +340,8 @@ struct H5WorldtubeBoundaryDataManager : db::SimpleTag {
             "clearer.\n");
       }
       return std::make_unique<BondiWorldtubeDataManager>(
-          std::make_unique<BondiWorldtubeH5BufferUpdater>(filename,
-                                                          extraction_radius),
+          std::make_unique<BondiWorldtubeH5BufferUpdater<ComplexModalVector>>(
+              filename, extraction_radius),
           l_max, number_of_lookahead_times, interpolator->get_clone());
     } else {
       Parallel::printf(
@@ -351,8 +353,8 @@ struct H5WorldtubeBoundaryDataManager : db::SimpleTag {
           "details. Support for reading the Metric data format will be "
           "dropped in January 2025.\n");
       return std::make_unique<MetricWorldtubeDataManager>(
-          std::make_unique<MetricWorldtubeH5BufferUpdater>(filename,
-                                                           extraction_radius),
+          std::make_unique<MetricWorldtubeH5BufferUpdater<ComplexModalVector>>(
+              filename, extraction_radius),
           l_max, number_of_lookahead_times, interpolator->get_clone(),
           fix_spec_normalization);
     }
@@ -461,11 +463,13 @@ struct StartTimeFromFile : Tags::StartTime, db::SimpleTag {
       return *start_time;
     }
     if (is_bondi_data) {
-      BondiWorldtubeH5BufferUpdater h5_boundary_updater{filename};
+      BondiWorldtubeH5BufferUpdater<ComplexModalVector> h5_boundary_updater{
+          filename};
       const auto& time_buffer = h5_boundary_updater.get_time_buffer();
       return time_buffer[0];
     } else {
-      MetricWorldtubeH5BufferUpdater h5_boundary_updater{filename};
+      MetricWorldtubeH5BufferUpdater<ComplexModalVector> h5_boundary_updater{
+          filename};
       const auto& time_buffer = h5_boundary_updater.get_time_buffer();
       return time_buffer[0];
     }
@@ -510,11 +514,13 @@ struct EndTimeFromFile : Tags::EndTime, db::SimpleTag {
       return *end_time;
     }
     if (is_bondi_data) {
-      BondiWorldtubeH5BufferUpdater h5_boundary_updater{filename};
+      BondiWorldtubeH5BufferUpdater<ComplexModalVector> h5_boundary_updater{
+          filename};
       const auto& time_buffer = h5_boundary_updater.get_time_buffer();
       return time_buffer[time_buffer.size() - 1];
     } else {
-      MetricWorldtubeH5BufferUpdater h5_boundary_updater{filename};
+      MetricWorldtubeH5BufferUpdater<ComplexModalVector> h5_boundary_updater{
+          filename};
       const auto& time_buffer = h5_boundary_updater.get_time_buffer();
       return time_buffer[time_buffer.size() - 1];
     }

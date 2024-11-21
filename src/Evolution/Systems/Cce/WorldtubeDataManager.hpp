@@ -8,6 +8,7 @@
 #include <memory>
 #include <utility>
 
+#include "DataStructures/ComplexModalVector.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "Evolution/Systems/Cce/BoundaryData.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
@@ -114,13 +115,14 @@ class WorldtubeDataManager : public PUP::able {
 class MetricWorldtubeDataManager
     : public WorldtubeDataManager<
           Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>> {
+  using input_tags = cce_metric_input_tags<ComplexModalVector>;
+
  public:
   // charm needs an empty constructor.
   MetricWorldtubeDataManager() = default;
 
   MetricWorldtubeDataManager(
-      std::unique_ptr<WorldtubeBufferUpdater<cce_metric_input_tags>>
-          buffer_updater,
+      std::unique_ptr<WorldtubeBufferUpdater<input_tags>> buffer_updater,
       size_t l_max, size_t buffer_depth,
       std::unique_ptr<intrp::SpanInterpolator> interpolator,
       bool fix_spec_normalization);
@@ -166,8 +168,7 @@ class MetricWorldtubeDataManager
   void pup(PUP::er& p) override;  // NOLINT
 
  private:
-  std::unique_ptr<WorldtubeBufferUpdater<cce_metric_input_tags>>
-      buffer_updater_;
+  std::unique_ptr<WorldtubeBufferUpdater<input_tags>> buffer_updater_;
   // NOLINTNEXTLINE(spectre-mutable)
   mutable size_t time_span_start_ = 0;
   // NOLINTNEXTLINE(spectre-mutable)
@@ -178,11 +179,11 @@ class MetricWorldtubeDataManager
   // These buffers are just kept around to avoid allocations; they're
   // updated every time a time is requested
   // NOLINTNEXTLINE(spectre-mutable)
-  mutable Variables<cce_metric_input_tags> interpolated_coefficients_;
+  mutable Variables<input_tags> interpolated_coefficients_;
 
   // note: buffers store data in a 'time-varies-fastest' manner
   // NOLINTNEXTLINE(spectre-mutable)
-  mutable Variables<cce_metric_input_tags> coefficients_buffers_;
+  mutable Variables<input_tags> coefficients_buffers_;
 
   size_t buffer_depth_ = 0;
 
