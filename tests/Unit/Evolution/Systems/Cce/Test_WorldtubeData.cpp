@@ -380,7 +380,6 @@ void test_data_manager_with_dummy_buffer_updater(
       {value_dist(*gen), value_dist(*gen), value_dist(*gen)}};
   gr::Solutions::KerrSchild solution{mass, spin, center};
 
-
   // acceptable parameters for the fake sinusoid variation in the input
   // parameters
   const double frequency = 0.1 * value_dist(*gen);
@@ -639,8 +638,8 @@ void test_reduced_spec_worldtube_buffer_updater(
 
   // write times to file for several steps before and after the target time
   const std::string filename = extraction_radius_in_filename
-      ? "BoundaryDataH5Test_CceR0100.h5"
-      : "BoundaryDataH5Test.h5";
+                                   ? "BoundaryDataH5Test_CceR0100.h5"
+                                   : "BoundaryDataH5Test.h5";
   if (file_system::check_if_file_exists(filename)) {
     file_system::rm(filename, true);
   }
@@ -678,7 +677,8 @@ void test_reduced_spec_worldtube_buffer_updater(
                 get(get<tag>(boundary_data_variables)).data();
 
             recorder.append_modal_data<tag::type::type::spin>(
-                dataset_label_for_tag<typename tag::tag>(), time, nodal_data);
+                dataset_label_for_tag<typename tag::tag>(), time, nodal_data,
+                file_l_max);
           });
     }
   }

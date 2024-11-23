@@ -210,7 +210,7 @@ struct DumpBondiSachsOnWorldtube
 
             recorder.append_modal_data<spin>(
                 Cce::dataset_label_for_tag<typename tag::tag>(), time,
-                bondi_nodal_data);
+                bondi_nodal_data, l_max);
           });
     }
   }
