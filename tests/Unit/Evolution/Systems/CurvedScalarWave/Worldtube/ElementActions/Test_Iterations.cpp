@@ -30,9 +30,11 @@
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/ElementActions/ReceiveWorldtubeData.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/ElementActions/SendToWorldtube.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/Inboxes.hpp"
+#include "Evolution/Systems/CurvedScalarWave/Worldtube/SelfForce.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/InitializeElementFacesGridCoordinates.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/IterateAccelerationTerms.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/ReceiveElementData.hpp"
+#include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/SendAccelerationTerms.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/UpdateAcceleration.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonChare.hpp"
 #include "Framework/ActionTesting.hpp"
@@ -100,12 +102,13 @@ struct MockWorldtubeSingleton {
                   Tags::CurrentIteration, Tags::GeodesicAcceleration<Dim>,
                   CurvedScalarWave::Worldtube::Tags::ParticlePositionVelocity<
                       Dim>,
-                  dt_variables_tag>,
+                  Tags::AccelerationTerms, dt_variables_tag>,
               db::AddComputeTags<Tags::BackgroundQuantitiesCompute<Dim>>>>>,
       Parallel::PhaseActions<
           Parallel::Phase::Testing,
           tmpl::list<Actions::ReceiveElementData,
-                     Actions::IterateAccelerationTerms<Metavariables>,
+                     ::Actions::MutateApply<IterateAccelerationTerms>,
+                     Actions::SendAccelerationTerms<Metavariables>,
                      ::Actions::MutateApply<UpdateAcceleration>>>>;
   using component_being_mocked = WorldtubeSingleton<Metavariables>;
 };
@@ -264,7 +267,7 @@ void test_iterations(const size_t max_iterations) {
     ActionTesting::emplace_singleton_component_and_initialize<worldtube_chare>(
         &runner, ActionTesting::NodeId{0}, ActionTesting::LocalCoreId{0},
         {element_faces_grid_coords, dummy_time_step_id, static_cast<size_t>(0),
-         geodesic_acc, particle_pos_vel,
+         geodesic_acc, particle_pos_vel, Scalar<DataVector>{},
          MockWorldtubeSingleton<
              MockMetavariables<Dim>>::dt_variables_tag::type{}});
     ActionTesting::set_phase(make_not_null(&runner), Parallel::Phase::Testing);
@@ -335,10 +338,12 @@ void test_iterations(const size_t max_iterations) {
       // IterateAccelerationTerms
       CHECK(ActionTesting::next_action_if_ready<worldtube_chare>(
           make_not_null(&runner), 0));
+      // SendAccelerationTerms
+      CHECK(ActionTesting::next_action_if_ready<worldtube_chare>(
+          make_not_null(&runner), 0));
       // expecting data from the elements now which is not sent yet
       CHECK(not ActionTesting::next_action_if_ready<worldtube_chare>(
           make_not_null(&runner), 0));
-
       const auto& dt_psi_monopole = ActionTesting::get_databox_tag<
           worldtube_chare, Stf::Tags::StfTensor<::Tags::dt<Tags::PsiWorldtube>,
                                                 0, Dim, Frame::Inertial>>(
@@ -403,7 +408,7 @@ void test_iterations(const size_t max_iterations) {
         make_not_null(&runner), 0));
     // UpdateAcceleration should be queued now
     CHECK(ActionTesting::get_next_action_index<worldtube_chare>(runner, 0) ==
-          2);
+          3);
     // iterations should have reset for singleton
     const auto& singleton_iteration =
         ActionTesting::get_databox_tag<worldtube_chare, Tags::CurrentIteration>(

@@ -5,6 +5,7 @@
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  IterateAccelerationTerms.cpp
   UpdateAcceleration.cpp
   )
 
@@ -18,6 +19,7 @@ spectre_target_headers(
   IterateAccelerationTerms.hpp
   ObserveWorldtubeSolution.hpp
   ReceiveElementData.hpp
+  SendAccelerationTerms.hpp
   SendToElements.hpp
   UpdateAcceleration.hpp
   UpdateFunctionsOfTime.hpp
