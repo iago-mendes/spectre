@@ -787,6 +787,14 @@ struct IteratedPunctureField : db::SimpleTag {
 };
 
 /*!
+ * The acceleration terms computed by the worldtube singleton and sent to the
+ * neighboring elements used to compute the puncture field.
+ */
+struct AccelerationTerms : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+/*!
  * \brief A map that holds the grid coordinates centered on the worldtube of
  * all element faces abutting the worldtube with the corresponding ElementIds.
  */
