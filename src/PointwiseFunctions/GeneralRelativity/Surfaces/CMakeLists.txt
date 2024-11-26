@@ -19,6 +19,7 @@ spectre_target_sources(
   Spin.cpp
   SurfaceIntegralOfScalar.cpp
   SurfaceIntegralOfVector.cpp
+  SurfaceMetric.cpp
   UnitNormalOneForm.cpp
 )
 
@@ -37,6 +38,7 @@ spectre_target_headers(
   Spin.hpp
   SurfaceIntegralOfScalar.hpp
   SurfaceIntegralOfVector.hpp
+  SurfaceMetric.hpp
   Expansion.hpp
   Tags.hpp
   TagsDeclarations.hpp

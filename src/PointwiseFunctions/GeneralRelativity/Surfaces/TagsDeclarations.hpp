@@ -38,6 +38,15 @@ struct MaxRicciScalar;
 struct MaxRicciScalarCompute;
 struct MinRicciScalar;
 struct MinRicciScalarCompute;
+struct SurfaceMetric_theta_theta;
+template <typename Frame>
+struct SurfaceMetric_theta_theta_Compute;
+struct SurfaceMetric_phi_phi;
+template <typename Frame>
+struct SurfaceMetric_phi_phi_Compute;
+struct SurfaceMetric_theta_phi;
+template <typename Frame>
+struct SurfaceMetric_theta_phi_Compute;
 }  // namespace ylm::Tags
 
 namespace gr::surfaces::Tags {

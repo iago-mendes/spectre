@@ -25,6 +25,7 @@
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Spin.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/SurfaceIntegralOfScalar.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/SurfaceIntegralOfVector.hpp"
+#include "PointwiseFunctions/GeneralRelativity/Surfaces/SurfaceMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/UnitNormalOneForm.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
 #include "Utilities/ForceInline.hpp"
@@ -293,6 +294,65 @@ struct EuclideanSurfaceIntegralVectorCompute
                                    ylm::Tags::NormalOneForm<Frame>,
                                    ylm::Tags::Strahlkorper<Frame>>;
 };
+
+struct SurfaceMetric_theta_theta : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+template <typename Frame>
+struct SurfaceMetric_theta_theta_Compute : SurfaceMetric_theta_theta,
+                                           db::ComputeTag {
+  using base = SurfaceMetric_theta_theta;
+  using return_type = Scalar<DataVector>;
+  static constexpr auto function =
+      static_cast<void (*)(const gsl::not_null<Scalar<DataVector>*>,
+                           const tnsr::ii<DataVector, 3, Frame>&,
+                           const ylm::Tags::aliases::Jacobian<Frame>&)>(
+          &gr::surfaces::surface_metric_theta_theta<Frame>);
+  using argument_tags =
+      tmpl::list<gr::Tags::SpatialMetric<DataVector, 3, Frame>,
+                 ylm::Tags::Tangents<Frame>>;
+};
+
+struct SurfaceMetric_phi_phi : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+template <typename Frame>
+struct SurfaceMetric_phi_phi_Compute : SurfaceMetric_phi_phi, db::ComputeTag {
+  using base = SurfaceMetric_phi_phi;
+  using return_type = Scalar<DataVector>;
+  static constexpr auto function =
+      static_cast<void (*)(const gsl::not_null<Scalar<DataVector>*>,
+                           const tnsr::ii<DataVector, 3, Frame>&,
+                           const ylm::Tags::aliases::Jacobian<Frame>&,
+                           const ylm::Strahlkorper<Frame>&)>(
+          &gr::surfaces::surface_metric_phi_phi<Frame>);
+  using argument_tags =
+      tmpl::list<gr::Tags::SpatialMetric<DataVector, 3, Frame>,
+                 ylm::Tags::Tangents<Frame>, ylm::Tags::Strahlkorper<Frame>>;
+};
+
+struct SurfaceMetric_theta_phi : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+template <typename Frame>
+struct SurfaceMetric_theta_phi_Compute : SurfaceMetric_theta_phi,
+                                         db::ComputeTag {
+  using base = SurfaceMetric_theta_phi;
+  using return_type = Scalar<DataVector>;
+  static constexpr auto function =
+      static_cast<void (*)(const gsl::not_null<Scalar<DataVector>*>,
+                           const tnsr::ii<DataVector, 3, Frame>&,
+                           const ylm::Tags::aliases::Jacobian<Frame>&,
+                           const ylm::Strahlkorper<Frame>&)>(
+          &gr::surfaces::surface_metric_theta_phi<Frame>);
+  using argument_tags =
+      tmpl::list<gr::Tags::SpatialMetric<DataVector, 3, Frame>,
+                 ylm::Tags::Tangents<Frame>, ylm::Tags::Strahlkorper<Frame>>;
+};
+
 /// @}
 }  // namespace ylm::Tags
 

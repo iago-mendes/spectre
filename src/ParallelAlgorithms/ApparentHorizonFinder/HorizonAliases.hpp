@@ -45,7 +45,10 @@ using tags_for_observing = tmpl::list<
     gr::surfaces::Tags::DimensionfulSpinVectorCompute<Frame, Frame>
     >;
 
-using surface_tags_for_observing = tmpl::list<ylm::Tags::RicciScalar>;
+using surface_tags_for_observing =
+    tmpl::list<ylm::Tags::RicciScalar, ylm::Tags::SurfaceMetric_theta_theta,
+               ylm::Tags::SurfaceMetric_phi_phi,
+               ylm::Tags::SurfaceMetric_theta_phi>;
 
 template <size_t Dim, typename Frame>
 using compute_items_on_target = tmpl::append<
@@ -70,6 +73,9 @@ using compute_items_on_target = tmpl::append<
         ylm::Tags::EuclideanAreaElementCompute<Frame>,
         ylm::Tags::ExtrinsicCurvatureCompute<Frame>,
         ylm::Tags::RicciScalarCompute<Frame>,
+        ylm::Tags::SurfaceMetric_theta_theta_Compute<Frame>,
+        ylm::Tags::SurfaceMetric_phi_phi_Compute<Frame>,
+        ylm::Tags::SurfaceMetric_theta_phi_Compute<Frame>,
         gr::surfaces::Tags::SpinFunctionCompute<Frame>,
         gr::surfaces::Tags::DimensionfulSpinMagnitudeCompute<Frame>>,
     tags_for_observing<Frame>>;
