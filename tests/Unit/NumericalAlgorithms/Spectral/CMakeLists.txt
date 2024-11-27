@@ -32,5 +32,6 @@ target_link_libraries(
   ErrorHandling
   LinearOperators
   Spectral
+  SphericalHarmonics
   Utilities
   )
