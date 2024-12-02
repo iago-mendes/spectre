@@ -167,8 +167,9 @@ void test_iterations(const size_t max_iterations) {
 
     const auto& initial_refinements = shell.initial_refinement_levels();
     const auto& initial_extents = shell.initial_extents();
-    // unused but the tag is needed to compile
-    const double time = std::numeric_limits<double>::signaling_NaN();
+    // before self force is turned on
+    const double time = 1.;
+    const double turn_on_time = 2.;
     tuples::TaggedTuple<
         domain::Tags::Domain<Dim>,
         CurvedScalarWave::Tags::BackgroundSpacetime<gr::Solutions::KerrSchild>,
@@ -184,7 +185,7 @@ void test_iterations(const size_t max_iterations) {
                       charge,
                       std::make_optional(mass),
                       time,
-                      std::nullopt,
+                      std::make_optional(turn_on_time),
                       std::nullopt};
     ActionTesting::MockRuntimeSystem<metavars> runner{std::move(tuple_of_opts)};
     const auto element_ids = initial_element_ids(initial_refinements);
@@ -261,9 +262,8 @@ void test_iterations(const size_t max_iterations) {
     Initialization::InitializeElementFacesGridCoordinates<Dim>::apply(
         make_not_null(&element_faces_grid_coords), initial_extents,
         initial_refinements, quadrature, shell_domain, excision_sphere);
-    // we set the geodesic acceleration to zero, so the particle acceleration is
-    // just given by the self force
-    const tnsr::I<double, Dim> geodesic_acc(0.);
+    const auto geodesic_acc = make_with_random_values<tnsr::I<double, Dim>>(
+        make_not_null(&generator), pos_dist, 1);
     ActionTesting::emplace_singleton_component_and_initialize<worldtube_chare>(
         &runner, ActionTesting::NodeId{0}, ActionTesting::LocalCoreId{0},
         {element_faces_grid_coords, dummy_time_step_id, static_cast<size_t>(0),
@@ -344,32 +344,20 @@ void test_iterations(const size_t max_iterations) {
       // expecting data from the elements now which is not sent yet
       CHECK(not ActionTesting::next_action_if_ready<worldtube_chare>(
           make_not_null(&runner), 0));
-      const auto& dt_psi_monopole = ActionTesting::get_databox_tag<
-          worldtube_chare, Stf::Tags::StfTensor<::Tags::dt<Tags::PsiWorldtube>,
-                                                0, Dim, Frame::Inertial>>(
-          runner, 0);
-      const auto& psi_dipole = ActionTesting::get_databox_tag<
-          worldtube_chare,
-          Stf::Tags::StfTensor<Tags::PsiWorldtube, 1, Dim, Frame::Inertial>>(
-          runner, 0);
-      const auto& background =
-          ActionTesting::get_databox_tag<worldtube_chare,
-                                         Tags::BackgroundQuantities<Dim>>(
-              runner, 0);
-
-      const auto self_force_acc = self_force_acceleration(
-          dt_psi_monopole, psi_dipole, particle_velocity, charge, mass,
-          get<gr::Tags::InverseSpacetimeMetric<double, Dim>>(background),
-          get<Tags::TimeDilationFactor>(background));
       for (const auto& element_id : abutting_element_ids) {
         const auto& self_force_inbox =
             ActionTesting::get_inbox_tag<element_chare,
                                          Tags::SelfForceInbox<Dim>>(runner,
                                                                     element_id);
         CHECK(self_force_inbox.count(dummy_time_step_id));
+        // the self force is not turned on, so the acceleration is just geodesic
         for (size_t i = 0; i < Dim; ++i) {
           CHECK(get(self_force_inbox.at(dummy_time_step_id))[i] ==
-                self_force_acc.get(i));
+                geodesic_acc.get(i));
+        }
+        // the other terms are just zero without the self force
+        for (size_t i = 3; i < 15; ++i) {
+          CHECK(get(self_force_inbox.at(dummy_time_step_id))[i] == 0.);
         }
         const std::string inbox_output =
             Tags::SelfForceInbox<Dim>::output_inbox(self_force_inbox, 2);
