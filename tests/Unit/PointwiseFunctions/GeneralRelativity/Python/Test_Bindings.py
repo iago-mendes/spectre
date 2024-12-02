@@ -213,6 +213,20 @@ class TestBindings(unittest.TestCase):
         )
         npt.assert_allclose(t_deriv_of_spatial_metric_test, 0)
 
+    def test_tortoise_coordinates(self):
+        npt.assert_allclose(
+            tortoise_radius_from_boyer_lindquist_minus_r_plus(
+                0.55692908552214748, 1.0, 0.0
+            ),
+            0.0,
+            atol=1e-14,
+        )
+        npt.assert_allclose(
+            boyer_lindquist_radius_minus_r_plus_from_tortoise(0.0, 1.0, 0.0),
+            0.55692908552214748,
+            atol=1e-14,
+        )
+
     def test_weyl_electric(self):
         spatial_ricci = tnsr.ii[DataVector, 3](num_points=1, fill=0.0)
         extrinsic_curvature = tnsr.ii[DataVector, 3](num_points=1, fill=0.0)

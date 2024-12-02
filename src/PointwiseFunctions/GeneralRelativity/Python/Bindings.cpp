@@ -23,6 +23,7 @@
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TimeDerivativeOfSpacetimeMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TimeDerivativeOfSpatialMetric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/TortoiseCoordinates.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylElectric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylMagnetic.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylPropagating.hpp"
@@ -294,5 +295,19 @@ PYBIND11_MODULE(_Pybindings, m) {  // NOLINT
         py::arg("spatial_ricci"), py::arg("extrinsic_curvature"),
         py::arg("cov_deriv_extrinsic_curvature"), py::arg("spatial_metric"),
         py::arg("inverse_spatial_metric"), py::arg("inertial_coords"));
+  m.def("tortoise_radius_from_boyer_lindquist_minus_r_plus",
+        &::gr::tortoise_radius_from_boyer_lindquist_minus_r_plus<double>,
+        py::arg("r_minus_r_plus"), py::arg("mass"),
+        py::arg("dimensionless_spin"));
+  m.def("tortoise_radius_from_boyer_lindquist_minus_r_plus",
+        &::gr::tortoise_radius_from_boyer_lindquist_minus_r_plus<DataVector>,
+        py::arg("r_minus_r_plus"), py::arg("mass"),
+        py::arg("dimensionless_spin"));
+  m.def("boyer_lindquist_radius_minus_r_plus_from_tortoise",
+        &::gr::boyer_lindquist_radius_minus_r_plus_from_tortoise<double>,
+        py::arg("r_star"), py::arg("mass"), py::arg("dimensionless_spin"));
+  m.def("boyer_lindquist_radius_minus_r_plus_from_tortoise",
+        &::gr::boyer_lindquist_radius_minus_r_plus_from_tortoise<DataVector>,
+        py::arg("r_star"), py::arg("mass"), py::arg("dimensionless_spin"));
 }
 }  // namespace GeneralRelativity::py_bindings

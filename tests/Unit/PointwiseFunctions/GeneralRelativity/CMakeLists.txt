@@ -15,6 +15,7 @@ set(LIBRARY_SOURCES
   Test_Ricci.cpp
   Test_SpacetimeDerivativeOfGothG.cpp
   Test_Tags.cpp
+  Test_TortoiseCoordinates.cpp
   Test_WeylElectric.cpp
   Test_WeylMagnetic.cpp
   Test_WeylPropagating.cpp
