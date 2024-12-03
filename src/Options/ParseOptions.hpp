@@ -196,7 +196,8 @@ class Parser {
   /// Parse a file containing options
   ///
   /// \param file_name the path to the file to parse
-  void parse_file(const std::string& file_name);
+  /// \param require_metadata require the input file to have a metadata section
+  void parse_file(const std::string& file_name, bool require_metadata = true);
 
   /// Overlay the options from a string or file on top of the
   /// currently parsed options.
@@ -414,12 +415,13 @@ inline std::ifstream open_file(const std::string& file_name) {
 }  // namespace Options_detail
 
 template <typename OptionList, typename Group>
-void Parser<OptionList, Group>::parse_file(const std::string& file_name) {
+void Parser<OptionList, Group>::parse_file(const std::string& file_name,
+                                           const bool require_metadata) {
   context_.append("In " + file_name);
   auto input = Options_detail::open_file(file_name);
   input_source_.push_back(std::string(std::istreambuf_iterator(input), {}));
   try {
-    parse(detail::load_and_check_yaml(input_source_.back(), true));
+    parse(detail::load_and_check_yaml(input_source_.back(), require_metadata));
   } catch (const YAML::Exception& e) {
     parser_error(e);
   }
