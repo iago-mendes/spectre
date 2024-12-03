@@ -27,9 +27,10 @@ std::optional<double> get_extraction_radius(
   } catch (const std::invalid_argument&) {
     if (error) {
       ERROR(
-          "The CCE filename must encode the extraction radius as an integer "
-          "between the last instance of 'R' and the last instance of '.' "
-          "(SpEC CCE filename format). Provided filename: "
+          "Either specify an extraction radius, or the CCE worldtube filename "
+          "must encode the extraction radius as an integer between the last "
+          "instance of 'R' and the last instance of '.' (SpEC CCE filename "
+          "format). Provided filename: "
           << cce_data_filename);
     }
   }
