@@ -377,12 +377,16 @@ void test_funcs(const gsl::not_null<Generator*> generator) {
       for (size_t i = 0; i < shape_funcs.size(); i++) {
         CHECK(gsl::at(shape_funcs, i)[0] == 0.0);
       }
-      CHECK(size_funcs ==
-            std::array{DataVector{-1.0 * strahlkorpers[0].coefficients()[0] *
-                                  sqrt(0.5 * M_PI)},
-                       DataVector{-1.0 * strahlkorpers[1].coefficients()[0] *
-                                  sqrt(0.5 * M_PI)},
-                       DataVector{0.0}, DataVector{0.0}});
+      CHECK_ITERABLE_APPROX(
+          size_funcs,
+          (std::array{
+              DataVector{(inner_radius - ylm::Spherepack::average(
+                                             strahlkorpers[0].coefficients())) *
+                         2.0 * sqrt(M_PI)},
+              DataVector{(inner_radius - ylm::Spherepack::average(
+                                             strahlkorpers[1].coefficients())) *
+                         2.0 * sqrt(M_PI)},
+              DataVector{0.0}, DataVector{0.0}}));
     }
 
     if (file_system::check_if_file_exists(test_filename)) {

@@ -217,7 +217,9 @@ struct ShapeMapOptions {
     static constexpr Options::String help = {
         "Initial value and two derivatives of the 00 coefficient. Specify "
         "'Auto' to use the 00 coefficient specified in the 'InitialValues' "
-        "option."};
+        "option. If you specify 'Auto', the deformed sphere will match the "
+        "'InitialValues' surface exactly, and the original radius will only "
+        "set the radius of the sphere in the grid frame (before deformation)."};
   };
 
   struct TransitionEndsAtCube {
@@ -262,5 +264,5 @@ template <bool IncludeTransitionEndsAtCube, domain::ObjectLabel Object>
 std::pair<std::array<DataVector, 3>, std::array<DataVector, 4>>
 initial_shape_and_size_funcs(
     const ShapeMapOptions<IncludeTransitionEndsAtCube, Object>& shape_options,
-    double inner_radius);
+    double deformed_radius);
 }  // namespace domain::creators::time_dependent_options
