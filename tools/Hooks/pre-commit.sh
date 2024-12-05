@@ -9,7 +9,7 @@
 # Get list of non-deleted file names, which we need below.
 commit_files=()
 while IFS= read -r -d '' file ; do
-    if [ -f "${file}" ]; then
+    if [ -f "${file}" ] && [[ ${file} != external/*/* ]] ; then
         commit_files+=("${file}")
     fi
 done < <(@GIT_EXECUTABLE@ diff --cached --name-only -z)
