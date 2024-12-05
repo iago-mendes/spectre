@@ -14,6 +14,7 @@
 #include <type_traits>
 
 #include "DataStructures/DataVector.hpp"
+#include "Utilities/ErrorHandling/CaptureForError.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/Exceptions.hpp"
 #include "Utilities/GetOutput.hpp"
@@ -317,7 +318,7 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
   // Main entry point and logic for Toms Algorithm 748
   // root finder.
   if (UNLIKELY(simd::any(ax > bx))) {
-    throw std::domain_error("Lower bound is larger than upper bound");
+    ERROR_AS("Lower bound is larger than upper bound", std::domain_error);
   }
 
   // Sanity check - are we allowed to iterate at all?
@@ -334,6 +335,10 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
   T b = bx;
   T fa = fax;
   T fb = fbx;
+  CAPTURE_FOR_ERROR(ax);
+  CAPTURE_FOR_ERROR(bx);
+  CAPTURE_FOR_ERROR(fax);
+  CAPTURE_FOR_ERROR(fbx);
 
   const auto fa_is_zero_mask = (fa == static_cast<T>(0));
   const auto fb_is_zero_mask = (fb == static_cast<T>(0));
@@ -352,8 +357,8 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
                                        : (simd::sign(fa) * simd::sign(fb) >
                                           static_cast<T>(0))) and
                          (not fa_is_zero_mask) and (not fb_is_zero_mask)))) {
-    throw std::domain_error(
-        "Parameters lower and upper bounds do not bracket a root");
+    ERROR_AS("Parameters lower and upper bounds do not bracket a root.",
+             std::domain_error);
   }
   // dummy value for fd, e and fe:
   T fe(static_cast<T>(1e5F));
@@ -579,14 +584,13 @@ T toms748(const Function& f, const T lower_bound, const T upper_bound,
       f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound, tol,
       ignore_filter, max_iters);
   if (max_iters >= max_iterations) {
-    throw convergence_error(
-        MakeString{}
-        << std::setprecision(8) << std::scientific
-        << "toms748 reached max iterations without converging.\nAbsolute "
-           "tolerance: "
-        << absolute_tolerance << "\nRelative tolerance: " << relative_tolerance
-        << "\nResult: " << get_output(result.first) << " "
-        << get_output(result.second));
+    ERROR_AS(
+        "toms748 reached max iterations without converging.\nAbsolute "
+        "tolerance: "
+            << absolute_tolerance << "\nRelative tolerance: "
+            << relative_tolerance << "\nResult: " << get_output(result.first)
+            << " " << get_output(result.second),
+        convergence_error);
   }
   return simd::fma(static_cast<T>(0.5), (result.second - result.first),
                    result.first);
