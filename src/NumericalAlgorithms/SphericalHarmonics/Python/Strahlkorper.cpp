@@ -57,6 +57,9 @@ void bind_strahlkorper(pybind11::module& m) {  // NOLINT
       .def("point_is_contained",
            &ylm::Strahlkorper<Frame::Inertial>::point_is_contained,
            py::arg("x"))
+      .def("ylm_spherepack",
+           &ylm::Strahlkorper<Frame::Inertial>::ylm_spherepack,
+           py::return_value_policy::reference_internal)
       // NOLINTNEXTLINE(misc-redundant-expression)
       .def(py::self == py::self)
       // NOLINTNEXTLINE(misc-redundant-expression)
@@ -96,5 +99,56 @@ void bind_strahlkorper(pybind11::module& m) {  // NOLINT
       py::arg("radius"), py::arg("l_max"), py::arg("center"),
       py::arg("output_file_name"), py::arg("ordering"),
       py::arg("overwrite_file") = false);
+
+  py::class_<ylm::Strahlkorper<Frame::Distorted>>(m, "StrahlkorperDistorted")
+      .def(py::init<size_t, double, std::array<double, 3>>(), py::arg("l_max"),
+           py::arg("radius"), py::arg("center"))
+      .def(py::init<size_t, size_t, const DataVector&, std::array<double, 3>>(),
+           py::arg("l_max"), py::arg("m_max"),
+           py::arg("radius_at_collocation_points"), py::arg("center"))
+      .def(py::init<size_t, size_t,
+                    const ylm::Strahlkorper<Frame::Distorted>&>(),
+           py::arg("l_max"), py::arg("m_max"), py::arg("another_strahlkorper"))
+      .def(
+          py::init<size_t, size_t, const ModalVector&, std::array<double, 3>>(),
+          py::arg("l_max"), py::arg("m_max"), py::arg("spectral_coefficients"),
+          py::arg("center"))
+      .def_property_readonly("l_max",
+                             &ylm::Strahlkorper<Frame::Distorted>::l_max)
+      .def_property_readonly("m_max",
+                             &ylm::Strahlkorper<Frame::Distorted>::m_max)
+      .def_property_readonly(
+          "physical_extents",
+          [](const ylm::Strahlkorper<Frame::Distorted>& strahlkorper) {
+            return strahlkorper.ylm_spherepack().physical_extents();
+          })
+      .def_property_readonly(
+          "expansion_center",
+          &ylm::Strahlkorper<Frame::Distorted>::expansion_center)
+      .def_property_readonly(
+          "physical_center",
+          &ylm::Strahlkorper<Frame::Distorted>::physical_center)
+      .def_property_readonly(
+          "average_radius",
+          &ylm::Strahlkorper<Frame::Distorted>::average_radius)
+      .def("radius", &ylm::Strahlkorper<Frame::Distorted>::radius,
+           py::arg("theta"), py::arg("phi"))
+      .def("point_is_contained",
+           &ylm::Strahlkorper<Frame::Distorted>::point_is_contained,
+           py::arg("x"))
+      .def("ylm_spherepack",
+           &ylm::Strahlkorper<Frame::Distorted>::ylm_spherepack,
+           py::return_value_policy::reference_internal)
+      // NOLINTNEXTLINE(misc-redundant-expression)
+      .def(py::self == py::self)
+      // NOLINTNEXTLINE(misc-redundant-expression)
+      .def(py::self != py::self);
+  // m.def("read_surface_ylm", &ylm::read_surface_ylm<Frame::Distorted>,
+  //       py::arg("file_name"), py::arg("surface_subfile_name"),
+  //       py::arg("requested_number_of_times_from_end"));
+  m.def("read_surface_ylm_single_time_distorted",
+        &ylm::read_surface_ylm_single_time<Frame::Distorted>,
+        py::arg("file_name"), py::arg("surface_subfile_name"), py::arg("time"),
+        py::arg("relative_epsilon"), py::arg("check_frame"));
 }
 }  // namespace ylm::py_bindings
