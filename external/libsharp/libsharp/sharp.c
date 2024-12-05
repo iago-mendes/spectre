@@ -27,9 +27,6 @@
  *
  *  Copyright (C) 2006-2013 Max-Planck-Society
  *  \author Martin Reinecke \author Dag Sverre Seljebotn
- *
- *  Changes by SXS Collaboration:
- *  1. #pragma omp lines are commented out.
  */
 
 #include <math.h>
@@ -713,13 +710,13 @@ static void map2phase (sharp_job *job, int mmax, int llim, int ulim)
     }
   else
     {
-/* #pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0) */
+#pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0)
 {
     ringhelper helper;
     ringhelper_init(&helper);
     int rstride=job->ginfo->nphmax+2;
     double *ringtmp=RALLOC(double,job->ntrans*job->nmaps*rstride);
-/* #pragma omp for schedule(dynamic,1) */
+#pragma omp for schedule(dynamic,1)
     for (int ith=llim; ith<ulim; ++ith)
       {
       int dim2 = job->s_th*(ith-llim);
@@ -758,13 +755,13 @@ static void phase2map (sharp_job *job, int mmax, int llim, int ulim)
     }
   else
     {
-/* #pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0) */
+#pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0)
 {
     ringhelper helper;
     ringhelper_init(&helper);
     int rstride=job->ginfo->nphmax+2;
     double *ringtmp=RALLOC(double,job->ntrans*job->nmaps*rstride);
-/* #pragma omp for schedule(dynamic,1) */
+#pragma omp for schedule(dynamic,1)
     for (int ith=llim; ith<ulim; ++ith)
       {
       int dim2 = job->s_th*(ith-llim);
@@ -823,7 +820,7 @@ static void sharp_execute_job (sharp_job *job)
 /* map->phase where necessary */
     map2phase (job, mmax, llim, ulim);
 
-/* #pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0) */
+#pragma omp parallel if ((job->flags&SHARP_NO_OPENMP)==0)
 {
     sharp_job ljob = *job;
     ljob.opcnt=0;
@@ -831,7 +828,7 @@ static void sharp_execute_job (sharp_job *job)
     sharp_Ylmgen_init (&generator,lmax,mmax,ljob.spin);
     alloc_almtmp(&ljob,lmax);
 
-/* #pragma omp for schedule(dynamic,1) */
+#pragma omp for schedule(dynamic,1)
     for (int mi=0; mi<job->ainfo->nm; ++mi)
       {
 /* alm->alm_tmp where necessary */
@@ -846,7 +843,7 @@ static void sharp_execute_job (sharp_job *job)
     sharp_Ylmgen_destroy(&generator);
     dealloc_almtmp(&ljob);
 
-/* #pragma omp critical */
+#pragma omp critical
     job->opcnt+=ljob.opcnt;
 } /* end of parallel region */
 

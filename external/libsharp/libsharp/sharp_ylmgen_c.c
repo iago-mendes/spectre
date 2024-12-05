@@ -27,12 +27,6 @@
  *
  *  Copyright (C) 2005-2014 Max-Planck-Society
  *  Author: Martin Reinecke
- *
- *  Changes by SXS Collaboration:
- *  1. Factor m=0 iteration out of loop in `if (spin==0)` of `sharp_Ylmgen_init`
- *     in order to avoid FPE with Clang. Clang optimizes too aggressively and
- *     always evaluates the `1./gen->root[m]` in the ternary
- *     `(m==0) ? 0. : 1./gen->root[m];`.
  */
 
 #include <math.h>
@@ -76,12 +70,10 @@ void sharp_Ylmgen_init (sharp_Ylmgen_C *gen, int l_max, int m_max, int spin)
       gen->mfac[m] = gen->mfac[m-1]*sqrt((2*m+1.)/(2*m));
     gen->root = RALLOC(double,2*gen->lmax+5);
     gen->iroot = RALLOC(double,2*gen->lmax+5);
-    gen->root[0] = 0.;
-    gen->iroot[0] = 0.;
-    for (int m=1; m<2*gen->lmax+5; ++m)
+    for (int m=0; m<2*gen->lmax+5; ++m)
       {
       gen->root[m] = sqrt(m);
-      gen->iroot[m] = 1./gen->root[m];
+      gen->iroot[m] = (m==0) ? 0. : 1./gen->root[m];
       }
     }
   else

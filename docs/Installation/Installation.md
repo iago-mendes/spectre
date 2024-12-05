@@ -191,6 +191,7 @@ apt), or AppleClang 13.0.0 or later
 * BLAS & LAPACK (e.g. [OpenBLAS](http://www.openblas.net))
 * [Boost](http://www.boost.org/) 1.60.0 or later
 * [GSL](https://www.gnu.org/software/gsl/) \cite Gsl
+* [GNU make](https://www.gnu.org/software/make/)
 * [HDF5](https://support.hdfgroup.org/HDF5/) (non-mpi version on macOS)
   \cite Hdf5
 * [Python](https://www.python.org/) 3.8 or later.
