@@ -330,6 +330,104 @@ void cartesian_lapse_and_derivatives_from_modes(
   }
 }
 
+void deriv_cartesian_metric_lapse_shift_from_nodes(
+    const gsl::not_null<tnsr::ijj<DataVector, 3>*> d_cartesian_spatial_metric,
+    const gsl::not_null<tnsr::iJ<DataVector, 3>*> d_cartesian_shift,
+    const gsl::not_null<tnsr::i<DataVector, 3>*> d_cartesian_lapse,
+    const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 0>>*> buffer,
+    const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 1>>*> eth_buffer,
+    const tnsr::ii<DataVector, 3>& cartesian_spatial_metric,
+    const tnsr::ii<DataVector, 3>& dr_cartesian_spatial_metric,
+    const tnsr::I<DataVector, 3>& cartesian_shift,
+    const tnsr::I<DataVector, 3>& dr_cartesian_shift,
+    const Scalar<DataVector>& cartesian_lapse,
+    const Scalar<DataVector>& dr_cartesian_lapse,
+    const CartesianiSphericalJ& inverse_cartesian_to_spherical_jacobian,
+    const size_t l_max) {
+  const size_t size = get<0, 0>(inverse_cartesian_to_spherical_jacobian).size();
+  set_number_of_grid_points(buffer, size);
+  set_number_of_grid_points(eth_buffer, size);
+
+  set_number_of_grid_points(d_cartesian_spatial_metric, size);
+  set_number_of_grid_points(d_cartesian_shift, size);
+  set_number_of_grid_points(d_cartesian_lapse, size);
+
+  // Allocations
+  SphericaliCartesianjj spherical_d_cartesian_spatial_metric{size};
+  SphericaliCartesianJ spherical_d_cartesian_shift{size};
+  tnsr::i<DataVector, 3> spherical_d_cartesian_lapse{size};
+
+  // Radial derivative is just a copy
+  get<0>(spherical_d_cartesian_lapse) = get(dr_cartesian_lapse);
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = i; j < 3; ++j) {
+      spherical_d_cartesian_spatial_metric.get(0, i, j) =
+          dr_cartesian_spatial_metric.get(i, j);
+    }
+    spherical_d_cartesian_shift.get(0, i) = dr_cartesian_shift.get(i);
+  }
+
+  // Compute angular derivatives
+  get(*buffer) = std::complex<double>(1.0, 0.0) * get(cartesian_lapse);
+  Spectral::Swsh::angular_derivatives<tmpl::list<Spectral::Swsh::Tags::Eth>>(
+      l_max, 1, make_not_null(&get(*eth_buffer)), get(*buffer));
+  get<1>(spherical_d_cartesian_lapse) = -real(get(*eth_buffer).data());
+  get<2>(spherical_d_cartesian_lapse) = -imag(get(*eth_buffer).data());
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = i; j < 3; ++j) {
+      get(*buffer) =
+          std::complex<double>(1.0, 0.0) * cartesian_spatial_metric.get(i, j);
+      Spectral::Swsh::angular_derivatives<
+          tmpl::list<Spectral::Swsh::Tags::Eth>>(
+          l_max, 1, make_not_null(&get(*eth_buffer)), get(*buffer));
+      spherical_d_cartesian_spatial_metric.get(1, i, j) =
+          -real(get(*eth_buffer).data());
+      spherical_d_cartesian_spatial_metric.get(2, i, j) =
+          -imag(get(*eth_buffer).data());
+    }
+
+    get(*buffer) = std::complex<double>(1.0, 0.0) * cartesian_shift.get(i);
+    Spectral::Swsh::angular_derivatives<tmpl::list<Spectral::Swsh::Tags::Eth>>(
+        l_max, 1, make_not_null(&get(*eth_buffer)), get(*buffer));
+    spherical_d_cartesian_shift.get(1, i) = -real(get(*eth_buffer).data());
+    spherical_d_cartesian_shift.get(2, i) = -imag(get(*eth_buffer).data());
+  }
+
+  // Convert derivatives to cartesian form
+  for (size_t k = 0; k < 3; ++k) {
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = i; j < 3; ++j) {
+        d_cartesian_spatial_metric->get(k, i, j) =
+            inverse_cartesian_to_spherical_jacobian.get(k, 0) *
+            spherical_d_cartesian_spatial_metric.get(0, i, j);
+        for (size_t A = 0; A < 2; ++A) {
+          d_cartesian_spatial_metric->get(k, i, j) +=
+              inverse_cartesian_to_spherical_jacobian.get(k, A + 1) *
+              spherical_d_cartesian_spatial_metric.get(A + 1, i, j);
+        }
+      }
+
+      d_cartesian_shift->get(k, i) =
+          inverse_cartesian_to_spherical_jacobian.get(k, 0) *
+          spherical_d_cartesian_shift.get(0, i);
+      for (size_t A = 0; A < 2; ++A) {
+        d_cartesian_shift->get(k, i) +=
+            inverse_cartesian_to_spherical_jacobian.get(k, A + 1) *
+            spherical_d_cartesian_shift.get(A + 1, i);
+      }
+    }
+
+    d_cartesian_lapse->get(k) =
+        inverse_cartesian_to_spherical_jacobian.get(k, 0) *
+        get<0>(spherical_d_cartesian_lapse);
+    for (size_t A = 0; A < 2; ++A) {
+      d_cartesian_lapse->get(k) +=
+          inverse_cartesian_to_spherical_jacobian.get(k, A + 1) *
+          spherical_d_cartesian_lapse.get(A + 1);
+    }
+  }
+}
+
 void null_metric_and_derivative(
     const gsl::not_null<tnsr::aa<DataVector, 3, Frame::RadialNull>*>
         du_null_metric,

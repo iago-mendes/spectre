@@ -85,7 +85,7 @@ std::pair<size_t, size_t> create_span_for_time_value(
 
 // retrieves time stamps and lmax the from the specified file.
 void set_time_buffer_and_lmax(gsl::not_null<DataVector*> time_buffer,
-                              size_t& l_max, const h5::Dat& data);
+                              size_t& l_max, const h5::Dat& data, bool is_real);
 
 // retrieves modal data from Bondi or Klein-Gordon worldtube H5 file.
 void update_buffer_with_modal_data(
@@ -197,10 +197,13 @@ class MetricWorldtubeH5BufferUpdater
   /// The constructor takes the filename of the SpEC h5 file that will be used
   /// for boundary data. The extraction radius can either be passed in directly,
   /// or if it takes the value `std::nullopt`, then the extraction radius is
-  /// retrieved as an integer in the filename.
+  /// retrieved as an integer in the filename. Also the user can specify if the
+  /// H5 file was written by SpEC or not, because SpEC has some different
+  /// conventions than we use here.
   explicit MetricWorldtubeH5BufferUpdater(
       const std::string& cce_data_filename,
-      std::optional<double> extraction_radius = std::nullopt);
+      std::optional<double> extraction_radius = std::nullopt,
+      bool file_is_from_spec = true);
 
   WRAPPED_PUPable_decl_template(MetricWorldtubeH5BufferUpdater);  // NOLINT
 
@@ -257,6 +260,7 @@ class MetricWorldtubeH5BufferUpdater
 
   h5::H5File<h5::AccessType::ReadOnly> cce_data_file_;
   std::string filename_;
+  bool file_is_from_spec_ = true;
 
   tuples::tagged_tuple_from_typelist<
       db::wrap_tags_in<Tags::detail::InputDataSet, cce_metric_input_tags>>
@@ -343,11 +347,6 @@ class BondiWorldtubeH5BufferUpdater
   void pup(PUP::er& p) override;
 
  private:
-  void update_buffer(gsl::not_null<ComplexModalVector*> buffer_to_update,
-                     const h5::Dat& read_data, size_t computation_l_max,
-                     size_t time_span_start, size_t time_span_end,
-                     bool is_real) const;
-
   std::optional<double> extraction_radius_ = std::nullopt;
   size_t l_max_ = 0;
 
@@ -436,11 +435,6 @@ class KleinGordonWorldtubeH5BufferUpdater
   void pup(PUP::er& p) override;
 
  private:
-  // The scalar field is assumed to be real-valued.
-  void update_buffer(gsl::not_null<ComplexModalVector*> buffer_to_update,
-                     const h5::Dat& read_data, size_t computation_l_max,
-                     size_t time_span_start, size_t time_span_end) const;
-
   std::optional<double> extraction_radius_ = std::nullopt;
   size_t l_max_ = 0;
 

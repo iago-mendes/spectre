@@ -30,12 +30,14 @@ std::string dataset_label_for_tag();
  * Bondi modal format that the CharacteristicExtract executable can read in.
  *
  * \details Takes Bondi nodal data in `fill_data_to_write` and gives the modal
- * data as a `std::vector<double>` with the time as the 0th component.
+ * data as a `std::vector<double>` with the time as the 0th component. The \p
+ * output_l_max that this class is constructed with is the LMax that will be
+ * written to disk.
  */
 class WorldtubeModeRecorder {
  public:
   WorldtubeModeRecorder();
-  WorldtubeModeRecorder(size_t l_max, const std::string& h5_filename);
+  WorldtubeModeRecorder(size_t output_l_max, const std::string& h5_filename);
 
   /// @{
   /*!
@@ -48,13 +50,20 @@ class WorldtubeModeRecorder {
    * There are exactly half the number of modes for \p Spin = 0 quantities as
    * their are for \p Spin != 0 because we don't include imaginary or m=0 for \p
    * Spin = 0.
+   *
+   * The \p data_l_max is the LMax of the \p nodal_data or \p modal_data and
+   * must be >= \p output_l_max that this class was constructed with. A
+   * restriction operation will be performed on the data before it is written,
+   * if necessary.
    */
   template <int Spin>
   void append_modal_data(const std::string& subfile_path, double time,
-                         const ComplexDataVector& nodal_data);
+                         const ComplexDataVector& nodal_data,
+                         size_t data_l_max);
   template <int Spin>
   void append_modal_data(const std::string& subfile_path, double time,
-                         const ComplexModalVector& modal_data);
+                         const ComplexModalVector& modal_data,
+                         size_t data_l_max);
   /// @}
 
   /// @{
@@ -67,8 +76,9 @@ class WorldtubeModeRecorder {
  private:
   size_t data_to_write_size(bool is_real) const;
   std::vector<std::string> build_legend(bool is_real) const;
+  void check_data_l_max(size_t data_l_max) const;
 
-  size_t l_max_{};
+  size_t output_l_max_{};
   h5::H5File<h5::AccessType::ReadWrite> output_file_;
   std::vector<std::string> all_legend_;
   std::vector<std::string> real_legend_;

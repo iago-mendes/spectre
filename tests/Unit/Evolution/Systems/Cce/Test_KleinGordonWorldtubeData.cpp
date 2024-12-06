@@ -284,8 +284,10 @@ void test_klein_gordon_worldtube_buffer_updater(
           make_not_null(&kg_psi_nodal), make_not_null(&kg_pi_nodal),
           extraction_radius, amplitude, frequency, time, file_l_max);
 
-      recorder.append_modal_data<0>("/KGPsi", time, get(kg_psi_modal));
-      recorder.append_modal_data<0>("/dtKGPsi", time, get(kg_pi_modal));
+      recorder.append_modal_data<0>("/KGPsi", time, get(kg_psi_modal),
+                                    file_l_max);
+      recorder.append_modal_data<0>("/dtKGPsi", time, get(kg_pi_modal),
+                                    file_l_max);
     }
   }
 

@@ -27,6 +27,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
+#include "Utilities/Math.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
@@ -74,7 +75,8 @@ std::pair<size_t, size_t> create_span_for_time_value(
 }
 
 void set_time_buffer_and_lmax(const gsl::not_null<DataVector*> time_buffer,
-                              size_t& l_max, const h5::Dat& data) {
+                              size_t& l_max, const h5::Dat& data,
+                              const bool is_real) {
   const auto data_table_dimensions = data.get_dimensions();
   const Matrix time_matrix =
       data.get_data_subset(std::vector<size_t>{0}, 0, data_table_dimensions[0]);
@@ -84,8 +86,19 @@ void set_time_buffer_and_lmax(const gsl::not_null<DataVector*> time_buffer,
     (*time_buffer)[i] = time_matrix(i, 0);
   }
 
+  // If the quantitiy is real, then there's no way for us to do a check just
+  // from the number of columns alone. If not, then we expect an even number of
+  // total modes (both real and imaginary), so the number of columns should be
+  // odd with the addition of the time column
+  if (not is_real and data_table_dimensions[1] % 2 != 1) {
+    ERROR("Dimensions of subfile "
+          << data.subfile_path()
+          << " are incorrect. Was expecting an odd number of columns (because "
+             "of the time), but got "
+          << data_table_dimensions[1] << " instead.");
+  }
   // Avoid compiler warning
-  size_t l_plus_one_squared = data_table_dimensions[1] / 2;
+  const size_t l_plus_one_squared = (data_table_dimensions[1] - 1) / 2;
   l_max =
       static_cast<size_t>(sqrt(static_cast<double>(l_plus_one_squared)) - 1);
 }
@@ -103,64 +116,44 @@ void update_buffer_with_modal_data(
   }
   std::vector<size_t> cols(number_of_columns - 1);
   std::iota(cols.begin(), cols.end(), 1);
-  Matrix data_matrix = read_data.get_data_subset(
-      cols, time_span_start, time_span_end - time_span_start);
+  auto data_matrix =
+      read_data.get_data_subset<std::vector<std::vector<double>>>(
+          cols, time_span_start, time_span_end - time_span_start);
   *buffer_to_update = 0.0;
   for (size_t time_row = 0; time_row < time_span_end - time_span_start;
        ++time_row) {
     for (int l = 0; l <= static_cast<int>(std::min(computation_l_max, l_max));
          ++l) {
       for (int m = -l; m <= l; ++m) {
+        const size_t computation_goldber_index =
+            Spectral::Swsh::goldberg_mode_index(computation_l_max,
+                                                static_cast<size_t>(l), m) *
+                (time_span_end - time_span_start) +
+            time_row;
+        // NOLINTBEGIN
         if (is_real) {
           if (m == 0) {
-            (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
-                                    computation_l_max, static_cast<size_t>(l),
-                                    m) *
-                                    (time_span_end - time_span_start) +
-                                time_row] =
+            (*buffer_to_update)[computation_goldber_index] =
                 std::complex<double>(
-                    data_matrix(time_row, static_cast<size_t>(square(l))), 0.0);
-          } else if (m > 0) {
-            (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
-                                    computation_l_max, static_cast<size_t>(l),
-                                    m) *
-                                    (time_span_end - time_span_start) +
-                                time_row] =
-                std::complex<double>(
-                    data_matrix(time_row,
-                                static_cast<size_t>(square(l) + 2 * m - 1)),
-                    data_matrix(
-                        time_row,
-                        static_cast<size_t>(square(l) + 2 * m)));  // NOLINT
+                    data_matrix[time_row][static_cast<size_t>(square(l))], 0.0);
           } else {
-            (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
-                                    computation_l_max, static_cast<size_t>(l),
-                                    m) *
-                                    (time_span_end - time_span_start) +
-                                time_row] =
-                (-m % 2 == 0 ? 1.0 : -1.0) *
-                std::complex<double>(
-                    data_matrix(time_row,
-                                static_cast<size_t>(square(l) + 2 * -m - 1)),
-                    -data_matrix(
-                        time_row,
-                        static_cast<size_t>(square(l) + 2 * -m)));  // NOLINT
+            const double factor = (m > 0 or abs(m) % 2 == 0) ? 1.0 : -1.0;
+            (*buffer_to_update)[computation_goldber_index] =
+                factor * std::complex<double>(
+                             data_matrix[time_row][static_cast<size_t>(
+                                 square(l) + 2 * abs(m) - 1)],
+                             sgn(m) * data_matrix[time_row][static_cast<size_t>(
+                                          square(l) + 2 * abs(m))]);
           }
         } else {
-          (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
-                                  computation_l_max, static_cast<size_t>(l),
-                                  m) *
-                                  (time_span_end - time_span_start) +
-                              time_row] =
-              std::complex<double>(
-                  data_matrix(time_row,
-                              2 * Spectral::Swsh::goldberg_mode_index(
-                                      l_max, static_cast<size_t>(l), m)),
-                  data_matrix(time_row,
-                              2 * Spectral::Swsh::goldberg_mode_index(
-                                      l_max, static_cast<size_t>(l), m) +
-                                  1));
+          (*buffer_to_update)[computation_goldber_index] = std::complex<double>(
+              data_matrix[time_row][2 * Spectral::Swsh::goldberg_mode_index(
+                                            l_max, static_cast<size_t>(l), m)],
+              data_matrix[time_row][2 * Spectral::Swsh::goldberg_mode_index(
+                                            l_max, static_cast<size_t>(l), m) +
+                                    1]);
         }
+        // NOLINTEND
       }
     }
   }
@@ -213,8 +206,10 @@ double update_buffers_for_time(
 
 MetricWorldtubeH5BufferUpdater::MetricWorldtubeH5BufferUpdater(
     const std::string& cce_data_filename,
-    const std::optional<double> extraction_radius)
-    : cce_data_file_{cce_data_filename}, filename_{cce_data_filename} {
+    const std::optional<double> extraction_radius, const bool file_is_from_spec)
+    : cce_data_file_{cce_data_filename},
+      filename_{cce_data_filename},
+      file_is_from_spec_(file_is_from_spec) {
   get<Tags::detail::InputDataSet<Tags::detail::SpatialMetric>>(dataset_names_) =
       "/g";
   get<Tags::detail::InputDataSet<
@@ -247,7 +242,8 @@ MetricWorldtubeH5BufferUpdater::MetricWorldtubeH5BufferUpdater(
           .value();
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/Lapse"));
+                                   cce_data_file_.get<h5::Dat>("/Lapse"),
+                                   false);
   cce_data_file_.close_current_object();
 }
 
@@ -339,6 +335,7 @@ void MetricWorldtubeH5BufferUpdater::pup(PUP::er& p) {
   p | time_buffer_;
   p | has_version_history_;
   p | filename_;
+  p | file_is_from_spec_;
   p | l_max_;
   p | extraction_radius_;
   p | dataset_names_;
@@ -357,8 +354,9 @@ void MetricWorldtubeH5BufferUpdater::update_buffer(
     ERROR("Incorrect storage size for the data to be loaded in.");
   }
   auto cols = alg::iota(std::vector<size_t>(number_of_columns - 1), 1_st);
-  const Matrix data_matrix = read_data.get_data_subset(
-      cols, time_span_start, time_span_end - time_span_start);
+  const auto data_matrix =
+      read_data.get_data_subset<std::vector<std::vector<double>>>(
+          cols, time_span_start, time_span_end - time_span_start);
 
   *buffer_to_update = 0.0;
   for (size_t time_row = 0; time_row < time_span_end - time_span_start;
@@ -366,19 +364,20 @@ void MetricWorldtubeH5BufferUpdater::update_buffer(
     for (int l = 0; l <= static_cast<int>(std::min(computation_l_max, l_max_));
          ++l) {
       for (int m = -l; m <= l; ++m) {
+        // -m because SpEC format is stored in decending m.
+        const int em = file_is_from_spec_ ? -m : m;
         (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
                                 computation_l_max, static_cast<size_t>(l), m) *
                                 (time_span_end - time_span_start) +
                             time_row] =
-            // -m because SpEC format is stored in decending m.
             std::complex<double>(
-                data_matrix(time_row,
-                            2 * Spectral::Swsh::goldberg_mode_index(
-                                    l_max_, static_cast<size_t>(l), -m)),
-                data_matrix(time_row,
-                            2 * Spectral::Swsh::goldberg_mode_index(
-                                    l_max_, static_cast<size_t>(l), -m) +
-                                1));
+                data_matrix[time_row]
+                           [2 * Spectral::Swsh::goldberg_mode_index(
+                                    l_max_, static_cast<size_t>(l), em)],
+                data_matrix[time_row]
+                           [2 * Spectral::Swsh::goldberg_mode_index(
+                                    l_max_, static_cast<size_t>(l), em) +
+                            1]);
       }
     }
   }
@@ -419,7 +418,7 @@ BondiWorldtubeH5BufferUpdater::BondiWorldtubeH5BufferUpdater(
       Cce::get_extraction_radius(cce_data_filename, extraction_radius, false);
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/U"));
+                                   cce_data_file_.get<h5::Dat>("/U"), false);
   cce_data_file_.close_current_object();
 }
 
@@ -437,16 +436,6 @@ double BondiWorldtubeH5BufferUpdater::update_buffers_for_time(
       buffers, time_span_start, time_span_end, time, computation_l_max, l_max_,
       interpolator_length, buffer_depth, time_buffer_, dataset_names_,
       cce_data_file_);
-}
-
-void BondiWorldtubeH5BufferUpdater::update_buffer(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t time_span_start, const size_t time_span_end,
-    const bool is_real) const {
-  detail::update_buffer_with_modal_data(
-      buffer_to_update, read_data, computation_l_max, l_max_, time_span_start,
-      time_span_end, is_real);
 }
 
 void BondiWorldtubeH5BufferUpdater::pup(PUP::er& p) {
@@ -479,7 +468,7 @@ KleinGordonWorldtubeH5BufferUpdater::KleinGordonWorldtubeH5BufferUpdater(
       Cce::get_extraction_radius(cce_data_filename, extraction_radius, false);
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/KGPsi"));
+                                   cce_data_file_.get<h5::Dat>("/KGPsi"), true);
   cce_data_file_.close_current_object();
 }
 
@@ -493,16 +482,6 @@ double KleinGordonWorldtubeH5BufferUpdater::update_buffers_for_time(
       buffers, time_span_start, time_span_end, time, computation_l_max, l_max_,
       interpolator_length, buffer_depth, time_buffer_, dataset_names_,
       cce_data_file_);
-}
-
-void KleinGordonWorldtubeH5BufferUpdater::update_buffer(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t time_span_start, const size_t time_span_end) const {
-  // We assume the scalar field is real-valued
-  detail::update_buffer_with_modal_data(buffer_to_update, read_data,
-                                        computation_l_max, l_max_,
-                                        time_span_start, time_span_end, true);
 }
 
 void KleinGordonWorldtubeH5BufferUpdater::pup(PUP::er& p) {

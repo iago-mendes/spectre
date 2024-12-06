@@ -235,22 +235,16 @@ void perform_cce_worldtube_reduction(
     }
     // loop over the tags that we want to dump.
     tmpl::for_each<Cce::Tags::worldtube_boundary_tags_for_writing<>>(
-        [&recorder, &boundary_data_variables, &l_max, &time](auto tag_v) {
+        [&recorder, &boundary_data_variables, &computation_l_max,
+         &time](auto tag_v) {
           using tag = typename decltype(tag_v)::type;
 
           const ComplexDataVector& nodal_data =
               get(get<tag>(boundary_data_variables)).data();
-          // The goldberg format type is in strictly increasing l modes, so to
-          // reduce to a smaller l_max, we can just take the first (l_max + 1)^2
-          // values.
-          const ComplexDataVector nodal_data_view{
-              make_not_null(
-                  const_cast<ComplexDataVector&>(nodal_data).data()),  // NOLINT
-              square(l_max + 1)};
 
           recorder.append_modal_data<tag::tag::type::type::spin>(
-              Cce::dataset_label_for_tag<typename tag::tag>(), time,
-              nodal_data_view);
+              Cce::dataset_label_for_tag<typename tag::tag>(), time, nodal_data,
+              computation_l_max);
         });
   }
   Parallel::printf("\n");
