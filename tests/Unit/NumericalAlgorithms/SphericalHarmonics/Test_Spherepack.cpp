@@ -13,6 +13,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/NumericalAlgorithms/SphericalHarmonics/YlmTestFunctions.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/RealSphericalHarmonics.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/SpherepackHelper.hpp"
 #include "Utilities/Gsl.hpp"
@@ -1257,6 +1258,38 @@ void test_ylm_errors() {
           "and Spherepack instance (4)"));
 }
 
+template <size_t l, int m>
+void test_spherepack(const size_t n_r, const size_t L, const size_t M) {
+  CAPTURE(l);
+  CAPTURE(m);
+  CAPTURE(n_r);
+  CAPTURE(L);
+  CAPTURE(M);
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * M + 1},
+      {Spectral::Basis::Legendre, Spectral::Basis::SphericalHarmonic,
+       Spectral::Basis::SphericalHarmonic},
+      {Spectral::Quadrature::Gauss, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const auto x = logical_coordinates(mesh);
+  const DataVector& theta = x[1];
+  const DataVector& phi = x[2];
+  const size_t n_pts = mesh.number_of_grid_points();
+  const YlmTestFunctions::Ylm<l, m> y_lm{n_r, L, M};
+  const DataVector expected_y_lm =
+      ylm::real_spherical_harmonic(theta, phi, l, m);
+  CHECK_ITERABLE_APPROX(y_lm.f(), expected_y_lm);
+  DataVector du_dth{n_pts, -1.0};
+  DataVector du_dph{n_pts, -1.0};
+  const auto du = std::array{du_dth.data(), du_dph.data()};
+  const ylm::Spherepack spherepack{L, M};
+  spherepack.gradient_all_offsets(du, y_lm.f().data(), n_r);
+  CHECK_ITERABLE_APPROX(du_dth, y_lm.df_dth());
+  CHECK_ITERABLE_APPROX(du_dph, y_lm.df_dph());
+  DataVector u_lm{spherepack.spectral_size() * n_r};
+  spherepack.phys_to_spec_all_offsets(u_lm.data(), y_lm.f().data(), n_r);
+  CHECK_ITERABLE_APPROX(u_lm, y_lm.modes());
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.ApparentHorizonFinder.Spherepack",
@@ -1298,6 +1331,24 @@ SPECTRE_TEST_CASE("Unit.ApparentHorizonFinder.Spherepack",
   auto s_copy(s);
   CHECK(s_copy == s);
   test_move_semantics(std::move(s), s_copy, 6_st, 5_st);
+
+  for (size_t n_r = 1; n_r < 5; ++n_r) {
+    for (size_t L = 2; L < 5; ++L) {
+      for (size_t M = 2; M <= L; ++M) {
+        test_spherepack<0, 0>(n_r, L, M);
+        test_spherepack<1, 0>(n_r, L, M);
+        test_spherepack<1, 1>(n_r, L, M);
+        test_spherepack<1, -1>(n_r, L, M);
+        if (L > 2) {
+          test_spherepack<2, 0>(n_r, L, M);
+          test_spherepack<2, 1>(n_r, L, M);
+          test_spherepack<2, -1>(n_r, L, M);
+          test_spherepack<2, 2>(n_r, L, M);
+          test_spherepack<2, -2>(n_r, L, M);
+        }
+      }
+    }
+  }
 }
 
 }  // namespace ylm
