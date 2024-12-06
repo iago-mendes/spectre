@@ -846,6 +846,11 @@ decltype(auto) get_spectral_quantity_for_mesh(F&& f, const Mesh<1>& mesh) {
               "Only CellCentered and FaceCentered are supported for finite "
               "difference quadrature.");
       }
+    case Basis::SphericalHarmonic:
+      ERROR(
+          "Basis::SphericalHarmonic is a two-dimensional basis and is not "
+          "supported for this function.  If you want the collocation points, "
+          "use the function logical_coordinates.");
     default:
       ERROR("Missing basis case for spectral quantity. The missing basis is: "
             << mesh.basis(0));
