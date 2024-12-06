@@ -40,10 +40,12 @@ target_link_libraries(
   DataStructures
   ErrorHandling
   Options
+  Utilities
   PRIVATE
   BLAS::BLAS
   LAPACK::LAPACK
   RootFinding
+  SPHEREPACK
   )
 
 add_subdirectory(Python)

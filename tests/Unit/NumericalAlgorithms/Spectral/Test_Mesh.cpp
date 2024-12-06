@@ -347,17 +347,6 @@ SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Spectral.Mesh",
            .slice_through(2, 1, 1)),
       Catch::Matchers::ContainsSubstring(
           "Dimensions to slice through contain duplicates"));
-  CHECK_THROWS_WITH((Mesh<1>{2, Spectral::Basis::SphericalHarmonic,
-                             Spectral::Quadrature::GaussLobatto}),
-                    Catch::Matchers::ContainsSubstring(
-                        "SphericalHarmonic is not a valid basis for the Mesh"));
-  CHECK_THROWS_WITH(
-      (Mesh<2>{
-          {{2, 2}},
-          {{Spectral::Basis::SphericalHarmonic, Spectral::Basis::Legendre}},
-          {{Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::Gauss}}}),
-      Catch::Matchers::ContainsSubstring(
-          "SphericalHarmonic is not a valid basis for the Mesh"));
 #endif
   CHECK_THROWS_WITH(
       (TestHelpers::test_creation<Mesh<3>>("Extents: 5\n"

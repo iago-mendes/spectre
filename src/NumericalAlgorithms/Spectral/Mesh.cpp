@@ -33,8 +33,6 @@ template <size_t Dim>
 Mesh<Dim>::Mesh(const size_t isotropic_extents, const Spectral::Basis basis,
                 const Spectral::Quadrature quadrature) {
   static_assert(sizeof(Mesh<Dim>) == (Dim == 0 ? 2 : 2 * Dim));
-  ASSERT(basis != Spectral::Basis::SphericalHarmonic,
-         "SphericalHarmonic is not a valid basis for the Mesh");
   ASSERT(isotropic_extents <= 255, "Cannot have more than 255 grid points");
   extents_[0] = isotropic_extents;
   quadrature_and_basis_[0] = combine(basis, quadrature);
@@ -52,8 +50,6 @@ template <size_t Dim>
 Mesh<Dim>::Mesh(const std::array<size_t, Dim>& extents,
                 const Spectral::Basis basis,
                 const Spectral::Quadrature quadrature) {
-  ASSERT(basis != Spectral::Basis::SphericalHarmonic,
-         "SphericalHarmonic is not a valid basis for the Mesh");
   if constexpr (Dim > 0) {
     ASSERT(
         extents[0] <= 255,
@@ -86,10 +82,6 @@ template <size_t Dim>
 Mesh<Dim>::Mesh(const std::array<size_t, Dim>& extents,
                 const std::array<Spectral::Basis, Dim>& bases,
                 const std::array<Spectral::Quadrature, Dim>& quadratures) {
-  for (auto it = bases.begin(); it != bases.end(); it++) {
-    ASSERT(*it != Spectral::Basis::SphericalHarmonic,
-           "SphericalHarmonic is not a valid basis for the Mesh");
-  }
   if constexpr (Dim > 0) {
     ASSERT(
         extents[0] <= 255,

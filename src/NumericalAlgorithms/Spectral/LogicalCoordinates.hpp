@@ -37,10 +37,27 @@ struct not_null;
 /// @{
 /*!
  * \ingroup ComputationalDomainGroup
- * \brief Compute the logical coordinates in an Element.
+ * \brief Compute the logical coordinates of a Mesh in an Element.
  *
- * \details The logical coordinates are the collocation points associated to the
- * spectral basis functions and quadrature of the \p mesh.
+ * \details The logical coordinates are the collocation points
+ * associated with the Spectral::Basis and Spectral::Quadrature of the \p mesh.
+ * The Spectral::Basis determines the domain of the logical coordinates, while
+ * the Spectral::Quadrature determines their distribution.  For Legendre or
+ * Chebyshev bases, the logical coordinates are in the interval \f$[-1, 1]\f$.
+ * These bases may have either GaussLobatto or Gauss quadrature, which are not
+ * uniformly distributed, and either include (GaussLobatto) or do not include
+ * (Gauss) the end points.  For the FiniteDifference basis, the logical
+ * coordinates are again in the interval \f$[-1, 1]\f$.  This basis may have
+ * either FaceCentered or CellCentered quadrature, which are uniformly
+ * distributed, and either include (FaceCentered) or do not include
+ * (CellCentered) the end points.  The SphericalHarmonic basis corresponds to
+ * the spherical coordinates \f$(\theta, \phi)\f$ where the polar angle
+ * \f$\theta\f$ is in the interval \f$[0, \pi]\f$ and the azimuth \f$\phi\f$ is
+ * in the interval \f$[0, 2 \pi]\f$.  The polar angle has Gauss quadrature
+ * corresponding to the Legendre Gauss points of \f$\cos \theta\f$ (and thus
+ * have no points at the poles), while the azimuth has Equiangular quadrature
+ * which are distributed uniformly including the left endpoint, but not the
+ * right.
  *
  * \example
  * \snippet Test_LogicalCoordinates.cpp logical_coordinates_example
