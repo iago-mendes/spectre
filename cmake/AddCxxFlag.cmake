@@ -1,40 +1,61 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
-# Checks if a CXX flag is supported by the compiler and creates the target
+# Checks if a flag is supported by the compiler and creates the target
 # TARGET_NAME whose INTERFACE_COMPILE_OPTIONS are set to the FLAG_TO_CHECK
+# - LANGUAGE: language to check, setting the compiler and generated property
+# - XTYPE: language as passed to the -x compiler flag
 # - FLAG_TO_CHECK: the CXX flag to add if the compiler supports it
 # - TARGET_NAME: the name of the target whose INTERFACE_COMPILE_OPTIONS are
 #                set
-function(create_cxx_flag_target FLAG_TO_CHECK TARGET_NAME)
+function(create_compile_flag_target LANGUAGE XTYPE FLAG_TO_CHECK TARGET_NAME)
   # In order to check for a -Wno-* flag in gcc, you have to check the
   # -W* version instead.  See http://gcc.gnu.org/wiki/FAQ#wnowarning
   string(REGEX REPLACE ^-Wno- -W POSITIVE_FLAG_TO_CHECK ${FLAG_TO_CHECK})
   execute_process(
     COMMAND
     bash -c
-    "LC_ALL=POSIX ${CMAKE_CXX_COMPILER} -Werror ${POSITIVE_FLAG_TO_CHECK} \
--x c++ -c - <<< \"\" -o /dev/null"
+    "LC_ALL=POSIX ${CMAKE_${LANGUAGE}_COMPILER} -Werror \
+${POSITIVE_FLAG_TO_CHECK} -x ${XTYPE} -c - <<< \"\" -o /dev/null"
     RESULT_VARIABLE RESULT
     ERROR_VARIABLE ERROR_FROM_COMPILATION
     OUTPUT_QUIET)
-  add_library(${TARGET_NAME} INTERFACE)
+  if(NOT TARGET ${TARGET_NAME})
+    add_library(${TARGET_NAME} INTERFACE)
+  endif(NOT TARGET ${TARGET_NAME})
   if(${RESULT} EQUAL 0)
     set_property(TARGET ${TARGET_NAME}
       APPEND PROPERTY
-      INTERFACE_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:${FLAG_TO_CHECK}>)
+      INTERFACE_COMPILE_OPTIONS
+      $<$<COMPILE_LANGUAGE:${LANGUAGE}>:${FLAG_TO_CHECK}>)
   endif(${RESULT} EQUAL 0)
+endfunction()
+
+# Checks if a CXX flag is supported by the compiler and creates the target
+# TARGET_NAME whose INTERFACE_COMPILE_OPTIONS are set to the FLAG_TO_CHECK
+# - FLAG_TO_CHECK: the CXX flag to add if the compiler supports it
+# - TARGET_NAME: the name of the target whose INTERFACE_COMPILE_OPTIONS are
+#                set
+function(create_cxx_flag_target FLAG_TO_CHECK TARGET_NAME)
+  create_compile_flag_target(CXX c++ "${FLAG_TO_CHECK}" "${TARGET_NAME}")
+endfunction()
+
+# Same, but for C.
+function(create_c_flag_target FLAG_TO_CHECK TARGET_NAME)
+  create_compile_flag_target(C c "${FLAG_TO_CHECK}" "${TARGET_NAME}")
 endfunction()
 
 # Checks which of the CXX FLAGS_TO_CHECK are supported by the compiler
 # and creates the target TARGET_NAME whose INTERFACE_COMPILE_OPTIONS
 # are set to the FLAGS_TO_CHECK that are supported. If adding many flags,
 # this will be much faster than calling create_cxx_flags_target multiple times.
+# - LANGUAGE: language to check, setting the compiler and generated property
+# - XTYPE: language as passed to the -x compiler flag
 # - FLAGS_TO_CHECK: a semicolon separated string of CXX flags to try to add
 #                   for compilation.
 # - TARGET_NAME: the name of the target whose INTERFACE_COMPILE_OPTIONS are
 #                set
-function(create_cxx_flags_target FLAGS_TO_CHECK TARGET_NAME)
+function(create_compile_flags_target LANGUAGE XTYPE FLAGS_TO_CHECK TARGET_NAME)
   # In order to check for a -Wno-* flag in gcc, you have to check the
   # -W* version instead.  See http://gcc.gnu.org/wiki/FAQ#wnowarning
   set(POSITIVE_FLAGS_TO_CHECK)
@@ -47,17 +68,20 @@ function(create_cxx_flags_target FLAGS_TO_CHECK TARGET_NAME)
   execute_process(
     COMMAND
     bash -c
-    "LC_ALL=POSIX ${CMAKE_CXX_COMPILER} -Werror ${POSITIVE_FLAGS_WITH_SPACES} \
--x c++ -c - <<< \"\" -o /dev/null"
+    "LC_ALL=POSIX ${CMAKE_${LANGUAGE}_COMPILER} -Werror \
+${POSITIVE_FLAGS_WITH_SPACES} -x ${XTYPE} -c - <<< \"\" -o /dev/null"
     RESULT_VARIABLE RESULT
     ERROR_VARIABLE ERROR_FROM_COMPILATION
     OUTPUT_QUIET)
 
-  add_library(${TARGET_NAME} INTERFACE)
+  if(NOT TARGET ${TARGET_NAME})
+    add_library(${TARGET_NAME} INTERFACE)
+  endif(NOT TARGET ${TARGET_NAME})
   if(${RESULT} EQUAL 0)
     set_property(TARGET ${TARGET_NAME}
       APPEND PROPERTY
-      INTERFACE_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:${FLAGS_TO_CHECK}>)
+      INTERFACE_COMPILE_OPTIONS
+      $<$<COMPILE_LANGUAGE:${LANGUAGE}>:${FLAGS_TO_CHECK}>)
   else(${RESULT} EQUAL 0)
     # Check each flag to see if it was marked as "invalid" in the output
     unset(FLAGS_TO_ADD)
@@ -96,9 +120,27 @@ function(create_cxx_flags_target FLAGS_TO_CHECK TARGET_NAME)
     endforeach(FLAG ${FLAGS_TO_CHECK})
     set_property(TARGET ${TARGET_NAME}
       APPEND PROPERTY
-      INTERFACE_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:${FLAGS_TO_ADD}>)
+      INTERFACE_COMPILE_OPTIONS
+      $<$<COMPILE_LANGUAGE:${LANGUAGE}>:${FLAGS_TO_ADD}>)
 
   endif(${RESULT} EQUAL 0)
+endfunction()
+
+# Checks which of the CXX FLAGS_TO_CHECK are supported by the compiler
+# and creates the target TARGET_NAME whose INTERFACE_COMPILE_OPTIONS
+# are set to the FLAGS_TO_CHECK that are supported. If adding many flags,
+# this will be much faster than calling create_cxx_flags_target multiple times.
+# - FLAGS_TO_CHECK: a semicolon separated string of CXX flags to try to add
+#                   for compilation.
+# - TARGET_NAME: the name of the target whose INTERFACE_COMPILE_OPTIONS are
+#                set
+function(create_cxx_flags_target FLAGS_TO_CHECK TARGET_NAME)
+  create_compile_flags_target(CXX c++ "${FLAGS_TO_CHECK}" "${TARGET_NAME}")
+endfunction()
+
+# Same, but for C.
+function(create_c_flags_target FLAGS_TO_CHECK TARGET_NAME)
+  create_compile_flags_target(C c "${FLAGS_TO_CHECK}" "${TARGET_NAME}")
 endfunction()
 
 set(CMAKE_SUPPORTS_LINK_OPTIONS OFF)

@@ -153,6 +153,10 @@ set_property(TARGET SpectreFlags
 #     floating point exceptions are ignored.
 # -fnon-call-exceptions - By default, GCC does not allow signal handlers to
 #     throw exceptions.
+create_c_flags_target(
+  "-ffp-exception-behavior=maytrap;-fnon-call-exceptions"
+  SpectreFpExceptions
+  )
 create_cxx_flags_target(
   "-ffp-exception-behavior=maytrap;-fnon-call-exceptions"
   SpectreFpExceptions
