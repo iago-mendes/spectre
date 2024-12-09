@@ -195,12 +195,12 @@ EvolutionSystem:
       TimeDependentTripleGaussian:
         Constant: {{ Gamma0Constant }}
         Gaussian1:
-          Amplitude: {{ Gamma0LeftAmplitude }}
-          Width: {{ Gamma0LeftWidth }}
+          Amplitude: {{ Gamma0RightAmplitude }}
+          Width: {{ Gamma0RightWidth }}
           Center: [*XCoordA, *YOffset, *ZOffset]
         Gaussian2:
-          Amplitude: {{ Gamma0RightAmplitude }}
-          Width:  {{ Gamma0RightWidth }}
+          Amplitude: {{ Gamma0LeftAmplitude }}
+          Width:  {{ Gamma0LeftWidth }}
           Center: [*XCoordB, *YOffset, *ZOffset]
         Gaussian3:
           Amplitude: {{ Gamma0OriginAmplitude }}
