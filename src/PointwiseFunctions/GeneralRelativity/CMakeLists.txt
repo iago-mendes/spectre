@@ -29,6 +29,7 @@ spectre_target_sources(
   SpatialMetric.cpp
   TimeDerivativeOfSpacetimeMetric.cpp
   TimeDerivativeOfSpatialMetric.cpp
+  TortoiseCoordinates.cpp
   WeylElectric.cpp
   WeylMagnetic.cpp
   WeylPropagating.cpp
@@ -63,6 +64,7 @@ spectre_target_headers(
   TagsDeclarations.hpp
   TimeDerivativeOfSpacetimeMetric.hpp
   TimeDerivativeOfSpatialMetric.hpp
+  TortoiseCoordinates.hpp
   WeylElectric.hpp
   WeylMagnetic.hpp
   WeylPropagating.hpp
@@ -75,6 +77,8 @@ target_link_libraries(
   DataStructures
   Domain
   Utilities
+  PRIVATE
+  RootFinding
   INTERFACE
   ErrorHandling
   )
