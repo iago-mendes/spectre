@@ -59,7 +59,7 @@ template <bool IncludeTransitionEndsAtCube, domain::ObjectLabel Object>
 std::pair<std::array<DataVector, 3>, std::array<DataVector, 4>>
 initial_shape_and_size_funcs(
     const ShapeMapOptions<IncludeTransitionEndsAtCube, Object>& shape_options,
-    const double inner_radius) {
+    const double deformed_radius) {
   const DataVector shape_zeros{
       ylm::Spherepack::spectral_size(shape_options.l_max, shape_options.l_max),
       0.0};
@@ -76,9 +76,9 @@ initial_shape_and_size_funcs(
       const auto& mass_and_spin = std::get<KerrSchildFromBoyerLindquist>(
           shape_options.initial_values.value());
       const DataVector radial_distortion =
-          inner_radius -
+          deformed_radius -
           get(gr::Solutions::kerr_schild_radius_from_boyer_lindquist(
-              inner_radius, ylm.theta_phi_points(), mass_and_spin.mass,
+              deformed_radius, ylm.theta_phi_points(), mass_and_spin.mass,
               mass_and_spin.spin));
       shape_funcs[0] = ylm.phys_to_spec(radial_distortion);
       // Transform from SPHEREPACK to actual Ylm for size func
@@ -115,7 +115,11 @@ initial_shape_and_size_funcs(
                        this_strahlkorper.ylm_spherepack());
         // Transform from SPHEREPACK to actual Ylm for size func
         gsl::at(size_funcs, i)[0] =
-            gsl::at(shape_funcs, i)[0] * sqrt(0.5 * M_PI);
+            gsl::at(shape_funcs, i)[0] * sqrt(0.5 * M_PI) +
+            // Account for the size of the original sphere, since the shape/size
+            // coefficients are deformations from the original sphere.
+            // The factor 2 sqrt(pi) is 1/Y_00.
+            deformed_radius * 2.0 * sqrt(M_PI);
         // Set l=0 for shape map to 0 because size control will adjust l=0
         gsl::at(shape_funcs, i)[0] = 0.0;
         if (set_l1_coefs_to_zero) {
@@ -259,7 +263,7 @@ initial_shape_and_size_funcs(
   initial_shape_and_size_funcs<INCLUDETRANSITION(data), OBJECT(data)>(     \
       const ShapeMapOptions<INCLUDETRANSITION(data), OBJECT(data)>&        \
           shape_options,                                                   \
-      double inner_radius);
+      double deformed_radius);
 
 GENERATE_INSTANTIATIONS(INSTANTIATE, (true, false),
                         (domain::ObjectLabel::A, domain::ObjectLabel::B,
