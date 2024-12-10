@@ -13,6 +13,8 @@
 #include "DataStructures/Variables.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Spectral.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/SpherepackCache.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/Blas.hpp"
 #include "Utilities/ContainerHelpers.hpp"
@@ -321,44 +323,76 @@ struct LogicalImpl<3, VariableTags, DerivativeTags> {
       Variables<T>* const partial_u_wrt_eta_or_zeta,
       Variables<DerivativeTags>* const u_eta_or_zeta_fastest,
       const Variables<VariableTags>& u, const Mesh<3>& mesh) {
-    static_assert(
-        Variables<DerivativeTags>::number_of_independent_components <=
-            Variables<T>::number_of_independent_components,
-        "Temporary buffer in logical partial derivatives is too small");
+    if (mesh.basis(1) == Spectral::Basis::SphericalHarmonic) {
+      if constexpr (std::is_same_v<ValueType, double>) {
+        spherical_apply(logical_du, u, mesh);
+      } else {
+        ERROR(
+            "Support for complex numbers with spherical harmonics is not yet "
+            "implemented for logical_partial_derivative.");
+      }
+    } else {
+      static_assert(
+          Variables<DerivativeTags>::number_of_independent_components <=
+              Variables<T>::number_of_independent_components,
+          "Temporary buffer in logical partial derivatives is too small");
+      auto& logical_partial_derivatives_of_u = *logical_du;
+      const Matrix& differentiation_matrix_xi =
+          Spectral::differentiation_matrix(mesh.slice_through(0));
+      const size_t deriv_size =
+          Variables<DerivativeTags>::number_of_independent_components *
+          u.number_of_grid_points();
+      const size_t num_components_times_xi_slices =
+          deriv_size / mesh.extents(0);
+      apply_matrix_in_first_dim(logical_partial_derivatives_of_u[0], u.data(),
+                                differentiation_matrix_xi, deriv_size);
+      transpose<Variables<VariableTags>, Variables<DerivativeTags>>(
+          make_not_null(u_eta_or_zeta_fastest), u, mesh.extents(0),
+          num_components_times_xi_slices);
+      const Matrix& differentiation_matrix_eta =
+          Spectral::differentiation_matrix(mesh.slice_through(1));
+      apply_matrix_in_first_dim(partial_u_wrt_eta_or_zeta->data(),
+                                u_eta_or_zeta_fastest->data(),
+                                differentiation_matrix_eta, deriv_size);
+      raw_transpose(make_not_null(logical_partial_derivatives_of_u[1]),
+                    partial_u_wrt_eta_or_zeta->data(),
+                    num_components_times_xi_slices, mesh.extents(0));
+
+      const size_t chunk_size = mesh.extents(0) * mesh.extents(1);
+      const size_t number_of_chunks = deriv_size / chunk_size;
+      transpose(make_not_null(u_eta_or_zeta_fastest), u, chunk_size,
+                number_of_chunks);
+      const Matrix& differentiation_matrix_zeta =
+          Spectral::differentiation_matrix(mesh.slice_through(2));
+      apply_matrix_in_first_dim(partial_u_wrt_eta_or_zeta->data(),
+                                u_eta_or_zeta_fastest->data(),
+                                differentiation_matrix_zeta, deriv_size);
+      raw_transpose(make_not_null(logical_partial_derivatives_of_u[2]),
+                    partial_u_wrt_eta_or_zeta->data(), number_of_chunks,
+                    chunk_size);
+    }
+  }
+
+  static void spherical_apply(
+      const gsl::not_null<std::array<double*, Dim>*> logical_du,
+      const Variables<VariableTags>& u, const Mesh<3>& mesh) {
     auto& logical_partial_derivatives_of_u = *logical_du;
     const Matrix& differentiation_matrix_xi =
         Spectral::differentiation_matrix(mesh.slice_through(0));
     const size_t deriv_size =
         Variables<DerivativeTags>::number_of_independent_components *
         u.number_of_grid_points();
-    const size_t num_components_times_xi_slices = deriv_size / mesh.extents(0);
     apply_matrix_in_first_dim(logical_partial_derivatives_of_u[0], u.data(),
                               differentiation_matrix_xi, deriv_size);
-
-    transpose<Variables<VariableTags>, Variables<DerivativeTags>>(
-        make_not_null(u_eta_or_zeta_fastest), u, mesh.extents(0),
-        num_components_times_xi_slices);
-    const Matrix& differentiation_matrix_eta =
-        Spectral::differentiation_matrix(mesh.slice_through(1));
-    apply_matrix_in_first_dim(partial_u_wrt_eta_or_zeta->data(),
-                              u_eta_or_zeta_fastest->data(),
-                              differentiation_matrix_eta, deriv_size);
-    raw_transpose(make_not_null(logical_partial_derivatives_of_u[1]),
-                  partial_u_wrt_eta_or_zeta->data(),
-                  num_components_times_xi_slices, mesh.extents(0));
-
-    const size_t chunk_size = mesh.extents(0) * mesh.extents(1);
-    const size_t number_of_chunks = deriv_size / chunk_size;
-    transpose(make_not_null(u_eta_or_zeta_fastest), u, chunk_size,
-              number_of_chunks);
-    const Matrix& differentiation_matrix_zeta =
-        Spectral::differentiation_matrix(mesh.slice_through(2));
-    apply_matrix_in_first_dim(partial_u_wrt_eta_or_zeta->data(),
-                              u_eta_or_zeta_fastest->data(),
-                              differentiation_matrix_zeta, deriv_size);
-    raw_transpose(make_not_null(logical_partial_derivatives_of_u[2]),
-                  partial_u_wrt_eta_or_zeta->data(), number_of_chunks,
-                  chunk_size);
+    const auto& ylm = ylm::get_spherepack_cache(mesh.extents(1) - 1);
+    for (size_t n = 0;
+         n < Variables<DerivativeTags>::number_of_independent_components; ++n) {
+      const size_t offset = n * u.number_of_grid_points();
+      const auto du = std::array{logical_partial_derivatives_of_u[1] + offset,
+                                 logical_partial_derivatives_of_u[2] + offset};
+      ylm.gradient_all_offsets(du, make_not_null(u.data() + offset),
+                               mesh.extents(0));
+    }
   }
 };
 }  // namespace partial_derivatives_detail

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <memory>
 #include <pup.h>
+#include <random>
 #include <string>
 #include <type_traits>
 
@@ -31,6 +32,7 @@
 #include "Domain/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
+#include "Helpers/NumericalAlgorithms/SphericalHarmonics/YlmTestFunctions.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.tpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
@@ -38,6 +40,8 @@
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "NumericalAlgorithms/Spectral/Spectral.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/RealSphericalHarmonics.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/TMPL.hpp"
@@ -160,6 +164,9 @@ using two_vars = tmpl::list<Var1<DataType, Dim>, Var2<DataType>>;
 
 template <typename DataType, size_t Dim>
 using one_var = tmpl::list<Var1<DataType, Dim>>;
+
+template <typename DataType>
+using scalar_var = tmpl::list<Var2<DataType>>;
 
 template <typename GradientTags, typename VariableTags, size_t Dim>
 void test_logical_partial_derivative_per_tensor(
@@ -357,6 +364,61 @@ void test_logical_partial_derivatives_3d(const Mesh<3>& mesh) {
   CHECK_VARIABLES_APPROX(du[0], du_expected[0]);
   CHECK_VARIABLES_APPROX(du[1], du_expected[1]);
   CHECK_VARIABLES_APPROX(du[2], du_expected[2]);
+  // We've checked that du is correct, now test that taking derivatives of
+  // individual tensors gets the matching result.
+  test_logical_partial_derivative_per_tensor(du, u, mesh);
+}
+
+template <size_t l, int m, typename VariableTags,
+          typename GradientTags = VariableTags>
+void test_logical_partial_derivatives_spherical_shell(const size_t n_r,
+                                                      const size_t L) {
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * L + 1},
+      {Spectral::Basis::Legendre, Spectral::Basis::SphericalHarmonic,
+       Spectral::Basis::SphericalHarmonic},
+      {Spectral::Quadrature::Gauss, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const auto x = logical_coordinates(mesh);
+  const DataVector r = x[0] + 2.0;
+  const size_t number_of_grid_points = mesh.number_of_grid_points();
+  const YlmTestFunctions::Ylm<l, m> y_lm{n_r, L, L};
+  Variables<VariableTags> u{number_of_grid_points};
+  for (size_t n = 0; n < u.number_of_independent_components; ++n) {
+    DataVector component_ref(u.data() + n * number_of_grid_points,
+                             number_of_grid_points);
+    component_ref = (1.0 + static_cast<double>(n)) *
+                    pow(r, -1.0 + static_cast<double>(n_r)) * y_lm.f();
+  }
+  std::array<Variables<GradientTags>, 3> du_expected{};
+  du_expected[0].initialize(number_of_grid_points);
+  du_expected[1].initialize(number_of_grid_points);
+  du_expected[2].initialize(number_of_grid_points);
+  for (size_t n = 0;
+       n < Variables<GradientTags>::number_of_independent_components; ++n) {
+    DataVector du_dxi_ref(du_expected[0].data() + n * number_of_grid_points,
+                          number_of_grid_points);
+    if (n_r == 1) {
+      du_dxi_ref = 0.0;
+    } else {
+      du_dxi_ref = (-1.0 + static_cast<double>(n_r)) *
+                   (1.0 + static_cast<double>(n)) *
+                   pow(r, -2.0 + static_cast<double>(n_r)) * y_lm.f();
+    }
+    DataVector du_dth_ref(du_expected[1].data() + n * number_of_grid_points,
+                          number_of_grid_points);
+    du_dth_ref = (1.0 + static_cast<double>(n)) *
+                 pow(r, -1.0 + static_cast<double>(n_r)) * y_lm.df_dth();
+    DataVector du_dph_ref(du_expected[2].data() + n * number_of_grid_points,
+                          number_of_grid_points);
+    du_dph_ref = (1.0 + static_cast<double>(n)) *
+                 pow(r, -1.0 + static_cast<double>(n_r)) * y_lm.df_dph();
+  }
+  const auto du = logical_partial_derivatives<GradientTags>(u, mesh);
+  Approx local_approx = Approx::custom().epsilon(1.0e-13).scale(1.0);
+  CHECK_VARIABLES_CUSTOM_APPROX(du[0], du_expected[0], local_approx);
+  CHECK_VARIABLES_CUSTOM_APPROX(du[1], du_expected[1], local_approx);
+  CHECK_VARIABLES_CUSTOM_APPROX(du[2], du_expected[2], local_approx);
   // We've checked that du is correct, now test that taking derivatives of
   // individual tensors gets the matching result.
   test_logical_partial_derivative_per_tensor(du, u, mesh);
@@ -570,6 +632,34 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.LogicalDerivs",
         test_logical_partial_derivatives_3d<two_vars<ComplexDataVector, 3>,
                                             one_var<ComplexDataVector, 3>>(
             mesh_3d);
+      }
+    }
+  }
+  for (size_t n_r = 1; n_r < 5; ++n_r) {
+    for (size_t L = 2; L < 5; ++L) {
+      test_logical_partial_derivatives_spherical_shell<0, 0,
+                                                       two_vars<DataVector, 3>>(
+          n_r, L);
+      test_logical_partial_derivatives_spherical_shell<1, 0,
+                                                       two_vars<DataVector, 3>>(
+          n_r, L);
+      test_logical_partial_derivatives_spherical_shell<1, 1,
+                                                       two_vars<DataVector, 3>>(
+          n_r, L);
+      test_logical_partial_derivatives_spherical_shell<1, -1,
+                                                       two_vars<DataVector, 3>>(
+          n_r, L);
+      if (L > 2) {
+        test_logical_partial_derivatives_spherical_shell<
+            2, 0, two_vars<DataVector, 3>>(n_r, L);
+        test_logical_partial_derivatives_spherical_shell<
+            2, 1, two_vars<DataVector, 3>>(n_r, L);
+        test_logical_partial_derivatives_spherical_shell<
+            2, -1, two_vars<DataVector, 3>>(n_r, L);
+        test_logical_partial_derivatives_spherical_shell<
+            2, 2, two_vars<DataVector, 3>>(n_r, L);
+        test_logical_partial_derivatives_spherical_shell<
+            2, -2, two_vars<DataVector, 3>>(n_r, L);
       }
     }
   }
