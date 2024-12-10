@@ -4,8 +4,6 @@
 ---
 ---
 
-# note that this is a vector of pairs, so has the peculiar '- -' for the
-# elements
 PhaseChangeAndTriggers:
   - Trigger: RegisterTrigger
     PhaseChanges:

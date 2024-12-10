@@ -147,8 +147,11 @@ add_algorithm_test(
   "AlgorithmGlobalCache"
   INPUT_FILE "Test_AlgorithmGlobalCache.yaml")
 add_algorithm_test(
-  "AlgorithmPhaseControl"
-  INPUT_FILE "Test_AlgorithmPhaseControl.yaml")
+  "AlgorithmPhaseControlSingleton"
+  INPUT_FILE "Test_AlgorithmPhaseControlSingleton.yaml")
+add_algorithm_test(
+  "AlgorithmPhaseControlNodegroup"
+  INPUT_FILE "Test_AlgorithmPhaseControlNodegroup.yaml")
 add_algorithm_test(
   "DynamicInsertionState"
   INPUT_FILE "Test_DynamicInsertionState.yaml")

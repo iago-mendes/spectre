@@ -866,4 +866,4 @@ also be run. Which functions are run on each node and core is set by calling
 `Parallel::charmxx::register_init_node_and_proc` in `CkRegisterMainModule()`
 with function pointers to the functions to be called. For example:
 
-\snippet Test_AlgorithmPhaseControl.cpp charm_init_funcs_example
+\snippet Test_AlgorithmPhaseControlNodegroup.cpp charm_init_funcs_example
