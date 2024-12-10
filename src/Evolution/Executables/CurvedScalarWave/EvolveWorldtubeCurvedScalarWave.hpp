@@ -292,8 +292,6 @@ struct EvolutionMetavars {
       Initialization::Actions::AddSimpleTags<
           CurvedScalarWave::Worldtube::Initialization::
               InitializeCurrentIteration,
-          CurvedScalarWave::Worldtube::Initialization::
-              InitializeConstraintDampingGammas<volume_dim>,
           CurvedScalarWave::Initialization::InitializeEvolvedVariables<
               volume_dim>>,
       Initialization::Actions::AddComputeTags<
@@ -302,6 +300,8 @@ struct EvolutionMetavars {
       Initialization::Actions::AddComputeTags<tmpl::list<
           CurvedScalarWave::Worldtube::Tags::ParticlePositionVelocityCompute<
               volume_dim>,
+          CurvedScalarWave::Worldtube::Tags::ConstraintGamma1Compute,
+          CurvedScalarWave::Worldtube::Tags::ConstraintGamma2Compute,
           CurvedScalarWave::Worldtube::Tags::FaceCoordinatesCompute<
               volume_dim, Frame::Inertial, true>,
           CurvedScalarWave::Worldtube::Tags::FaceCoordinatesCompute<
