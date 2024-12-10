@@ -381,6 +381,40 @@ void test_evolved_particle_position_velocity_compute() {
   }
 }
 
+void test_constraint_gammas_compute() {
+  static constexpr size_t Dim = 3;
+  MAKE_GENERATOR(gen);
+  const std::uniform_real_distribution<> dist(-1., 1.);
+  const auto pos = make_with_random_values<tnsr::I<double, Dim>>(
+      make_not_null(&gen), dist, 1);
+  const auto vel = make_with_random_values<tnsr::I<double, Dim>>(
+      make_not_null(&gen), dist, 1);
+
+  const size_t coord_size = 100;
+  const auto coords = make_with_random_values<tnsr::I<DataVector, Dim>>(
+      make_not_null(&gen), dist, DataVector(coord_size));
+
+  auto box = db::create<
+      db::AddSimpleTags<Tags::ParticlePositionVelocity<Dim>,
+                        domain::Tags::Coordinates<Dim, Frame::Inertial>>,
+      db::AddComputeTags<Tags::ConstraintGamma1Compute,
+                         Tags::ConstraintGamma2Compute>>(
+      std::array<tnsr::I<double, Dim>, 2>{pos, vel}, coords);
+
+  const auto& gamma1 = db::get<CurvedScalarWave::Tags::ConstraintGamma1>(box);
+  CHECK(get(gamma1) == DataVector(coord_size, 0.));
+
+  auto centered_coords = coords;
+  for (size_t i = 0; i < 3; ++i) {
+    centered_coords.get(i) -= pos.get(i);
+  }
+  const auto centered_radii = magnitude(centered_coords);
+  const auto gamma2_expected =
+      10. * exp(-square(0.1 * get(centered_radii))) + 1e-3;
+  const auto& gamma2 = db::get<CurvedScalarWave::Tags::ConstraintGamma2>(box);
+  CHECK_ITERABLE_APPROX(gamma2_expected, get(gamma2));
+}
+
 void test_geodesic_acceleration_compute() {
   static constexpr size_t Dim = 3;
   MAKE_GENERATOR(gen);
@@ -810,5 +844,6 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.CurvedScalarWave.Worldtube.Tags",
   test_face_quantities_compute();
   test_puncture_field();
   test_check_input_file();
+  test_constraint_gammas_compute();
 }
 }  // namespace CurvedScalarWave::Worldtube

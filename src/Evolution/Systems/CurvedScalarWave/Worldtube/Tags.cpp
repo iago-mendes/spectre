@@ -319,6 +319,31 @@ void FaceQuantitiesCompute::function(
       face_inv_jacobian, direction.value());
 }
 
+void ConstraintGamma1Compute::function(
+    gsl::not_null<Scalar<DataVector>*> gamma1,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& coords) {
+  get(*gamma1).destructive_resize(get<0>(coords).size());
+  get(*gamma1) = 0.;
+}
+
+void ConstraintGamma2Compute::function(
+    gsl::not_null<Scalar<DataVector>*> gamma2,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
+    const std::array<tnsr::I<double, 3, Frame::Inertial>, 2>& pos_vel) {
+  get(*gamma2).destructive_resize(get<0>(coords).size());
+  const auto& pos = pos_vel[0];
+
+  // re-use allocation
+  auto& centered_radii = get(*gamma2);
+  centered_radii = sqrt(square(get<0>(coords) - get<0>(pos)) +
+                        square(get<1>(coords) - get<1>(pos)) +
+                        square(get<2>(coords) - get<2>(pos)));
+  const double amplitude = 10.;
+  const double sigma = 1e-1;
+  const double constant = 1e-3;
+  get(*gamma2) = amplitude * exp(-square(sigma * centered_radii)) + constant;
+}
+
 template struct BackgroundQuantitiesCompute<3>;
 template struct EvolvedParticlePositionVelocityCompute<3>;
 template struct GeodesicAccelerationCompute<3>;
