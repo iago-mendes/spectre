@@ -656,7 +656,7 @@ int main(int argc, char** argv) {
       ERROR_NO_TRACE(
           "Only a single input H5 file was supplied and the input data "
           "format is BondiModal. This means that no combination needs to be "
-          "done and running ReduceCceWorldtube is unnecessary.");
+          "done and running PreprocessCceWorldtube is unnecessary.");
     }
 
     if (tuples::get<ReduceCceTags::FixSpecNormalization>(inputs) and

@@ -57,25 +57,26 @@ jobs:
       - name: Copy CCE executables from the container
         run: >
           mkdir CceExecutables;
-          mkdir ./CceExecutables/ReduceCceWorldtube;
+          mkdir ./CceExecutables/PreprocessCceWorldtube;
           mkdir ./CceExecutables/Tests;
 
           cp ./tests/InputFiles/Cce/CharacteristicExtract.yaml
           ./CceExecutables/CharacteristicExtract.yaml
 
-          cp ./tests/InputFiles/ReduceCceWorldtube/ReduceCceWorldtube.yaml
-          ./CceExecutables/ReduceCceWorldtube/ReduceCceWorldtube.yaml
+          cp
+          ./tests/InputFiles/PreprocessCceWorldtube/PreprocessCceWorldtube.yaml
+          ./CceExecutables/PreprocessCceWorldtube/PreprocessCceWorldtube.yaml
 
           docker cp
           static-execs:/work/spectre/build/bin/CharacteristicExtract
           ./CceExecutables/
 
-          docker cp static-execs:/work/spectre/build/bin/ReduceCceWorldtube
-          ./CceExecutables/ReduceCceWorldtube/
+          docker cp static-execs:/work/spectre/build/bin/PreprocessCceWorldtube
+          ./CceExecutables/PreprocessCceWorldtube/
 
           docker cp
           static-execs:/work/spectre/build/bin/WriteCceWorldtubeCoordsToFile
-          ./CceExecutables/ReduceCceWorldtube/
+          ./CceExecutables/PreprocessCceWorldtube/
       - name: Test CCE executable outside of container
         run: |
           mv BondiSachsCceR0200.h5 ./CceExecutables/Tests/

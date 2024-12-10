@@ -234,7 +234,7 @@ class DummyBufferUpdater  // NOLINT
 };
 
 template <typename T>
-class ReducedDummyBufferUpdater
+class BondiBufferUpdater
     : public WorldtubeBufferUpdater<tmpl::conditional_t<
           std::is_same_v<T, ComplexModalVector>,
           Tags::worldtube_boundary_tags_for_writing<
@@ -247,13 +247,13 @@ class ReducedDummyBufferUpdater
           Spectral::Swsh::Tags::SwshTransform>,
       Tags::worldtube_boundary_tags_for_writing<Tags::BoundaryValue>>;
 
-  ReducedDummyBufferUpdater() = default;
-  ReducedDummyBufferUpdater(DataVector time_buffer,
-                            const gr::Solutions::KerrSchild& solution,
-                            const std::optional<double> extraction_radius,
-                            const double coordinate_amplitude,
-                            const double coordinate_frequency,
-                            const size_t l_max, const bool /*unused*/ = false)
+  BondiBufferUpdater() = default;
+  BondiBufferUpdater(DataVector time_buffer,
+                     const gr::Solutions::KerrSchild& solution,
+                     const std::optional<double> extraction_radius,
+                     const double coordinate_amplitude,
+                     const double coordinate_frequency, const size_t l_max,
+                     const bool /*unused*/ = false)
       : time_buffer_{std::move(time_buffer)},
         solution_{solution},
         extraction_radius_{extraction_radius},
@@ -263,9 +263,9 @@ class ReducedDummyBufferUpdater
 
   // NOLINTNEXTLINE
   WRAPPED_PUPable_decl_base_template(WorldtubeBufferUpdater<tags_for_writing>,
-                                     ReducedDummyBufferUpdater);
+                                     BondiBufferUpdater);
 
-  explicit ReducedDummyBufferUpdater(CkMigrateMessage* /*unused*/) {}
+  explicit BondiBufferUpdater(CkMigrateMessage* /*unused*/) {}
 
   double update_buffers_for_time(
       const gsl::not_null<Variables<tags_for_writing>*> buffers,
@@ -358,7 +358,7 @@ class ReducedDummyBufferUpdater
   }
   std::unique_ptr<WorldtubeBufferUpdater<tags_for_writing>> get_clone()
       const override {
-    return std::make_unique<ReducedDummyBufferUpdater>(*this);
+    return std::make_unique<BondiBufferUpdater>(*this);
   }
 
   bool time_is_outside_range(const double time) const override {
@@ -413,16 +413,16 @@ class ReducedDummyBufferUpdater
 template <typename T>
 PUP::able::PUP_ID Cce::DummyBufferUpdater<T>::my_PUP_ID = 0;  // NOLINT
 template <typename T>
-PUP::able::PUP_ID Cce::ReducedDummyBufferUpdater<T>::my_PUP_ID = 0;  // NOLINT
+PUP::able::PUP_ID Cce::BondiBufferUpdater<T>::my_PUP_ID = 0;  // NOLINT
 
 template class Cce::DummyBufferUpdater<ComplexModalVector>;
 template class Cce::DummyBufferUpdater<DataVector>;
-template class Cce::ReducedDummyBufferUpdater<ComplexModalVector>;
+template class Cce::BondiBufferUpdater<ComplexModalVector>;
 
 namespace {
 
 template <typename DataManager, typename DummyUpdater, typename Generator>
-void test_data_manager_with_dummy_buffer_updater(
+void test_data_manager_with_bondi_buffer_updater(
     const gsl::not_null<Generator*> gen,
     const bool apply_normalization_bug = false, const bool is_spec_input = true,
     const std::optional<double> extraction_radius = std::nullopt) {
@@ -545,7 +545,7 @@ void test_data_manager_with_dummy_buffer_updater(
 }
 
 template <typename T, typename Generator>
-void test_spec_worldtube_buffer_updater_impl(
+void test_metric_worldtube_buffer_updater_impl(
     const gsl::not_null<Generator*> gen,
     const bool extraction_radius_in_filename, const bool time_varies_fastest) {
   constexpr bool is_modal = std::is_same_v<T, ComplexModalVector>;
@@ -659,10 +659,10 @@ void test_spec_worldtube_buffer_updater_impl(
           approx(target_time - 1.5 + 0.1 * i));
   }
 
-  const DummyBufferUpdater<T> dummy_buffer_updater = serialize_and_deserialize(
+  const DummyBufferUpdater<T> bondi_buffer_updater = serialize_and_deserialize(
       DummyBufferUpdater<T>{time_buffer, solution, extraction_radius, amplitude,
                             frequency, computation_l_max});
-  dummy_buffer_updater.update_buffers_for_time(
+  bondi_buffer_updater.update_buffers_for_time(
       make_not_null(&expected_coefficients_buffers),
       make_not_null(&time_span_start), make_not_null(&time_span_end),
       target_time, computation_l_max, interpolator_length, buffer_size,
@@ -685,7 +685,7 @@ void test_spec_worldtube_buffer_updater_impl(
 }
 
 template <typename T, typename Generator>
-void test_reduced_spec_worldtube_buffer_updater_impl(
+void test_bondi_worldtube_buffer_updater_impl(
     const gsl::not_null<Generator*> gen,
     const bool extraction_radius_in_filename, const bool time_varies_fastest) {
   constexpr bool is_modal = std::is_same_v<T, ComplexModalVector>;
@@ -863,11 +863,10 @@ void test_reduced_spec_worldtube_buffer_updater_impl(
           approx(target_time - 0.1 + 0.01 * i));
   }
 
-  const ReducedDummyBufferUpdater<T> dummy_buffer_updater =
-      serialize_and_deserialize(ReducedDummyBufferUpdater<T>{
-          time_buffer, solution, extraction_radius, amplitude, frequency,
-          computation_l_max});
-  dummy_buffer_updater.update_buffers_for_time(
+  const BondiBufferUpdater<T> bondi_buffer_updater = serialize_and_deserialize(
+      BondiBufferUpdater<T>{time_buffer, solution, extraction_radius, amplitude,
+                            frequency, computation_l_max});
+  bondi_buffer_updater.update_buffers_for_time(
       make_not_null(&expected_coefficients_buffers),
       make_not_null(&time_span_start), make_not_null(&time_span_end),
       target_time, computation_l_max, interpolator_length, buffer_size,
@@ -900,26 +899,25 @@ void test_reduced_spec_worldtube_buffer_updater_impl(
 }
 
 template <typename Generator>
-void test_spec_worldtube_buffer_updater(const gsl::not_null<Generator*> gen) {
+void test_metric_worldtube_buffer_updater(const gsl::not_null<Generator*> gen) {
   INFO("SpEC worldtube (aka metric)");
   for (const auto& [extraction_radius_in_filename, time_varies_fastest] :
        cartesian_product(std::array{true, false}, std::array{true, false})) {
-    test_spec_worldtube_buffer_updater_impl<ComplexModalVector>(
+    test_metric_worldtube_buffer_updater_impl<ComplexModalVector>(
         gen, extraction_radius_in_filename, time_varies_fastest);
-    test_spec_worldtube_buffer_updater_impl<DataVector>(
+    test_metric_worldtube_buffer_updater_impl<DataVector>(
         gen, extraction_radius_in_filename, time_varies_fastest);
   }
 }
 
 template <typename Generator>
-void test_reduced_spec_worldtube_buffer_updater(
-    const gsl::not_null<Generator*> gen) {
+void test_bondi_worldtube_buffer_updater(const gsl::not_null<Generator*> gen) {
   INFO("Reduced SpEC worldtube (aka Bondi)");
   for (const auto& [extraction_radius_in_filename, time_varies_fastest] :
        cartesian_product(std::array{true, false}, std::array{true, false})) {
-    test_reduced_spec_worldtube_buffer_updater_impl<ComplexModalVector>(
+    test_bondi_worldtube_buffer_updater_impl<ComplexModalVector>(
         gen, extraction_radius_in_filename, time_varies_fastest);
-    test_reduced_spec_worldtube_buffer_updater_impl<ComplexDataVector>(
+    test_bondi_worldtube_buffer_updater_impl<ComplexDataVector>(
         gen, extraction_radius_in_filename, time_varies_fastest);
   }
 }
@@ -943,33 +941,32 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.ReadBoundaryDataH5",
   MAKE_GENERATOR(gen);
   {
     INFO("Testing buffer updaters");
-    test_spec_worldtube_buffer_updater(make_not_null(&gen));
-    test_reduced_spec_worldtube_buffer_updater(make_not_null(&gen));
+    test_metric_worldtube_buffer_updater(make_not_null(&gen));
+    test_bondi_worldtube_buffer_updater(make_not_null(&gen));
   }
   {
     INFO("Testing data managers");
     using DummyBufferUpdater = DummyBufferUpdater<ComplexModalVector>;
-    using ReducedDummyBufferUpdater =
-        ReducedDummyBufferUpdater<ComplexModalVector>;
-    test_data_manager_with_dummy_buffer_updater<MetricWorldtubeDataManager,
+    using BondiBufferUpdater = BondiBufferUpdater<ComplexModalVector>;
+    test_data_manager_with_bondi_buffer_updater<MetricWorldtubeDataManager,
                                                 DummyBufferUpdater>(
         make_not_null(&gen));
     // with normalization bug applied:
-    test_data_manager_with_dummy_buffer_updater<MetricWorldtubeDataManager,
+    test_data_manager_with_bondi_buffer_updater<MetricWorldtubeDataManager,
                                                 DummyBufferUpdater>(
         make_not_null(&gen), true, true);
-    test_data_manager_with_dummy_buffer_updater<MetricWorldtubeDataManager,
+    test_data_manager_with_bondi_buffer_updater<MetricWorldtubeDataManager,
                                                 DummyBufferUpdater>(
         make_not_null(&gen), false, true);
-    test_data_manager_with_dummy_buffer_updater<MetricWorldtubeDataManager,
+    test_data_manager_with_bondi_buffer_updater<MetricWorldtubeDataManager,
                                                 DummyBufferUpdater>(
         make_not_null(&gen), false, false);
     // check the case for an explicitly provided extraction radius.
-    test_data_manager_with_dummy_buffer_updater<MetricWorldtubeDataManager,
+    test_data_manager_with_bondi_buffer_updater<MetricWorldtubeDataManager,
                                                 DummyBufferUpdater>(
         make_not_null(&gen), false, false, 200.0);
-    test_data_manager_with_dummy_buffer_updater<BondiWorldtubeDataManager,
-                                                ReducedDummyBufferUpdater>(
+    test_data_manager_with_bondi_buffer_updater<BondiWorldtubeDataManager,
+                                                BondiBufferUpdater>(
         make_not_null(&gen));
   }
 }

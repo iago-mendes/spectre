@@ -348,7 +348,7 @@ struct H5WorldtubeBoundaryDataManager : db::SimpleTag {
           "\nDEPRECATION WARNING: Reading worldtube H5 files that are in the "
           "Metric data format (i.e. cartesian components of the metric and "
           "derivs expressed in modal coefficients) is deprecated. Convert your "
-          "data to the Bondi modal format using the 'ReduceCceWorldtube' "
+          "data to the Bondi modal format using the 'PreprocessCceWorldtube' "
           "executable. See https://spectre-code.org/tutorial_cce.html for "
           "details. Support for reading the Metric data format will be "
           "dropped in January 2025.\n");

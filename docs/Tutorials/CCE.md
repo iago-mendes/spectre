@@ -24,12 +24,12 @@ release). Inside this tarball is
 - an example set of Bondi-Sachs worldtube data in the `Tests/` directory (see
    [Input worldtube data formats](#input_worldtube_data_format) section)
 - example output from CCE in the `Tests/` directory
-- a `ReduceCceWorldtube` executable and YAML file for converting between
+- a `PreprocessCceWorldtube` executable and YAML file for converting between
    [worldtube data formats](#input_worldtube_data_format) in the
-   `ReduceCceWorldtube/` diretory
+   `PreprocessCceWorldtube/` diretory
 - a `WriteCceWorldtubeCoordsToFile` executable that writes
    [grid points on a sphere](#spherical_nodes) to a text file in the
-   `ReduceCceWorldtube/` directory
+   `PreprocessCceWorldtube/` directory
 - a python script `CheckCceOutput.py` (meant to be run from the root of the
   tarball and after you run the example YAML input file also in the root of the
   tarball) that will check if the example output is correct
@@ -156,7 +156,7 @@ for compatibility with worldtube data from the SXS Collaboration's SpEC code.
 Unless you are using worldtube data that was generated from SpECTRE (or SpEC),
 it's possible that your worldtube data is not in the correct format. We allow
 conversion into our data format from a few other data formats using the
-[`ReduceCceWorldtube` executable provided](#acquiring_the_cce_module). These are
+[`PreprocessCceWorldtube` executable provided](#acquiring_the_cce_module). These are
 
 - Nodal cartesian metric data (which we refer to as "metric nodal")
 - Modal cartesian metric data (which we refer to as "metric modal")
@@ -256,23 +256,23 @@ If you already have data in the
 [required "bondi modal" format](#required_h5_worldtube_data_format), then
 nothing needs to be done.
 
-#### Running the ReduceCceWorldtube executable
+#### Running the PreprocessCceWorldtube executable
 
-The `ReduceCceWorldtube` executable should be run on any of the
+The `PreprocessCceWorldtube` executable should be run on any of the
 [allowed input formats](#converting_worldtube_data), and will produce a
 corresponding Bondi-Sachs worldtube file that can be read in by CCE. This
 executable works similarly to our other executables by accepting a YAML input
 file:
 
 ```
-ReduceCceWorldtube --input-file ReduceCceWorldtube.yaml
+PreprocessCceWorldtube --input-file PreprocessCceWorldtube.yaml
 ```
 
 with a YAML file
 
-\snippet ReduceCceWorldtube.yaml reduce_cce_worldtube_yaml_doxygen_example
+\snippet PreprocessCceWorldtube.yaml preprocess_cce_worldtube_yaml_doxygen_example
 
-In addition to converting worldtube data formats, `ReduceCceWorldtube` also
+In addition to converting worldtube data formats, `PreprocessCceWorldtube` also
 accepts multiple input worldtube H5 files that have sequential times (e.g. from
 different checkpoints) and will combine the times from all H5 files alongside
 converting the worldtube data format. If there are duplicate or overlapping

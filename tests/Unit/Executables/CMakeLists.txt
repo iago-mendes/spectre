@@ -38,7 +38,7 @@ add_standalone_test(
   )
 
 set(
-  TEST_REDUCECCEWORLDTUBE_LIBRARIES
+  TEST_PREPROCESSCCEWORLDTUBE_LIBRARIES
   Boost::boost
   Cce
   CceHelpers
@@ -48,7 +48,7 @@ set(
   SpinWeightedSphericalHarmonics
   )
 
-set(EXECUTABLE "Test_ReduceCceWorldtube")
+set(EXECUTABLE "Test_PreprocessCceWorldtube")
 
 add_standalone_test_executable(${EXECUTABLE})
 
@@ -61,15 +61,15 @@ target_compile_definitions(
 target_link_libraries(
   "${EXECUTABLE}"
   PRIVATE
-  "${TEST_REDUCECCEWORLDTUBE_LIBRARIES}")
+  "${TEST_PREPROCESSCCEWORLDTUBE_LIBRARIES}")
 
 add_test(
-  NAME "Unit.Executables.ReduceCceWorldtube"
+  NAME "Unit.Executables.PreprocessCceWorldtube"
   COMMAND
   ${SHELL_EXECUTABLE}
   -c
-  "rm -rf ReduceCceWorldtube &&
-   mkdir -p ReduceCceWorldtube && \
-   cd ReduceCceWorldtube && \
+  "rm -rf PreprocessCceWorldtube &&
+   mkdir -p PreprocessCceWorldtube && \
+   cd PreprocessCceWorldtube && \
    ${CMAKE_BINARY_DIR}/bin/${EXECUTABLE}"
   )

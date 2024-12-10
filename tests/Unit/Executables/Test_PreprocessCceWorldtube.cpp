@@ -442,9 +442,9 @@ int main() {
   if (not executable.ends_with("/")) {
     executable += "/";
   }
-  executable += "bin/ReduceCceWorldtube";
+  executable += "bin/PreprocessCceWorldtube";
 
-  const auto call_reduce_cce_worldtube =
+  const auto call_preprocess_cce_worldtube =
       [&](const std::string& input_data_format) {
         const std::string to_execute = executable + " --input-file " +
                                        input_data_format + ".yaml > " +
@@ -456,11 +456,11 @@ int main() {
         (void)exit_code;
       };
 
-  // Call ReduceCceWorldtube in a shell
-  call_reduce_cce_worldtube("MetricModal");
-  call_reduce_cce_worldtube("MetricNodal");
-  call_reduce_cce_worldtube("BondiModal");
-  call_reduce_cce_worldtube("BondiNodal");
+  // Call PreprocessCceWorldtube in a shell
+  call_preprocess_cce_worldtube("MetricModal");
+  call_preprocess_cce_worldtube("MetricNodal");
+  call_preprocess_cce_worldtube("BondiModal");
+  call_preprocess_cce_worldtube("BondiNodal");
 
   // Create the expected bondi modal data
   const auto expected_data = create_expected_data(

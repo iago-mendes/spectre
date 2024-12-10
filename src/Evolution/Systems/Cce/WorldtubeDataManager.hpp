@@ -191,7 +191,7 @@ class MetricWorldtubeDataManager
 };
 
 /*!
- * \brief Manages the 'reduced' cached buffer dataset associated with a CCE
+ * \brief Manages the bondi cached buffer dataset associated with a CCE
  * worldtube and interpolates to requested time points to provide worldtube
  * boundary data to the main evolution routines.
  *
