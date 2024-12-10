@@ -92,9 +92,6 @@ namespace gr::Solutions {
 template <size_t Dim>
 class GaugePlaneWave : public AnalyticSolution<Dim>,
                        public MarkAsAnalyticSolution {
-  template <typename DataType>
-  struct IntermediateVars;
-
  public:
   static constexpr size_t volume_dim = Dim;
   struct WaveVector {
@@ -112,7 +109,7 @@ class GaugePlaneWave : public AnalyticSolution<Dim>,
   static constexpr Options::String help{"Gauge plane wave in flat spacetime"};
 
   GaugePlaneWave() = default;
-  GaugePlaneWave(std::array<double, Dim> wave_vector,
+  GaugePlaneWave(const std::array<double, Dim>& wave_vector,
                  std::unique_ptr<MathFunction<1, Frame::Inertial>> profile);
   GaugePlaneWave(const GaugePlaneWave&);
   GaugePlaneWave& operator=(const GaugePlaneWave&);
@@ -133,6 +130,20 @@ class GaugePlaneWave : public AnalyticSolution<Dim>,
       ::Tags::deriv<gr::Tags::SpatialMetric<DataType, volume_dim>,
                     tmpl::size_t<volume_dim>, Frame::Inertial>;
 
+  template <typename DataType>
+  struct IntermediateVars {
+    IntermediateVars(
+        const std::array<double, Dim>& wave_vector,
+        const std::unique_ptr<MathFunction<1, Frame::Inertial>>& profile,
+        double omega, const tnsr::I<DataType, volume_dim, Frame::Inertial>& x,
+        double t);
+    DataType h{};
+    DataType du_h{};
+    DataType du_du_h{};
+    DataType det_gamma{};
+    DataType lapse{};
+  };
+
   template <typename DataType, typename... Tags>
   tuples::TaggedTuple<Tags...> variables(
       const tnsr::I<DataType, volume_dim, Frame::Inertial>& x, double t,
@@ -148,10 +159,12 @@ class GaugePlaneWave : public AnalyticSolution<Dim>,
       const IntermediateVars<DataType>& vars,
       tmpl::list<Tags...> /*meta*/) const {
     static_assert(sizeof...(Tags) > 1,
-                  "Unrecognized tag requested.  See the function parameters "
+                  "Unrecognized tag requested. See the function parameters "
                   "for the tag.");
     return {get<Tags>(variables(x, t, vars, tmpl::list<Tags>{}))...};
   }
+
+  std::array<double, Dim> get_wave_vector() const { return wave_vector_; }
 
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p);
@@ -238,19 +251,6 @@ class GaugePlaneWave : public AnalyticSolution<Dim>,
       tmpl::list<gr::Tags::InverseSpatialMetric<DataType, volume_dim>> /*meta*/)
       const -> tuples::TaggedTuple<
           gr::Tags::InverseSpatialMetric<DataType, volume_dim>>;
-
-  template <typename DataType>
-  struct IntermediateVars {
-    IntermediateVars(
-        const std::array<double, Dim>& wave_vector,
-        const std::unique_ptr<MathFunction<1, Frame::Inertial>>& profile,
-        double omega, const tnsr::I<DataType, volume_dim, Frame::Inertial>& x,
-        double t);
-    DataType h{};
-    DataType du_h{};
-    DataType det_gamma{};
-    DataType lapse{};
-  };
 
   template <size_t LocalDim>
   // NOLINTNEXTLINE(readability-redundant-declaration)

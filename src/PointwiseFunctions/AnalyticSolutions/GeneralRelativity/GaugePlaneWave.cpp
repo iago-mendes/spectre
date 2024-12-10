@@ -23,9 +23,9 @@ GaugePlaneWave<Dim>::GaugePlaneWave(CkMigrateMessage* /*msg*/) {}
 
 template <size_t Dim>
 GaugePlaneWave<Dim>::GaugePlaneWave(
-    std::array<double, Dim> wave_vector,
+    const std::array<double, Dim>& wave_vector,
     std::unique_ptr<MathFunction<1, Frame::Inertial>> profile)
-    : wave_vector_(std::move(wave_vector)),
+    : wave_vector_(wave_vector),
       profile_(std::move(profile)),
       omega_(magnitude(wave_vector_)) {}
 
@@ -64,6 +64,7 @@ GaugePlaneWave<Dim>::IntermediateVars<DataType>::IntermediateVars(
   }
   h = profile->operator()(u);
   du_h = profile->first_deriv(u);
+  du_du_h = profile->second_deriv(u);
   det_gamma = 1.0 + h * square(omega);
   lapse = 1.0 / sqrt(det_gamma);
 }
