@@ -299,7 +299,7 @@ void test_inv_jacobian(const Map& map,
       for (size_t j = 0; j < Map::dim; ++j) {
         for (size_t l = 0; l < jacobian.get(0, 0).size(); l++) {
           for (size_t k = 0; k < Map::dim; ++k) {
-            identity.get(i, j)[k] += gsl::at(jacobian.get(i, k), l) *
+            identity.get(i, j)[l] += gsl::at(jacobian.get(i, k), l) *
                                      gsl::at(inv_jacobian.get(k, j), l);
           }
         }
