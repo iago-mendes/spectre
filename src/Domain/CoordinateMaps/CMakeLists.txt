@@ -32,6 +32,7 @@ spectre_target_sources(
   KerrHorizonConforming.cpp
   Rotation.cpp
   SpecialMobius.cpp
+  SphericalToCartesianPfaffian.cpp
   UniformCylindricalEndcap.cpp
   UniformCylindricalFlatEndcap.cpp
   UniformCylindricalSide.cpp
@@ -72,6 +73,7 @@ spectre_target_headers(
   ProductMaps.tpp
   Rotation.hpp
   SpecialMobius.hpp
+  SphericalToCartesianPfaffian.hpp
   Tags.hpp
   TimeDependentHelpers.hpp
   UniformCylindricalEndcap.hpp
