@@ -48,3 +48,5 @@ target_link_libraries(
 
 add_subdirectory(SingletonActions)
 add_subdirectory(ElementActions)
+add_subdirectory(Triggers)
+
