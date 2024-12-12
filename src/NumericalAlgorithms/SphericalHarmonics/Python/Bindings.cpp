@@ -3,6 +3,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include "NumericalAlgorithms/SphericalHarmonics/Python/Spherepack.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Python/Strahlkorper.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Python/StrahlkorperFunctions.hpp"
 #include "Utilities/ErrorHandling/SegfaultHandler.hpp"
@@ -15,4 +16,5 @@ PYBIND11_MODULE(_Pybindings, m) {  // NOLINT
   py::module_::import("spectre.DataStructures.Tensor");
   ylm::py_bindings::bind_strahlkorper(m);
   ylm::py_bindings::bind_strahlkorper_functions(m);
+  ylm::py_bindings::bind_spherepack(m);
 }
