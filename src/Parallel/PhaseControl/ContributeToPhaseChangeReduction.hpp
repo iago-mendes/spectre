@@ -72,23 +72,27 @@ void contribute_to_phase_change_reduction(
                               PhaseControl::TaggedTupleCombine, Ts...>(nullptr),
                       cache.get_main_proxy().value());
   reduction_data_type reduction_data{data_for_reduction};
-  // Note that Singletons could be supported by directly calling the main
-  // entry function, but due to this and other peculiarities with
-  // Singletons, it is best to discourage their use.
-  static_assert(
-      not std::is_same_v<typename SenderComponent::chare_type,
-                         Parallel::Algorithms::Singleton>,
-      "Phase change reduction is not supported for singleton chares. "
-      "Consider constructing your chare as a length-1 array chare if you "
-      "need to contribute to phase change data");
-  Parallel::local_branch(
-      Parallel::get_parallel_component<SenderComponent>(cache))
-      ->contribute(static_cast<int>(reduction_data.size()),
-                   reduction_data.packed().get(),
-                   Parallel::charmxx::charm_reducer_functions.at(
-                       std::hash<Parallel::charmxx::ReducerFunctions>{}(
-                           &reduction_data_type::combine)),
-                   callback);
+
+  if constexpr (std::is_same_v<typename SenderComponent::chare_type,
+                               Parallel::Algorithms::Singleton>) {
+    Parallel::local(Parallel::get_parallel_component<SenderComponent>(cache))
+        ->contribute(static_cast<int>(reduction_data.size()),
+                     reduction_data.packed().get(),
+                     Parallel::charmxx::charm_reducer_functions.at(
+                         std::hash<Parallel::charmxx::ReducerFunctions>{}(
+                             &reduction_data_type::combine)),
+                     callback);
+
+  } else {
+    Parallel::local_branch(
+        Parallel::get_parallel_component<SenderComponent>(cache))
+        ->contribute(static_cast<int>(reduction_data.size()),
+                     reduction_data.packed().get(),
+                     Parallel::charmxx::charm_reducer_functions.at(
+                         std::hash<Parallel::charmxx::ReducerFunctions>{}(
+                             &reduction_data_type::combine)),
+                     callback);
+  }
 }
 /// @}
 }  // namespace Parallel

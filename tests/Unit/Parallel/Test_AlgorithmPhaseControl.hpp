@@ -1,6 +1,8 @@
 // Distributed under the MIT License.
 // See LICENSE.txt for details.
 
+#pragma once
+
 #include "Framework/TestingFramework.hpp"
 
 #include <cstddef>
@@ -165,7 +167,7 @@ struct ComponentAlpha {
 
 template <typename Metavariables>
 struct ComponentBeta {
-  using chare_type = Parallel::Algorithms::Nodegroup;
+  using chare_type = typename Metavariables::component_beta_chare_type;
   using metavariables = Metavariables;
   using array_index = size_t;
 
@@ -274,7 +276,7 @@ struct TerminateAndRestart {
       const ArrayIndex& /*array_index*/, const ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
     if (db::get<Tags::Step>(box) % interval == 0) {
-      if(db::get<Tags::Step>(box) < 15) {
+      if (db::get<Tags::Step>(box) < 15) {
         Parallel::simple_action<Actions::RestartMe<ParallelComponent>>(
             Parallel::get_parallel_component<OtherComponent>(cache));
 
@@ -335,9 +337,12 @@ struct Testing {
 //  7: Register |   none
 // 10:  none    |     Solve
 // 14:  none    |  Register and Solve
+template <typename ComponentBetaChareType>
 struct TestMetavariables {
-  using component_list = tmpl::list<ComponentAlpha<TestMetavariables>,
-                                    ComponentBeta<TestMetavariables>>;
+  using component_beta_chare_type = ComponentBetaChareType;
+  using component_list =
+      tmpl::list<ComponentAlpha<TestMetavariables<ComponentBetaChareType>>,
+                 ComponentBeta<TestMetavariables<ComponentBetaChareType>>>;
 
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
@@ -364,7 +369,8 @@ struct TestMetavariables {
   }
 
   static std::string expected_log(
-      tmpl::type_<ComponentAlpha<TestMetavariables>> /*meta*/) {
+      tmpl::type_<
+          ComponentAlpha<TestMetavariables<ComponentBetaChareType>>> /*meta*/) {
     return "Running phase: Initialization\n" +
            repeat("Running phase: Evolve\n", 2_st) +
            "Terminate and Restart\n"
@@ -397,7 +403,8 @@ struct TestMetavariables {
   }
 
   static std::string expected_log(
-      tmpl::type_<ComponentBeta<TestMetavariables>> /*meta*/) {
+      tmpl::type_<
+          ComponentBeta<TestMetavariables<ComponentBetaChareType>>> /*meta*/) {
     return "Running phase: Initialization\n" +
            repeat("Running phase: Evolve\n", 3_st) +  // steps 1-3 -> Solve
            "Running phase: Solve\n"
@@ -429,11 +436,3 @@ struct TestMetavariables {
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& /*p*/) {}
 };
-
-// [charm_init_funcs_example]
-extern "C" void CkRegisterMainModule() {
-  Parallel::charmxx::register_main_module<TestMetavariables>();
-  Parallel::charmxx::register_init_node_and_proc(
-      {&register_factory_classes_with_charm<TestMetavariables>}, {});
-}
-// [charm_init_funcs_example]
