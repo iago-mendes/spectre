@@ -4,6 +4,7 @@
 #include "Framework/TestingFramework.hpp"
 
 #include <array>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -138,6 +139,8 @@ SPECTRE_TEST_CASE("Unit.Domain.FunctionsOfTimeAreReady", "[Domain][Unit]") {
   using component1 = Component<Metavariables, 1_st>;
   const component0* const component_0_p = nullptr;
   const component1* const component_1_p = nullptr;
+  // Not used when not using nodegroup element components
+  constexpr size_t dim = std::numeric_limits<size_t>::max();
 
   const std::array<DataVector, 3> fot_init{{{0.0}, {0.0}, {0.0}}};
   FunctionMap functions_of_time{};
@@ -175,29 +178,31 @@ SPECTRE_TEST_CASE("Unit.Domain.FunctionsOfTimeAreReady", "[Domain][Unit]") {
     INFO("Testing perform algorithm callback support");
     // Neither function ready
     CHECK(not domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5, std::nullopt));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::nullopt));
     CHECK(not domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5,
-                                std::unordered_set{"OtherA"s}));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::unordered_set{"OtherA"s}));
 
     // Make OtherA ready
     Parallel::mutate<OtherFunctionsOfTime, UpdateFoT>(cache, "OtherA"s, 123.0);
 
     CHECK(domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5,
-                                std::unordered_set{"OtherA"s}));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::unordered_set{"OtherA"s}));
     CHECK(not domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5,
-                                std::unordered_set{"OtherA"s, "OtherB"s}));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::unordered_set{"OtherA"s, "OtherB"s}));
 
     // Make OtherB ready
     Parallel::mutate<OtherFunctionsOfTime, UpdateFoT>(cache, "OtherB"s, 456.0);
 
     CHECK(domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5,
-                                std::unordered_set{"OtherA"s, "OtherB"s}));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::unordered_set{"OtherA"s, "OtherB"s}));
     CHECK(domain::functions_of_time_are_ready_algorithm_callback<
-          OtherFunctionsOfTime>(cache, 0, component_0_p, 0.5, std::nullopt));
+          OtherFunctionsOfTime, dim>(cache, 0, component_0_p, 0.5,
+                                     std::nullopt));
   }
 
   // Test the action.  This should automatically look at
@@ -480,8 +485,8 @@ SPECTRE_TEST_CASE("Unit.Domain.FunctionsOfTimeAreReady", "[Domain][Unit]") {
 
     auto& empty_cache = ActionTesting::cache<empty_comp>(empty_runner, 0);
     CHECK(domain::functions_of_time_are_ready_algorithm_callback<
-          domain::Tags::FunctionsOfTime>(empty_cache, 0, empty_component_p,
-                                         6.0));
+          domain::Tags::FunctionsOfTime, dim>(empty_cache, 0, empty_component_p,
+                                              6.0));
     CHECK(domain::functions_of_time_are_ready_simple_action_callback<
           domain::Tags::FunctionsOfTime, SimpleActionNoArgs>(
         empty_cache, 0, empty_component_p, 6.0, std::nullopt));

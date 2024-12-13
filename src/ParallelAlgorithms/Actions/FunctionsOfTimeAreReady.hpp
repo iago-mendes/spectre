@@ -125,29 +125,6 @@ bool functions_of_time_are_ready_impl(
 /// Check that functions of time in \p CacheTag with names in \p
 /// functions_to_check are ready at time \p time.  If  \p functions_to_check is
 /// a `std::nullopt`, checks all functions in \p CacheTag.  If any function is
-/// not ready, schedules a `Parallel::PerformAlgorithmCallback` with the
-/// GlobalCache..
-template <typename CacheTag, typename Metavariables, typename ArrayIndex,
-          typename Component>
-bool functions_of_time_are_ready_algorithm_callback(
-    Parallel::GlobalCache<Metavariables>& cache, const ArrayIndex& array_index,
-    const Component* component_p, const double time,
-    const std::optional<std::unordered_set<std::string>>& functions_to_check =
-        std::nullopt) {
-  using ProxyType =
-      std::decay_t<decltype(::Parallel::get_parallel_component<Component>(
-          cache)[array_index])>;
-  return detail::functions_of_time_are_ready_impl<
-      CacheTag, Parallel::PerformAlgorithmCallback<ProxyType>>(
-      cache, array_index, component_p, time, functions_to_check);
-}
-
-/// \ingroup ComputationalDomainGroup
-/// Check that functions of time are up-to-date.
-///
-/// Check that functions of time in \p CacheTag with names in \p
-/// functions_to_check are ready at time \p time.  If  \p functions_to_check is
-/// a `std::nullopt`, checks all functions in \p CacheTag.  If any function is
 /// not ready, schedules a `Parallel::SimpleActionCallback` with the GlobalCache
 /// which calls the simple action passed in as a template parameter. The `Args`
 /// are forwareded to the callback.
@@ -194,6 +171,47 @@ bool functions_of_time_are_ready_threaded_action_callback(
       std::forward<Args>(args)...);
 }
 
+/// \ingroup ComputationalDomainGroup
+/// Check that functions of time are up-to-date.
+///
+/// Check that functions of time in \p CacheTag with names in \p
+/// functions_to_check are ready at time \p time.  If  \p functions_to_check is
+/// a `std::nullopt`, checks all functions in \p CacheTag.  If any function is
+/// not ready, schedules a `Parallel::PerformAlgorithmCallback` or
+/// `Parallel::Actions::PerformAlgorithmOnElement<false>` callback with the
+/// GlobalCache.
+template <typename CacheTag, size_t Dim, typename Metavariables,
+          typename ArrayIndex, typename Component>
+bool functions_of_time_are_ready_algorithm_callback(
+    Parallel::GlobalCache<Metavariables>& cache, const ArrayIndex& array_index,
+    const Component* component_p, const double time,
+    const std::optional<std::unordered_set<std::string>>& functions_to_check =
+        std::nullopt) {
+  if constexpr (Parallel::is_dg_element_collection_v<Component>) {
+    const auto element_location =
+        static_cast<int>(Parallel::local_synchronous_action<
+                             Parallel::Actions::GetItemFromDistributedOject<
+                                 Parallel::Tags::ElementLocations<Dim>>>(
+                             Parallel::get_parallel_component<Component>(cache))
+                             ->at(array_index));
+    ASSERT(element_location == Parallel::my_node<int>(cache),
+           "Expected to be running on node "
+               << Parallel::my_node<int>(cache)
+               << " but the record says it is on node " << element_location);
+    return functions_of_time_are_ready_threaded_action_callback<
+        domain::Tags::FunctionsOfTime,
+        Parallel::Actions::PerformAlgorithmOnElement<false>>(
+        cache, element_location, component_p, time, std::nullopt, array_index);
+  } else {
+    using ProxyType =
+        std::decay_t<decltype(::Parallel::get_parallel_component<Component>(
+            cache)[array_index])>;
+    return detail::functions_of_time_are_ready_impl<
+        CacheTag, Parallel::PerformAlgorithmCallback<ProxyType>>(
+        cache, array_index, component_p, time, functions_to_check);
+  }
+}
+
 namespace Actions {
 /// \ingroup ComputationalDomainGroup
 /// Check that functions of time are up-to-date.
@@ -212,29 +230,9 @@ struct CheckFunctionsOfTimeAreReady {
       Parallel::GlobalCache<Metavariables>& cache,
       const ArrayIndex& array_index, ActionList /*meta*/,
       const ParallelComponent* component) {
-    bool ready = false;
-
-    if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
-      const auto element_location = static_cast<int>(
-          Parallel::local_synchronous_action<
-              Parallel::Actions::GetItemFromDistributedOject<
-                  Parallel::Tags::ElementLocations<Dim>>>(
-              Parallel::get_parallel_component<ParallelComponent>(cache))
-              ->at(array_index));
-      ASSERT(element_location == Parallel::my_node<int>(cache),
-             "Expected to be running on node "
-                 << Parallel::my_node<int>(cache)
-                 << " but the record says it is on node " << element_location);
-      ready = domain::functions_of_time_are_ready_threaded_action_callback<
-          domain::Tags::FunctionsOfTime,
-          Parallel::Actions::PerformAlgorithmOnElement<false>>(
-          cache, element_location, component, db::get<::Tags::Time>(box),
-          std::nullopt, array_index);
-    } else {
-      ready = functions_of_time_are_ready_algorithm_callback<
-          domain::Tags::FunctionsOfTime>(cache, array_index, component,
-                                         db::get<::Tags::Time>(box));
-    }
+    const bool ready = functions_of_time_are_ready_algorithm_callback<
+        domain::Tags::FunctionsOfTime, Dim>(cache, array_index, component,
+                                            db::get<::Tags::Time>(box));
 
     return {ready ? Parallel::AlgorithmExecution::Continue
                   : Parallel::AlgorithmExecution::Retry,
@@ -264,23 +262,9 @@ struct CheckFunctionsOfTimeAreReadyPostprocessor {
       const gsl::not_null<tuples::TaggedTuple<InboxTags...>*> /*inboxes*/,
       Parallel::GlobalCache<Metavariables>& cache,
       const ArrayIndex& array_index, const ParallelComponent* component) {
-    if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
-      const auto element_location = static_cast<int>(
-          Parallel::local_synchronous_action<
-              Parallel::Actions::GetItemFromDistributedOject<
-                  Parallel::Tags::ElementLocations<Dim>>>(
-              Parallel::get_parallel_component<ParallelComponent>(cache))
-              ->at(array_index));
-      return domain::functions_of_time_are_ready_threaded_action_callback<
-          domain::Tags::FunctionsOfTime,
-          Parallel::Actions::PerformAlgorithmOnElement<false>>(
-          cache, element_location, component, db::get<::Tags::Time>(*box),
-          std::nullopt, array_index);
-    } else {
-      return functions_of_time_are_ready_algorithm_callback<
-          domain::Tags::FunctionsOfTime>(cache, array_index, component,
-                                         db::get<::Tags::Time>(*box));
-    }
+    return functions_of_time_are_ready_algorithm_callback<
+        domain::Tags::FunctionsOfTime, Dim>(cache, array_index, component,
+                                            db::get<::Tags::Time>(*box));
   }
 };
 }  // namespace domain
