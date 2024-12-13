@@ -839,5 +839,40 @@ struct dtPsi0 : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 
+/*!
+ * \brief Sets Gamma1 to zero throughout the domain. The equations are given in
+ * Initialization::InitializeConstraintDampingGammas.
+ */
+struct ConstraintGamma1Compute : CurvedScalarWave::Tags::ConstraintGamma1,
+                                 db::ComputeTag {
+  static constexpr size_t Dim = 3;
+  using base = CurvedScalarWave::Tags::ConstraintGamma1;
+  using return_type = Scalar<DataVector>;
+  using argument_tags =
+      tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>>;
+  static void function(gsl::not_null<Scalar<DataVector>*> gamma1,
+                       const tnsr::I<DataVector, Dim, Frame::Inertial>& coords);
+};
+
+/*!
+ * \brief Sets Gamma2 to a Gaussian that falls off to a constant value centered
+ * on the position of the particle. This was found to be necessary for a stable
+ * evolution. The equations are given in
+ * Initialization::InitializeConstraintDampingGammas.
+ */
+struct ConstraintGamma2Compute : CurvedScalarWave::Tags::ConstraintGamma2,
+                                 db::ComputeTag {
+  static constexpr size_t Dim = 3;
+  using base = CurvedScalarWave::Tags::ConstraintGamma2;
+  using return_type = Scalar<DataVector>;
+  using argument_tags =
+      tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>,
+                 ParticlePositionVelocity<Dim>>;
+  static void function(
+      gsl::not_null<Scalar<DataVector>*> gamma2,
+      const tnsr::I<DataVector, Dim, Frame::Inertial>& coords,
+      const std::array<tnsr::I<double, Dim, Frame::Inertial>, 2>& pos_vel);
+};
+
 }  // namespace Tags
 }  // namespace CurvedScalarWave::Worldtube
