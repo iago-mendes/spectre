@@ -25,6 +25,7 @@
 #include "Parallel/Invoke.hpp"
 #include "Parallel/Local.hpp"
 #include "Parallel/TypeTraits.hpp"
+#include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -34,6 +35,9 @@ class Domain;
 namespace domain::FunctionsOfTime {
 class FunctionOfTime;
 }  // namespace domain::FunctionsOfTime
+namespace domain::Tags {
+struct FunctionsOfTime;
+}  // namespace domain::Tags
 namespace observers {
 class ObservationKey;
 enum class TypeOfObservation;
@@ -45,6 +49,9 @@ class GlobalCache;
 namespace PUP {
 class er;
 }  // namespace PUP
+namespace Tags {
+struct Time;
+}  // namespace Tags
 /// \endcond
 
 namespace dg::Events {
@@ -98,13 +105,15 @@ class ObserveConstantsPerElement : public Event {
       std::pair<observers::TypeOfObservation, observers::ObservationKey>>
   get_observation_type_and_key_for_registration() const;
 
-  using is_ready_argument_tags = tmpl::list<>;
+  using is_ready_argument_tags = tmpl::list<::Tags::Time>;
 
   template <typename Metavariables, typename ArrayIndex, typename Component>
-  bool is_ready(Parallel::GlobalCache<Metavariables>& /*cache*/,
-                const ArrayIndex& /*array_index*/,
-                const Component* const /*meta*/) const {
-    return true;
+  bool is_ready(const double time, Parallel::GlobalCache<Metavariables>& cache,
+                const ArrayIndex& array_index,
+                const Component* const component) const {
+    return ::domain::functions_of_time_are_ready_algorithm_callback<
+        ::domain::Tags::FunctionsOfTime, VolumeDim>(cache, array_index,
+                                                    component, time);
   }
 
   void pup(PUP::er& p) override;
