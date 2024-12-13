@@ -8,6 +8,147 @@
 
 namespace YlmTestFunctions {
 
+template <>
+DataVector Ylm<0, 0>::f() const {
+  return DataVector{n_pts_, 1.0 / sqrt(4.0 * M_PI)};
+}
+
+template <>
+DataVector Ylm<0, 0>::df_dth() const {
+  return DataVector{n_pts_, 0.0};
+}
+
+template <>
+DataVector Ylm<0, 0>::df_dph() const {
+  return DataVector{n_pts_, 0.0};
+}
+
+template <>
+DataVector Ylm<1, 0>::f() const {
+  return DataVector{sqrt(0.75 / M_PI) * cos(theta_)};
+}
+
+template <>
+DataVector Ylm<1, 0>::df_dth() const {
+  return DataVector{-sqrt(0.75 / M_PI) * sin(theta_)};
+}
+
+template <>
+DataVector Ylm<1, 0>::df_dph() const {
+  return DataVector{n_pts_, 0.0};
+}
+
+template <>
+DataVector Ylm<1, 1>::f() const {
+  return DataVector{sqrt(0.75 / M_PI) * sin(theta_) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<1, 1>::df_dth() const {
+  return DataVector{sqrt(0.75 / M_PI) * cos(theta_) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<1, 1>::df_dph() const {
+  return DataVector{-sqrt(0.75 / M_PI) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<1, -1>::f() const {
+  return DataVector{sqrt(0.75 / M_PI) * sin(theta_) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<1, -1>::df_dth() const {
+  return DataVector{sqrt(0.75 / M_PI) * cos(theta_) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<1, -1>::df_dph() const {
+  return DataVector{sqrt(0.75 / M_PI) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<2, 0>::f() const {
+  return DataVector{sqrt(1.25 / M_PI) * (1.5 * square(cos(theta_)) - 0.5)};
+}
+
+template <>
+DataVector Ylm<2, 0>::df_dth() const {
+  return DataVector{-3.0 * sqrt(1.25 / M_PI) * sin(theta_) * cos(theta_)};
+}
+
+template <>
+DataVector Ylm<2, 0>::df_dph() const {
+  return DataVector{n_pts_, 0.0};
+}
+
+template <>
+DataVector Ylm<2, 1>::f() const {
+  return DataVector{sqrt(3.75 / M_PI) * sin(theta_) * cos(theta_) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<2, 1>::df_dth() const {
+  return DataVector{sqrt(3.75 / M_PI) *
+                    (square(cos(theta_)) - square(sin(theta_))) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<2, 1>::df_dph() const {
+  return DataVector{-sqrt(3.75 / M_PI) * cos(theta_) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<2, -1>::f() const {
+  return DataVector{sqrt(3.75 / M_PI) * sin(theta_) * cos(theta_) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<2, -1>::df_dth() const {
+  return DataVector{sqrt(3.75 / M_PI) *
+                    (square(cos(theta_)) - square(sin(theta_))) * sin(phi_)};
+}
+
+template <>
+DataVector Ylm<2, -1>::df_dph() const {
+  return DataVector{sqrt(3.75 / M_PI) * cos(theta_) * cos(phi_)};
+}
+
+template <>
+DataVector Ylm<2, 2>::f() const {
+  return DataVector{0.25 * sqrt(15.0 / M_PI) * square(sin(theta_)) *
+                    cos(2.0 * phi_)};
+}
+
+template <>
+DataVector Ylm<2, 2>::df_dth() const {
+  return DataVector{0.5 * sqrt(15.0 / M_PI) * sin(theta_) * cos(theta_) *
+                    cos(2.0 * phi_)};
+}
+
+template <>
+DataVector Ylm<2, 2>::df_dph() const {
+  return DataVector{-0.5 * sqrt(15.0 / M_PI) * sin(theta_) * sin(2.0 * phi_)};
+}
+
+template <>
+DataVector Ylm<2, -2>::f() const {
+  return DataVector{0.25 * sqrt(15.0 / M_PI) * square(sin(theta_)) *
+                    sin(2.0 * phi_)};
+}
+
+template <>
+DataVector Ylm<2, -2>::df_dth() const {
+  return DataVector{0.5 * sqrt(15.0 / M_PI) * sin(theta_) * cos(theta_) *
+                    sin(2.0 * phi_)};
+}
+
+template <>
+DataVector Ylm<2, -2>::df_dph() const {
+  return DataVector{0.5 * sqrt(15.0 / M_PI) * sin(theta_) * cos(2.0 * phi_)};
+}
+
 void Y00::func(const gsl::not_null<DataVector*> u, const size_t stride,
                const size_t offset, const std::vector<double>& thetas,
                const std::vector<double>& phis) const {
@@ -166,8 +307,9 @@ void Y11::scalar_laplacian(const gsl::not_null<DataVector*> slap,
   for (const auto& phi : phis) {
     for (size_t i = 0; i < thetas.size(); ++i, ++s) {
       (*slap)[s * stride + offset] =
-          amplitude * (sin(phi) * (cos(thetas[i]) * cos(thetas[i]) -
-                                   sin(thetas[i]) * sin(thetas[i])) /
+          amplitude * (sin(phi) *
+                           (cos(thetas[i]) * cos(thetas[i]) -
+                            sin(thetas[i]) * sin(thetas[i])) /
                            sin(thetas[i]) -
                        sin(phi) / sin(thetas[i]));
     }

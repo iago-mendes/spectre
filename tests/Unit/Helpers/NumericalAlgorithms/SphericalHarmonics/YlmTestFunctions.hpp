@@ -9,10 +9,67 @@
 #include <vector>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
+#include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/SpherepackIterator.hpp"
 #include "Utilities/Gsl.hpp"
 
 namespace YlmTestFunctions {
+
+template <size_t l, int m>
+class Ylm {
+ public:
+  Ylm(size_t n_r, size_t L, size_t M);
+  DataVector f() const;
+  DataVector df_dth() const;
+  // This is the Pfaffiaan derivative (returns 1/sin(theta) df_dph)
+  DataVector df_dph() const;
+  DataVector modes() const;
+
+ private:
+  size_t n_r_;
+  size_t size_of_modes_;
+  double c_lm_;
+  size_t n_pts_;
+  DataVector theta_;
+  DataVector phi_;
+  size_t offset_c_lm_;
+};
+
+template <size_t l, int m>
+Ylm<l, m>::Ylm(const size_t n_r, size_t L, size_t M)
+    : n_r_{n_r},
+      size_of_modes_{2 * n_r * (L + 1) * (M + 1)},
+      c_lm_{m == 0 ? sqrt(2.0 / M_PI)
+                   : (m < 0 ? -sqrt(1.0 / M_PI) : sqrt(1.0 / M_PI))} {
+  ASSERT(L > l, "Cannot represent derivatives on mesh");
+  ASSERT(static_cast<int>(M) >= std::abs(m),
+         "Cannot represent derivatives on mesh");
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * M + 1},
+      {Spectral::Basis::Legendre, Spectral::Basis::SphericalHarmonic,
+       Spectral::Basis::SphericalHarmonic},
+      {Spectral::Quadrature::Gauss, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const auto xi = logical_coordinates(mesh);
+  n_pts_ = mesh.number_of_grid_points();
+  theta_ = xi.get(1);
+  phi_ = xi.get(2);
+  ylm::SpherepackIterator it(L, M, n_r);
+  it.set(l, m);
+  offset_c_lm_ = it();
+}
+
+template <size_t l, int m>
+DataVector Ylm<l, m>::modes() const {
+  DataVector result{size_of_modes_, 0.0};
+  for (size_t k = 0; k < n_r_; ++k) {
+    result[offset_c_lm_ + k] = c_lm_;
+  }
+  return result;
+}
 
 using SecondDeriv = ylm::Spherepack::SecondDeriv;
 

@@ -17,6 +17,8 @@
 #include "Domain/Tags.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Spectral.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/SpherepackCache.hpp"
 #include "Utilities/Blas.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
@@ -98,42 +100,72 @@ void logical_partial_derivative(
 
   set_number_of_grid_points(logical_derivative_of_u,
                             mesh.number_of_grid_points());
-  const Matrix empty_matrix{};
-  std::array<std::reference_wrapper<const Matrix>, Dim> diff_matrices{
-      make_array<Dim, std::reference_wrapper<const Matrix>>(empty_matrix)};
-  for (size_t d = 0; d < Dim; ++d) {
-    gsl::at(diff_matrices, d) =
-        std::cref(Spectral::differentiation_matrix(mesh.slice_through(d)));
-  }
+  if (Dim == 3 and mesh.basis(1) == Spectral::Basis::SphericalHarmonic) {
+    if constexpr (std::is_same_v<typename DataType::value_type, double>) {
+      const Matrix& differentiation_matrix_xi =
+          Spectral::differentiation_matrix(mesh.slice_through(0));
+      const auto& ylm = ylm::get_spherepack_cache(mesh.extents(1) - 1);
+      for (size_t storage_index = 0; storage_index < u.size();
+           ++storage_index) {
+        const auto u_tensor_index = u.get_tensor_index(storage_index);
+        partial_derivatives_detail::apply_matrix_in_first_dim(
+            // NOLINTNEXTLINE(readability-redundant-smartptr-get)
+            logical_derivative_of_u->get(prepend(u_tensor_index, 0_st)).data(),
+            u[storage_index].data(), differentiation_matrix_xi,
+            num_grid_points);
+        const auto du = std::array{
+            // NOLINTNEXTLINE(readability-redundant-smartptr-get)
+            logical_derivative_of_u->get(prepend(u_tensor_index, 1_st)).data(),
+            // NOLINTNEXTLINE(readability-redundant-smartptr-get)
+            logical_derivative_of_u->get(prepend(u_tensor_index, 2_st)).data()};
+        ylm.gradient_all_offsets(du, make_not_null(u[storage_index].data()),
+                                 mesh.extents(0));
+      }
+    } else {
+      ERROR(
+          "Support for complex numbers with spherical harmonics is not yet "
+          "implemented for logical_partial_derivative.");
+    }
+  } else {
+    const Matrix empty_matrix{};
+    std::array<std::reference_wrapper<const Matrix>, Dim> diff_matrices{
+        make_array<Dim, std::reference_wrapper<const Matrix>>(empty_matrix)};
+    for (size_t d = 0; d < Dim; ++d) {
+      gsl::at(diff_matrices, d) =
+          std::cref(Spectral::differentiation_matrix(mesh.slice_through(d)));
+    }
 
-  // It would be possible to check if the memory is contiguous and then
-  // differentiate all components at once. Note that the buffer in that case
-  // would also need to be the size of all components.
-  for (size_t storage_index = 0; storage_index < u.size(); ++storage_index) {
-    const auto u_tensor_index = u.get_tensor_index(storage_index);
-    const auto xi_deriv_tensor_index = prepend(u_tensor_index, 0_st);
-    partial_derivatives_detail::apply_matrix_in_first_dim(
-        logical_derivative_of_u->get(xi_deriv_tensor_index).data(),
-        u[storage_index].data(), diff_matrices[0].get(), num_grid_points);
-    for (size_t i = 1; i < Dim; ++i) {
-      const auto deriv_tensor_index = prepend(u_tensor_index, i);
-      DataType& deriv_component =
-          logical_derivative_of_u->get(deriv_tensor_index);
-      size_t chunk_size = diff_matrices[0].get().rows() *
-                          (i == 1 ? 1 : gsl::at(diff_matrices, 1).get().rows());
-      raw_transpose(make_not_null(deriv_component.data()),
-                    u[storage_index].data(), chunk_size,
-                    num_grid_points / chunk_size);
+    // It would be possible to check if the memory is contiguous and then
+    // differentiate all components at once. Note that the buffer in that case
+    // would also need to be the size of all components.
+    for (size_t storage_index = 0; storage_index < u.size(); ++storage_index) {
+      const auto u_tensor_index = u.get_tensor_index(storage_index);
+      const auto xi_deriv_tensor_index = prepend(u_tensor_index, 0_st);
       partial_derivatives_detail::apply_matrix_in_first_dim(
-          buffer->data(), deriv_component.data(),
-          gsl::at(diff_matrices, i).get(), num_grid_points);
-      chunk_size = i == 1
-                       ? (Dim == 2 ? gsl::at(diff_matrices, 1).get().rows()
-                                   : gsl::at(diff_matrices, 1).get().rows() *
-                                         gsl::at(diff_matrices, 2).get().rows())
-                       : gsl::at(diff_matrices, 2).get().rows();
-      raw_transpose(make_not_null(deriv_component.data()), buffer->data(),
-                    chunk_size, num_grid_points / chunk_size);
+          // NOLINTNEXTLINE(readability-redundant-smartptr-get)
+          logical_derivative_of_u->get(xi_deriv_tensor_index).data(),
+          u[storage_index].data(), diff_matrices[0].get(), num_grid_points);
+      for (size_t i = 1; i < Dim; ++i) {
+        const auto deriv_tensor_index = prepend(u_tensor_index, i);
+        DataType& deriv_component =
+            logical_derivative_of_u->get(deriv_tensor_index);
+        size_t chunk_size =
+            diff_matrices[0].get().rows() *
+            (i == 1 ? 1 : gsl::at(diff_matrices, 1).get().rows());
+        raw_transpose(make_not_null(deriv_component.data()),
+                      u[storage_index].data(), chunk_size,
+                      num_grid_points / chunk_size);
+        partial_derivatives_detail::apply_matrix_in_first_dim(
+            buffer->data(), deriv_component.data(),
+            gsl::at(diff_matrices, i).get(), num_grid_points);
+        chunk_size =
+            i == 1 ? (Dim == 2 ? gsl::at(diff_matrices, 1).get().rows()
+                               : gsl::at(diff_matrices, 1).get().rows() *
+                                     gsl::at(diff_matrices, 2).get().rows())
+                   : gsl::at(diff_matrices, 2).get().rows();
+        raw_transpose(make_not_null(deriv_component.data()), buffer->data(),
+                      chunk_size, num_grid_points / chunk_size);
+      }
     }
   }
 }
