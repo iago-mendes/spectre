@@ -72,6 +72,10 @@ jobs:
 
           docker cp static-execs:/work/spectre/build/bin/ReduceCceWorldtube
           ./CceExecutables/ReduceCceWorldtube/
+
+          docker cp
+          static-execs:/work/spectre/build/bin/WriteCceWorldtubeCoordsToFile
+          ./CceExecutables/ReduceCceWorldtube/
       - name: Test CCE executable outside of container
         run: |
           mv BondiSachsCceR0200.h5 ./CceExecutables/Tests/

@@ -27,6 +27,9 @@ release). Inside this tarball is
 - a `ReduceCceWorldtube` executable and YAML file for converting between
    [worldtube data formats](#input_worldtube_data_format) in the
    `ReduceCceWorldtube/` diretory
+- a `WriteCceWorldtubeCoordsToFile` executable that writes
+   [grid points on a sphere](#spherical_nodes) to a text file in the
+   `ReduceCceWorldtube/` directory
 - a python script `CheckCceOutput.py` (meant to be run from the root of the
   tarball and after you run the example YAML input file also in the root of the
   tarball) that will check if the example output is correct
@@ -198,6 +201,14 @@ supports \f$\ell\in[4, 32]\f$.
 <summary> C Code for computing SpECTRE CCE gridpoint locations </summary>
 \snippet Test_Spherepack.cpp spectre_cce_grid_point_locations
 </details>
+
+Alternatively, if your code can read in grid points from a text file, you can
+run the `WriteCceWorldtubeCoordsToFile` executable like so to get a text file
+with three columns for the x,y,z coordinates of each point.
+
+```
+./WriteCceWorldtubeCoordsToFile -r 200 -L 16 -o GridPointsR200.txt
+```
 
 Each dataset holds `1 + (l_max + 1) * (2 * l_max + 1)` columns, with the
 first one being the `time`. The columns must be in \f$\theta\f$-varies-fastest
