@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Matrix.hpp"
+#include "DataStructures/SpinWeighted.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/Cce/ExtractionRadius.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
@@ -22,9 +24,13 @@
 #include "IO/H5/File.hpp"
 #include "IO/H5/Version.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshCoefficients.hpp"
+#include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshCollocation.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshTags.hpp"
+#include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshTransform.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/Math.hpp"
@@ -76,7 +82,8 @@ std::pair<size_t, size_t> create_span_for_time_value(
 
 void set_time_buffer_and_lmax(const gsl::not_null<DataVector*> time_buffer,
                               size_t& l_max, const h5::Dat& data,
-                              const bool is_real) {
+                              const bool is_real, const bool is_modal_data,
+                              const bool is_complex) {
   const auto data_table_dimensions = data.get_dimensions();
   const Matrix time_matrix =
       data.get_data_subset(std::vector<size_t>{0}, 0, data_table_dimensions[0]);
@@ -86,80 +93,165 @@ void set_time_buffer_and_lmax(const gsl::not_null<DataVector*> time_buffer,
     (*time_buffer)[i] = time_matrix(i, 0);
   }
 
-  // If the quantitiy is real, then there's no way for us to do a check just
-  // from the number of columns alone. If not, then we expect an even number of
-  // total modes (both real and imaginary), so the number of columns should be
-  // odd with the addition of the time column
-  if (not is_real and data_table_dimensions[1] % 2 != 1) {
-    ERROR("Dimensions of subfile "
-          << data.subfile_path()
-          << " are incorrect. Was expecting an odd number of columns (because "
-             "of the time), but got "
-          << data_table_dimensions[1] << " instead.");
+  if (is_modal_data) {
+    // If the quantitiy is real, then there's no way for us to do a check just
+    // from the number of columns alone. If not, then we expect an even number
+    // of total modes (both real and imaginary), so the number of columns should
+    // be odd with the addition of the time column
+    if (not is_real and data_table_dimensions[1] % 2 != 1) {
+      ERROR("Dimensions of subfile "
+            << data.subfile_path()
+            << " for modal data are incorrect. Was expecting an odd number of "
+               "columns (because of the time), but got "
+            << data_table_dimensions[1] << " instead.");
+    }
+
+    // If it's real the number of columns is (l+1)^2. If it's not, then it's
+    // 2(l+1)^2
+    const size_t l_plus_one_squared =
+        (data_table_dimensions[1] - 1) / (is_real ? 1 : 2);
+    l_max =
+        static_cast<size_t>(sqrt(static_cast<double>(l_plus_one_squared)) - 1);
+  } else {
+    // Can only check number of columns for nodal data if it's complex
+    if (is_complex and data_table_dimensions[1] % 2 != 1) {
+      ERROR("Dimensions of subfile "
+            << data.subfile_path()
+            << " for nodal data are incorrect. Was expecting an odd number of "
+               "columns (because of the time), but got "
+            << data_table_dimensions[1] << " instead.");
+    }
+
+    // If number of real values N = (l+1)*(2l+1), then
+    // l = ( -3 + sqrt(9 + 8 * (N-1)) ) / 4. But the dimensions[1] includes time
+    // so we have to account for that by subtracting 1. Also, if this is complex
+    // nodal data, we have to do N=(dimensions[1]-1)/2 first
+    const size_t num_real_values = is_complex
+                                       ? (data_table_dimensions[1] - 1) / 2
+                                       : data_table_dimensions[1] - 1;
+    if (num_real_values == 0) {
+      ERROR("Not enough columns to read "
+            << (is_complex ? "complex" : "real")
+            << " nodal data from. Number of columns in file ("
+            << data_table_dimensions[1]
+            << "), number of columns without time column ("
+            << data_table_dimensions[1] << "), number of real valued columns ("
+            << num_real_values << ")");
+    }
+    const size_t discriminant = 9 + 8 * (num_real_values - 1);
+    l_max =
+        static_cast<size_t>((sqrt(static_cast<double>(discriminant)) - 3)) / 4;
   }
-  // Avoid compiler warning
-  const size_t l_plus_one_squared = (data_table_dimensions[1] - 1) / 2;
-  l_max =
-      static_cast<size_t>(sqrt(static_cast<double>(l_plus_one_squared)) - 1);
 }
 
-void update_buffer_with_modal_data(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t l_max, const size_t time_span_start,
-    const size_t time_span_end, const bool is_real) {
+template <bool IsModal, int Spin, typename T>
+void update_buffer(const gsl::not_null<T*> buffer_to_update,
+                   const h5::Dat& read_data, const size_t computation_l_max,
+                   const size_t l_max, const size_t time_span_start,
+                   const size_t time_span_end,
+                   const bool time_varies_fastest = true) {
+  constexpr bool is_real = Spin == 0;
   size_t number_of_columns = read_data.get_dimensions()[1];
-  if (UNLIKELY(buffer_to_update->size() !=
-               square(computation_l_max + 1) *
-                   (time_span_end - time_span_start))) {
-    ERROR("Incorrect storage size for the data to be loaded in.");
+  const size_t result_l_max = std::min(l_max, computation_l_max);
+  // No x2 because the datatypes are std::complex
+  const size_t expected_size =
+      (time_span_end - time_span_start) *
+      (IsModal ? square(computation_l_max + 1)
+               : Spectral::Swsh::number_of_swsh_collocation_points(
+                     computation_l_max));
+
+  if (UNLIKELY(buffer_to_update->size() != expected_size)) {
+    ERROR("Incorrect storage size for the data to be loaded in. Expected "
+          << expected_size << ", but got " << buffer_to_update->size()
+          << " instead.");
   }
+
   std::vector<size_t> cols(number_of_columns - 1);
   std::iota(cols.begin(), cols.end(), 1);
   auto data_matrix =
       read_data.get_data_subset<std::vector<std::vector<double>>>(
           cols, time_span_start, time_span_end - time_span_start);
   *buffer_to_update = 0.0;
+
+  // For modal, only x2 if it's not real. If nodal, always x2
+  const size_t expected_dat_modal_size = (is_real ? 1 : 2) * square(l_max + 1);
+  const size_t expected_dat_nodal_size =
+      2 * Spectral::Swsh::number_of_swsh_collocation_points(l_max);
+
+  if (cols.size() !=
+      (IsModal ? expected_dat_modal_size : expected_dat_nodal_size)) {
+    ERROR("Incorrect number of columns in Dat file "
+          << read_data.subfile_path() << ". Expected (excluding time column) "
+          << (IsModal ? expected_dat_modal_size : expected_dat_nodal_size)
+          << ", but got " << cols.size());
+  }
+
   for (size_t time_row = 0; time_row < time_span_end - time_span_start;
        ++time_row) {
-    for (int l = 0; l <= static_cast<int>(std::min(computation_l_max, l_max));
-         ++l) {
-      for (int m = -l; m <= l; ++m) {
-        const size_t computation_goldber_index =
-            Spectral::Swsh::goldberg_mode_index(computation_l_max,
-                                                static_cast<size_t>(l), m) *
-                (time_span_end - time_span_start) +
-            time_row;
-        // NOLINTBEGIN
-        if (is_real) {
-          if (m == 0) {
-            (*buffer_to_update)[computation_goldber_index] =
-                std::complex<double>(
-                    data_matrix[time_row][static_cast<size_t>(square(l))], 0.0);
+    // For modal data we have to compute the correct goldberg mode indices for
+    // each l and m
+    if constexpr (IsModal) {
+      for (int l = 0; l <= static_cast<int>(result_l_max); ++l) {
+        for (int m = -l; m <= l; ++m) {
+          const size_t buffer_index =
+              time_varies_fastest
+                  ? Spectral::Swsh::goldberg_mode_index(
+                        computation_l_max, static_cast<size_t>(l), m) *
+                            (time_span_end - time_span_start) +
+                        time_row
+                  : time_row * square(computation_l_max + 1) +
+                        Spectral::Swsh::goldberg_mode_index(
+                            computation_l_max, static_cast<size_t>(l), m);
+          // NOLINTBEGIN
+          // If this quantity is real we don't expect to store the imaginary m=0
+          // modes in the H5 file so those have to be handled specially. Then
+          // for +/- and even/odd m-modes we have to have the correct sign for
+          // the coefficient.
+          if (is_real) {
+            if (m == 0) {
+              (*buffer_to_update)[buffer_index] = std::complex<double>(
+                  data_matrix[time_row][static_cast<size_t>(square(l))], 0.0);
+            } else {
+              const double factor = (m > 0 or abs(m) % 2 == 0) ? 1.0 : -1.0;
+              const size_t matrix_index =
+                  static_cast<size_t>(square(l) + 2 * abs(m));
+              (*buffer_to_update)[buffer_index] =
+                  factor * std::complex<double>(
+                               data_matrix[time_row][matrix_index - 1],
+                               sgn(m) * data_matrix[time_row][matrix_index]);
+            }
           } else {
-            const double factor = (m > 0 or abs(m) % 2 == 0) ? 1.0 : -1.0;
-            (*buffer_to_update)[computation_goldber_index] =
-                factor * std::complex<double>(
-                             data_matrix[time_row][static_cast<size_t>(
-                                 square(l) + 2 * abs(m) - 1)],
-                             sgn(m) * data_matrix[time_row][static_cast<size_t>(
-                                          square(l) + 2 * abs(m))]);
+            // If this quantity is complex, then it's straight forward to
+            // populate the buffer
+            const size_t matrix_goldberg_index =
+                Spectral::Swsh::goldberg_mode_index(l_max,
+                                                    static_cast<size_t>(l), m);
+            (*buffer_to_update)[buffer_index] = std::complex<double>(
+                data_matrix[time_row][2 * matrix_goldberg_index],
+                data_matrix[time_row][2 * matrix_goldberg_index + 1]);
           }
-        } else {
-          (*buffer_to_update)[computation_goldber_index] = std::complex<double>(
-              data_matrix[time_row][2 * Spectral::Swsh::goldberg_mode_index(
-                                            l_max, static_cast<size_t>(l), m)],
-              data_matrix[time_row][2 * Spectral::Swsh::goldberg_mode_index(
-                                            l_max, static_cast<size_t>(l), m) +
-                                    1]);
+          // NOLINTEND
         }
-        // NOLINTEND
+      }
+    } else {
+      (void)result_l_max;
+      // For nodal data, it must be complex so for each grid point we just read
+      // in the real and imaginary components
+      const size_t number_of_angular_points =
+          Spectral::Swsh::number_of_swsh_collocation_points(l_max);
+      for (size_t i = 0; i < number_of_angular_points; i++) {
+        const size_t buffer_index =
+            time_varies_fastest
+                ? i * (time_span_end - time_span_start) + time_row
+                : time_row * number_of_angular_points + i;
+        (*buffer_to_update)[buffer_index] = std::complex<double>(
+            data_matrix[time_row][2 * i], data_matrix[time_row][2 * i + 1]);
       }
     }
   }
 }
 
-template <typename InputTags>
+template <bool IsModal, typename InputTags>
 double update_buffers_for_time(
     const gsl::not_null<Variables<InputTags>*> buffers,
     const gsl::not_null<size_t*> time_span_start,
@@ -169,7 +261,17 @@ double update_buffers_for_time(
     const DataVector& time_buffer,
     const tuples::tagged_tuple_from_typelist<
         db::wrap_tags_in<Tags::detail::InputDataSet, InputTags>>& dataset_names,
-    const h5::H5File<h5::AccessType::ReadOnly>& cce_data_file) {
+    const h5::H5File<h5::AccessType::ReadOnly>& cce_data_file,
+    const bool time_varies_fastest = true) {
+  if (not IsModal and computation_l_max != l_max) {
+    ERROR(
+        "When reading in nodal data, the LMax that "
+        "the BufferUpdater was constructed with ("
+        << l_max
+        << ") must be the same as the computation LMax passed to the "
+           "update_buffers_for_time function ("
+        << computation_l_max << ").");
+  }
   if (*time_span_end >= time_buffer.size()) {
     return std::numeric_limits<double>::quiet_NaN();
   }
@@ -185,16 +287,14 @@ double update_buffers_for_time(
   *time_span_start = new_span_pair.first;
   *time_span_end = new_span_pair.second;
   // load the desired time spans into the buffers
-  tmpl::for_each<InputTags>([&buffers, &time_span_start, &time_span_end,
-                             &computation_l_max, &l_max, &cce_data_file,
-                             &dataset_names](auto tag_v) {
+  tmpl::for_each<InputTags>([&](auto tag_v) {
     using tag = typename decltype(tag_v)::type;
-    update_buffer_with_modal_data(
+    update_buffer<IsModal, tag::type::type::spin>(
         make_not_null(&get(get<tag>(*buffers)).data()),
         cce_data_file.get<h5::Dat>(
             "/" + get<Tags::detail::InputDataSet<tag>>(dataset_names)),
         computation_l_max, l_max, *time_span_start, *time_span_end,
-        tag::type::type::spin == 0);
+        time_varies_fastest);
     cce_data_file.close_current_object();
   });
   // the next time an update will be required
@@ -204,31 +304,33 @@ double update_buffers_for_time(
 
 }  // namespace detail
 
-MetricWorldtubeH5BufferUpdater::MetricWorldtubeH5BufferUpdater(
+template <typename T>
+MetricWorldtubeH5BufferUpdater<T>::MetricWorldtubeH5BufferUpdater(
     const std::string& cce_data_filename,
     const std::optional<double> extraction_radius, const bool file_is_from_spec)
     : cce_data_file_{cce_data_filename},
       filename_{cce_data_filename},
       file_is_from_spec_(file_is_from_spec) {
-  get<Tags::detail::InputDataSet<Tags::detail::SpatialMetric>>(dataset_names_) =
-      "/g";
+  get<Tags::detail::InputDataSet<Tags::detail::SpatialMetric<T>>>(
+      dataset_names_) = "/g";
   get<Tags::detail::InputDataSet<
-      Tags::detail::Dr<Tags::detail::SpatialMetric>>>(dataset_names_) = "/Drg";
-  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::SpatialMetric>>>(
+      Tags::detail::Dr<Tags::detail::SpatialMetric<T>>>>(dataset_names_) =
+      "/Drg";
+  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::SpatialMetric<T>>>>(
       dataset_names_) = "/Dtg";
 
-  get<Tags::detail::InputDataSet<Tags::detail::Shift>>(dataset_names_) =
+  get<Tags::detail::InputDataSet<Tags::detail::Shift<T>>>(dataset_names_) =
       "/Shift";
-  get<Tags::detail::InputDataSet<Tags::detail::Dr<Tags::detail::Shift>>>(
+  get<Tags::detail::InputDataSet<Tags::detail::Dr<Tags::detail::Shift<T>>>>(
       dataset_names_) = "/DrShift";
-  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::Shift>>>(
+  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::Shift<T>>>>(
       dataset_names_) = "/DtShift";
 
-  get<Tags::detail::InputDataSet<Tags::detail::Lapse>>(dataset_names_) =
+  get<Tags::detail::InputDataSet<Tags::detail::Lapse<T>>>(dataset_names_) =
       "/Lapse";
-  get<Tags::detail::InputDataSet<Tags::detail::Dr<Tags::detail::Lapse>>>(
+  get<Tags::detail::InputDataSet<Tags::detail::Dr<Tags::detail::Lapse<T>>>>(
       dataset_names_) = "/DrLapse";
-  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::Lapse>>>(
+  get<Tags::detail::InputDataSet<::Tags::dt<Tags::detail::Lapse<T>>>>(
       dataset_names_) = "/DtLapse";
 
   // 'VersionHist' is a feature written by SpEC to indicate the details of the
@@ -242,17 +344,29 @@ MetricWorldtubeH5BufferUpdater::MetricWorldtubeH5BufferUpdater(
           .value();
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/Lapse"),
-                                   false);
+                                   cce_data_file_.get<h5::Dat>("/Lapse"), false,
+                                   is_modal, is_modal);
   cce_data_file_.close_current_object();
 }
 
-double MetricWorldtubeH5BufferUpdater::update_buffers_for_time(
-    const gsl::not_null<Variables<cce_metric_input_tags>*> buffers,
+template <typename T>
+double MetricWorldtubeH5BufferUpdater<T>::update_buffers_for_time(
+    const gsl::not_null<Variables<cce_metric_input_tags<T>>*> buffers,
     const gsl::not_null<size_t*> time_span_start,
     const gsl::not_null<size_t*> time_span_end, const double time,
     const size_t computation_l_max, const size_t interpolator_length,
-    const size_t buffer_depth) const {
+    const size_t buffer_depth, const bool time_varies_fastest) const {
+  // We require these to be the same for nodal data since we can't easily
+  // extend nodal data like we can modal data.
+  if (not is_modal and computation_l_max != l_max_) {
+    ERROR(
+        "When reading in nodal data, the LMax that "
+        "MetricWorldtubeH5BufferUpdater was constructed with ("
+        << l_max_
+        << ") must be the same as the computation LMax passed to the "
+           "update_buffers_for_time function ("
+        << computation_l_max << ").");
+  }
   if (*time_span_end >= time_buffer_.size()) {
     return std::numeric_limits<double>::quiet_NaN();
   }
@@ -271,48 +385,43 @@ double MetricWorldtubeH5BufferUpdater::update_buffers_for_time(
   // spatial metric
   for (size_t i = 0; i < 3; ++i) {
     for (size_t j = i; j < 3; ++j) {
-      tmpl::for_each<tmpl::list<Tags::detail::SpatialMetric,
-                                Tags::detail::Dr<Tags::detail::SpatialMetric>,
-                                ::Tags::dt<Tags::detail::SpatialMetric>>>(
-          [this, &i, &j, &buffers, &time_span_start, &time_span_end,
-           &computation_l_max](auto tag_v) {
+      tmpl::for_each<
+          Tags::detail::apply_derivs_t<Tags::detail::SpatialMetric<T>>>(
+          [&, this](auto tag_v) {
             using tag = typename decltype(tag_v)::type;
             this->update_buffer(
                 make_not_null(&get<tag>(*buffers).get(i, j)),
                 cce_data_file_.get<h5::Dat>(detail::dataset_name_for_component(
                     get<Tags::detail::InputDataSet<tag>>(dataset_names_), i,
                     j)),
-                computation_l_max, *time_span_start, *time_span_end);
+                computation_l_max, *time_span_start, *time_span_end,
+                time_varies_fastest);
             cce_data_file_.close_current_object();
           });
     }
     // shift
-    tmpl::for_each<
-        tmpl::list<Tags::detail::Shift, Tags::detail::Dr<Tags::detail::Shift>,
-                   ::Tags::dt<Tags::detail::Shift>>>(
-        [this, &i, &buffers, &time_span_start, &time_span_end,
-         &computation_l_max](auto tag_v) {
+    tmpl::for_each<Tags::detail::apply_derivs_t<Tags::detail::Shift<T>>>(
+        [&, this](auto tag_v) {
           using tag = typename decltype(tag_v)::type;
           this->update_buffer(
               make_not_null(&get<tag>(*buffers).get(i)),
               cce_data_file_.get<h5::Dat>(detail::dataset_name_for_component(
                   get<Tags::detail::InputDataSet<tag>>(dataset_names_), i)),
-              computation_l_max, *time_span_start, *time_span_end);
+              computation_l_max, *time_span_start, *time_span_end,
+              time_varies_fastest);
           cce_data_file_.close_current_object();
         });
   }
   // lapse
-  tmpl::for_each<
-      tmpl::list<Tags::detail::Lapse, Tags::detail::Dr<Tags::detail::Lapse>,
-                 ::Tags::dt<Tags::detail::Lapse>>>(
-      [this, &buffers, &time_span_start, &time_span_end,
-       &computation_l_max](auto tag_v) {
+  tmpl::for_each<Tags::detail::apply_derivs_t<Tags::detail::Lapse<T>>>(
+      [&, this](auto tag_v) {
         using tag = typename decltype(tag_v)::type;
         this->update_buffer(
             make_not_null(&get(get<tag>(*buffers))),
             cce_data_file_.get<h5::Dat>(detail::dataset_name_for_component(
                 get<Tags::detail::InputDataSet<tag>>(dataset_names_))),
-            computation_l_max, *time_span_start, *time_span_end);
+            computation_l_max, *time_span_start, *time_span_end,
+            time_varies_fastest);
         cce_data_file_.close_current_object();
       });
   // the next time an update will be required
@@ -320,18 +429,21 @@ double MetricWorldtubeH5BufferUpdater::update_buffers_for_time(
                                time_buffer_.size() - 1)];
 }
 
-std::unique_ptr<WorldtubeBufferUpdater<cce_metric_input_tags>>
-MetricWorldtubeH5BufferUpdater::get_clone() const {
+template <typename T>
+std::unique_ptr<WorldtubeBufferUpdater<cce_metric_input_tags<T>>>
+MetricWorldtubeH5BufferUpdater<T>::get_clone() const {
   return std::make_unique<MetricWorldtubeH5BufferUpdater>(
       MetricWorldtubeH5BufferUpdater{filename_});
 }
 
-bool MetricWorldtubeH5BufferUpdater::time_is_outside_range(
+template <typename T>
+bool MetricWorldtubeH5BufferUpdater<T>::time_is_outside_range(
     const double time) const {
   return time < time_buffer_[0] or time > time_buffer_[time_buffer_.size() - 1];
 }
 
-void MetricWorldtubeH5BufferUpdater::pup(PUP::er& p) {
+template <typename T>
+void MetricWorldtubeH5BufferUpdater<T>::pup(PUP::er& p) {
   p | time_buffer_;
   p | has_version_history_;
   p | filename_;
@@ -344,71 +456,109 @@ void MetricWorldtubeH5BufferUpdater::pup(PUP::er& p) {
   }
 }
 
-void MetricWorldtubeH5BufferUpdater::update_buffer(
-    const gsl::not_null<ComplexModalVector*> buffer_to_update,
-    const h5::Dat& read_data, const size_t computation_l_max,
-    const size_t time_span_start, const size_t time_span_end) const {
+template <typename T>
+void MetricWorldtubeH5BufferUpdater<T>::update_buffer(
+    const gsl::not_null<T*> buffer_to_update, const h5::Dat& read_data,
+    const size_t computation_l_max, const size_t time_span_start,
+    const size_t time_span_end, const bool time_varies_fastest) const {
   const size_t number_of_columns = read_data.get_dimensions()[1];
-  if (UNLIKELY(buffer_to_update->size() != (time_span_end - time_span_start) *
-                                               square(computation_l_max + 1))) {
-    ERROR("Incorrect storage size for the data to be loaded in.");
+  const size_t expected_size =
+      (time_span_end - time_span_start) *
+      (is_modal ? square(computation_l_max + 1)
+                : Spectral::Swsh::number_of_swsh_collocation_points(
+                      computation_l_max));
+  // We require these to be the same since for nodal data we can't easily extend
+  // nodal data like we can modal data.
+  if (not is_modal and computation_l_max != l_max_) {
+    ERROR(
+        "When reading in nodal data, the LMax that "
+        "MetricWorldtubeH5BufferUpdater was constructed with ("
+        << l_max_
+        << ") must be the same as the computation LMax passed to the "
+           "update_buffer functions ("
+        << computation_l_max << ").");
+  }
+  if (UNLIKELY(buffer_to_update->size() != expected_size)) {
+    ERROR(
+        "Incorrect " << (is_modal ? "modal" : "nodal")
+                     << " storage size for the data to be loaded in. Expected "
+                     << expected_size << " but got " << buffer_to_update->size()
+                     << ". Time span is " << time_span_end << "-"
+                     << time_span_start << "="
+                     << time_span_end - time_span_start);
   }
   auto cols = alg::iota(std::vector<size_t>(number_of_columns - 1), 1_st);
-  const auto data_matrix =
+  auto data_matrix =
       read_data.get_data_subset<std::vector<std::vector<double>>>(
           cols, time_span_start, time_span_end - time_span_start);
 
   *buffer_to_update = 0.0;
   for (size_t time_row = 0; time_row < time_span_end - time_span_start;
        ++time_row) {
-    for (int l = 0; l <= static_cast<int>(std::min(computation_l_max, l_max_));
-         ++l) {
-      for (int m = -l; m <= l; ++m) {
-        // -m because SpEC format is stored in decending m.
-        const int em = file_is_from_spec_ ? -m : m;
-        (*buffer_to_update)[Spectral::Swsh::goldberg_mode_index(
-                                computation_l_max, static_cast<size_t>(l), m) *
-                                (time_span_end - time_span_start) +
-                            time_row] =
-            std::complex<double>(
-                data_matrix[time_row]
-                           [2 * Spectral::Swsh::goldberg_mode_index(
-                                    l_max_, static_cast<size_t>(l), em)],
-                data_matrix[time_row]
-                           [2 * Spectral::Swsh::goldberg_mode_index(
-                                    l_max_, static_cast<size_t>(l), em) +
-                            1]);
+    // If we have modal data, we must construct the ComplexModalVector
+    if constexpr (is_modal) {
+      for (int l = 0;
+           l <= static_cast<int>(std::min(computation_l_max, l_max_)); ++l) {
+        for (int m = -l; m <= l; ++m) {
+          // -m because SpEC format is stored in decending m.
+          const int em = file_is_from_spec_ ? -m : m;
+          const size_t matrix_mode_index = Spectral::Swsh::goldberg_mode_index(
+              l_max_, static_cast<size_t>(l), em);
+          const size_t buffer_mode_index = Spectral::Swsh::goldberg_mode_index(
+              computation_l_max, static_cast<size_t>(l), m);
+          const size_t buffer_index =
+              time_varies_fastest
+                  ? buffer_mode_index * (time_span_end - time_span_start) +
+                        time_row
+                  : time_row * square(computation_l_max + 1) +
+                        buffer_mode_index;
+
+          (*buffer_to_update)[buffer_index] = std::complex<double>(
+              data_matrix[time_row][2 * matrix_mode_index],
+              data_matrix[time_row][2 * matrix_mode_index + 1]);
+        }
+      }
+    } else {
+      // Otherwise we just read the nodal data in as is
+      for (size_t i = 0; i < cols.size(); i++) {
+        const size_t buffer_index =
+            time_varies_fastest
+                ? i * (time_span_end - time_span_start) + time_row
+                : time_row * cols.size() + i;
+        (*buffer_to_update)[buffer_index] = data_matrix[time_row][i];
       }
     }
   }
 }
 
-BondiWorldtubeH5BufferUpdater::BondiWorldtubeH5BufferUpdater(
+namespace {
+// Convenience metafunction to return the correct tag depending on the template
+// parameter T
+template <typename T, typename Tag>
+struct name_tag {
+  using type = Tags::detail::InputDataSet<tmpl::conditional_t<
+      std::is_same_v<T, ComplexModalVector>,
+      Spectral::Swsh::Tags::SwshTransform<Tag>, Tags::BoundaryValue<Tag>>>;
+};
+
+template <typename T, typename Tag>
+using name_tag_t = typename name_tag<T, Tag>::type;
+}  // namespace
+
+template <typename T>
+BondiWorldtubeH5BufferUpdater<T>::BondiWorldtubeH5BufferUpdater(
     const std::string& cce_data_filename,
     const std::optional<double> extraction_radius)
     : cce_data_file_{cce_data_filename}, filename_{cce_data_filename} {
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiBeta>>>(dataset_names_) =
-      "Beta";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiU>>>(dataset_names_) = "U";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiQ>>>(dataset_names_) = "Q";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiW>>>(dataset_names_) = "W";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiJ>>>(dataset_names_) = "J";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::Dr<Tags::BondiJ>>>>(
-      dataset_names_) = "DrJ";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::Du<Tags::BondiJ>>>>(
-      dataset_names_) = "H";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::BondiR>>>(dataset_names_) = "R";
-  get<Tags::detail::InputDataSet<
-      Spectral::Swsh::Tags::SwshTransform<Tags::Du<Tags::BondiR>>>>(
-      dataset_names_) = "DuR";
+  get<name_tag_t<T, Tags::BondiBeta>>(dataset_names_) = "Beta";
+  get<name_tag_t<T, Tags::BondiU>>(dataset_names_) = "U";
+  get<name_tag_t<T, Tags::BondiQ>>(dataset_names_) = "Q";
+  get<name_tag_t<T, Tags::BondiW>>(dataset_names_) = "W";
+  get<name_tag_t<T, Tags::BondiJ>>(dataset_names_) = "J";
+  get<name_tag_t<T, Tags::Dr<Tags::BondiJ>>>(dataset_names_) = "DrJ";
+  get<name_tag_t<T, Tags::Du<Tags::BondiJ>>>(dataset_names_) = "H";
+  get<name_tag_t<T, Tags::BondiR>>(dataset_names_) = "R";
+  get<name_tag_t<T, Tags::Du<Tags::BondiR>>>(dataset_names_) = "DuR";
 
   // the extraction radius is typically not used in the Bondi system, so we
   // don't error if it isn't parsed from the filename. Instead, we'll just error
@@ -418,27 +568,26 @@ BondiWorldtubeH5BufferUpdater::BondiWorldtubeH5BufferUpdater(
       Cce::get_extraction_radius(cce_data_filename, extraction_radius, false);
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/U"), false);
+                                   cce_data_file_.get<h5::Dat>("/U"), false,
+                                   is_modal, true);
   cce_data_file_.close_current_object();
 }
 
-double BondiWorldtubeH5BufferUpdater::update_buffers_for_time(
-    const gsl::not_null<Variables<Tags::worldtube_boundary_tags_for_writing<
-        Spectral::Swsh::Tags::SwshTransform>>*>
-        buffers,
+template <typename T>
+double BondiWorldtubeH5BufferUpdater<T>::update_buffers_for_time(
+    const gsl::not_null<Variables<tags_for_writing>*> buffers,
     const gsl::not_null<size_t*> time_span_start,
     const gsl::not_null<size_t*> time_span_end, const double time,
     const size_t computation_l_max, const size_t interpolator_length,
-    const size_t buffer_depth) const {
-  return detail::update_buffers_for_time<
-      Tags::worldtube_boundary_tags_for_writing<
-          Spectral::Swsh::Tags::SwshTransform>>(
+    const size_t buffer_depth, const bool time_varies_fastest) const {
+  return detail::update_buffers_for_time<is_modal, tags_for_writing>(
       buffers, time_span_start, time_span_end, time, computation_l_max, l_max_,
       interpolator_length, buffer_depth, time_buffer_, dataset_names_,
-      cce_data_file_);
+      cce_data_file_, time_varies_fastest);
 }
 
-void BondiWorldtubeH5BufferUpdater::pup(PUP::er& p) {
+template <typename T>
+void BondiWorldtubeH5BufferUpdater<T>::pup(PUP::er& p) {
   p | time_buffer_;
   p | filename_;
   p | l_max_;
@@ -468,7 +617,8 @@ KleinGordonWorldtubeH5BufferUpdater::KleinGordonWorldtubeH5BufferUpdater(
       Cce::get_extraction_radius(cce_data_filename, extraction_radius, false);
 
   detail::set_time_buffer_and_lmax(make_not_null(&time_buffer_), l_max_,
-                                   cce_data_file_.get<h5::Dat>("/KGPsi"), true);
+                                   cce_data_file_.get<h5::Dat>("/KGPsi"), true,
+                                   true, true);
   cce_data_file_.close_current_object();
 }
 
@@ -477,8 +627,13 @@ double KleinGordonWorldtubeH5BufferUpdater::update_buffers_for_time(
     const gsl::not_null<size_t*> time_span_start,
     const gsl::not_null<size_t*> time_span_end, const double time,
     const size_t computation_l_max, const size_t interpolator_length,
-    const size_t buffer_depth) const {
-  return detail::update_buffers_for_time<klein_gordon_input_tags>(
+    const size_t buffer_depth, const bool time_varies_fastest) const {
+  if (UNLIKELY(not time_varies_fastest)) {
+    ERROR(
+        "KleinGordon worldtube data can only be read from H5 in "
+        "time-varies-fastest form.");
+  }
+  return detail::update_buffers_for_time<true, klein_gordon_input_tags>(
       buffers, time_span_start, time_span_end, time, computation_l_max, l_max_,
       interpolator_length, buffer_depth, time_buffer_, dataset_names_,
       cce_data_file_);
@@ -495,7 +650,33 @@ void KleinGordonWorldtubeH5BufferUpdater::pup(PUP::er& p) {
   }
 }
 
-PUP::able::PUP_ID MetricWorldtubeH5BufferUpdater::my_PUP_ID = 0;
-PUP::able::PUP_ID BondiWorldtubeH5BufferUpdater::my_PUP_ID = 0;
+template <typename T>
+PUP::able::PUP_ID MetricWorldtubeH5BufferUpdater<T>::my_PUP_ID = 0;  // NOLINT
+template <typename T>
+PUP::able::PUP_ID BondiWorldtubeH5BufferUpdater<T>::my_PUP_ID = 0;     // NOLINT
 PUP::able::PUP_ID KleinGordonWorldtubeH5BufferUpdater::my_PUP_ID = 0;  // NOLINT
+
+template class MetricWorldtubeH5BufferUpdater<ComplexModalVector>;
+template class MetricWorldtubeH5BufferUpdater<DataVector>;
+template class BondiWorldtubeH5BufferUpdater<ComplexModalVector>;
+template class BondiWorldtubeH5BufferUpdater<ComplexDataVector>;
+
+#define SPIN(data) BOOST_PP_TUPLE_ELEM(0, data)
+#define IS_MODAL(data) BOOST_PP_TUPLE_ELEM(1, data)
+#define VEC_TYPE(data) BOOST_PP_TUPLE_ELEM(2, data)
+
+#define INSTANTIATE(_, data)                                       \
+  template void detail::update_buffer<IS_MODAL(data), SPIN(data)>( \
+      const gsl::not_null<VEC_TYPE(data)*> buffer_to_update,       \
+      const h5::Dat& read_data, const size_t computation_l_max,    \
+      const size_t l_max, const size_t time_span_start,            \
+      const size_t time_span_end, const bool time_varies_fastest);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE, (0, 1, 2), (true, false),
+                        (ComplexModalVector, ComplexDataVector))
+
+#undef INSTANTIATE
+#undef VEC_TYPE
+#undef IS_MODAL
+#undef SPIN
 }  // namespace Cce

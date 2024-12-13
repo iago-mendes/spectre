@@ -44,7 +44,8 @@ class KleinGordonDummyBufferUpdater
       const gsl::not_null<size_t*> time_span_start,
       const gsl::not_null<size_t*> time_span_end, const double time,
       const size_t l_max, const size_t interpolator_length,
-      const size_t buffer_depth) const override {
+      const size_t buffer_depth,
+      const bool /*time_varies_fastest*/ = true) const override {
     if (*time_span_end > interpolator_length and
         time_buffer_[*time_span_end - interpolator_length + 1] > time) {
       // the next time an update will be required

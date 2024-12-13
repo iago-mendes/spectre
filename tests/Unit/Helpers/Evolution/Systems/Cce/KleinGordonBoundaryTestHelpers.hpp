@@ -57,12 +57,12 @@ void write_scalar_tensor_test_file(const AnalyticSolution& solution,
   }
   // scoped to close the file
   {
-    TestHelpers::WorldtubeModeRecorder recorder{filename, l_max};
+    TestHelpers::WorldtubeModeRecorder recorder{l_max, filename};
     // write times to file for several steps before and after the target time
     for (size_t t = 0; t < 30; ++t) {
       const double time = 0.1 * static_cast<double>(t) + target_time - 1.5;
       // create tensor data
-      TestHelpers::create_fake_time_varying_modal_data(
+      TestHelpers::create_fake_time_varying_data(
           make_not_null(&spatial_metric_coefficients),
           make_not_null(&dt_spatial_metric_coefficients),
           make_not_null(&dr_spatial_metric_coefficients),
@@ -116,10 +116,10 @@ void write_scalar_tensor_test_file(const AnalyticSolution& solution,
       // write scalar data
       recorder.append_worldtube_mode_data(
           detail::dataset_name_for_component("/KGPsi"), time, get(kg_psi_modal),
-          l_max);
+          false, true);
       recorder.append_worldtube_mode_data(
           detail::dataset_name_for_component("/dtKGPsi"), time,
-          get(kg_pi_modal), l_max);
+          get(kg_pi_modal), false, true);
     }
   }
 }
