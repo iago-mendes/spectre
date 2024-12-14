@@ -569,5 +569,6 @@ RUN if [ ${UBUNTU_VERSION} != 18.04 ] && [ "$TARGETARCH" != "amd64" ]; then \
     -D BUILD_DOCS=OFF \
     -D USE_CCACHE=OFF \
     .. \
-    && make ${PARALLEL_MAKE_ARG} CharacteristicExtract ReduceCceWorldtube \
+    && make ${PARALLEL_MAKE_ARG} CharacteristicExtract PreprocessCceWorldtube \
+    WriteCceWorldtubeCoordsToFile \
     && ctest -LE unit -R CharacteristicExtract

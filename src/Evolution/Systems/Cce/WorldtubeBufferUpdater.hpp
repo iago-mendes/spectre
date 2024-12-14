@@ -143,7 +143,7 @@ class KleinGordonWorldtubeH5BufferUpdater;
 /*!
  *  \brief Abstract base class for utilities that are able to perform the buffer
  *  updating procedure needed by the `WorldtubeDataManager` or by the
- *  `ReduceCceWorldtube` executable.
+ *  `PreprocessCceWorldtube` executable.
  *
  *  \details The methods that are required to be overridden in the derived
  * classes are:

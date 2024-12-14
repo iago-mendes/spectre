@@ -1,0 +1,12 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+# [preprocess_cce_worldtube_yaml_doxygen_example]
+InputH5File: InputFilename.h5
+OutputH5File: ReducedWorldtubeR0292.h5
+InputDataFormat: MetricModal
+ExtractionRadius: 292
+FixSpecNormalization: False
+BufferDepth: Auto
+LMaxFactor: 3
+# [preprocess_cce_worldtube_yaml_doxygen_example]

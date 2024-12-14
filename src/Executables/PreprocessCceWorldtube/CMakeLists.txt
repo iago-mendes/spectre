@@ -1,12 +1,12 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
-set(EXECUTABLE ReduceCceWorldtube)
+set(EXECUTABLE PreprocessCceWorldtube)
 
 add_spectre_executable(
   ${EXECUTABLE}
   EXCLUDE_FROM_ALL
-  ReduceCceWorldtube.cpp
+  PreprocessCceWorldtube.cpp
   )
 
 target_link_libraries(

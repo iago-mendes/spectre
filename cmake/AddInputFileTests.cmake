@@ -249,6 +249,6 @@ configure_file(
 # These paths should be relative to the input file directory passed to
 # `add_input_file_tests`
 set(INPUT_FILE_WHITELIST
-    "ReduceCceWorldtube/ReduceCceWorldtube.yaml")
+    "PreprocessCceWorldtube/PreprocessCceWorldtube.yaml")
 
 add_input_file_tests("${CMAKE_SOURCE_DIR}/tests/InputFiles/" ${INPUT_FILE_WHITELIST})

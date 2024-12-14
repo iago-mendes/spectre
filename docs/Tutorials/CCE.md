@@ -22,11 +22,14 @@ release). Inside this tarball is
 - the CCE executable `CharacteristicExtract`
 - an example YAML input file
 - an example set of Bondi-Sachs worldtube data in the `Tests/` directory (see
-   [Input worldtube data formats](#input_worldtube_data_formats) section)
+   [Input worldtube data formats](#input_worldtube_data_format) section)
 - example output from CCE in the `Tests/` directory
-- a `ReduceCceWorldtube` executable and YAML file for converting between
-   [worldtube data formats](#input_worldtube_data_formats) in the
-   `ReduceCceWorldtube/` diretory
+- a `PreprocessCceWorldtube` executable and YAML file for converting between
+   [worldtube data formats](#input_worldtube_data_format) in the
+   `PreprocessCceWorldtube/` diretory
+- a `WriteCceWorldtubeCoordsToFile` executable that writes
+   [grid points on a sphere](#spherical_nodes) to a text file in the
+   `PreprocessCceWorldtube/` directory
 - a python script `CheckCceOutput.py` (meant to be run from the root of the
   tarball and after you run the example YAML input file also in the root of the
   tarball) that will check if the example output is correct
@@ -69,104 +72,23 @@ make CharacteristicExtract
 \note You may want to add the `-j4` flag to speed up compilation. However, be
 warned that this executable will need several GB of memory to build.
 
-## Input worldtube data formats {#input_worldtube_data_formats}
+## Input worldtube data format {#input_worldtube_data_format}
 
-The worldtube data must be constructed as spheres of constant coordinate
-radius, and (for the time being) written to a filename of the format
-`...CceRXXXX.h5`, where the `XXXX` is to be replaced by the integer for which
-the extraction radius is equal to `XXXX`M. For instance, a 100M extraction
-should have filename `...CceR0100.h5`. This scheme of labeling files with the
-extraction radius is constructed for compatibility with SpEC worldtube data.
+In order to run the CCE executable, the worldtube data must be represented as
+Bondi-Sachs variables decomposed as a subset of spin-weighted spherical harmonic
+modes on a sphere of constant coordinate radius. We have chosen this format
+because it is far more space-efficient to store on disk than other formats. This
+section will detail the
+[required data format](#required_h5_worldtube_data_format), provide options for
+[converting worldtube data](#converting_worldtube_data) from other NR codes into
+our format, and give insights into
+[what the worldtube data should look like](#worldtube_data_looks).
 
-Currently CCE is able to read in worldtube data in two different formats.
+### Required H5 worldtube data format {#required_h5_worldtube_data_format}
 
-### Cartesian metric and derivatives {#cartesian_metric_and_derivatives}
+Within the H5 file that holds the worldtube data, there must be the following
+datasets with these exact names (including the `.dat` suffix):
 
-This metric data format must be provided as the following datasets:
-- `gxx.dat`, `gxy.dat`, `gxz.dat`, `gyy.dat`, `gyz.dat`, `gzz.dat`
-- `Drgxx.dat`, `Drgxy.dat`, `Drgxz.dat`, `Drgyy.dat`, `Drgyz.dat`, `Drgzz.dat`
-- `Dtgxx.dat`, `Dtgxy.dat`, `Dtgxz.dat`, `Dtgyy.dat`, `Dtgyz.dat`, `Dtgzz.dat`
-- `Shiftx.dat`, `Shifty.dat`, `Shiftz.dat`
-- `DrShiftx.dat`, `DrShifty.dat`, `DrShiftz.dat`
-- `DtShiftx.dat`, `DtShifty.dat`, `DtShiftz.dat`
-- `Lapse.dat`
-- `DrLapse.dat`
-- `DtLapse.dat`
-
-#### Spherical harmonic modes {#cartesian_spherical_modes}
-
-In this format, the worldtube data are stored as spherical harmonic
-coefficients. We use spherical harmonic conventions documented by the
-ylm::Spherepack class. Each row must start with the time stamp, and the
-remaining values are the complex modes in m-varies-fastest format. That is,
-```
-"time", "Lapse_Re(0,0)", "Lapse_Im(0,0)",
-"Lapse_Re(1,1)", "Lapse_Im(1,1)", "Lapse_Re(1,0)", "Lapse_Im(1,0)",
-"Lapse_Re(1,-1)", "Lapse_Im(1,-1)",
-"Lapse_Re(2,2)", "Lapse_Im(2,2)", "Lapse_Re(2,1)", "Lapse_Im(2,1)",
-"Lapse_Re(2,0)", "Lapse_Im(2,0)", "Lapse_Re(2,-1)", "Lapse_Im(2,-1)",
-"Lapse_Re(2,-2)", "Lapse_Im(2,-2)"
-```
-
-#### Spherical harmonic nodes {#cartesian_spherical_nodes}
-
-\warning This format is not yet fully supported but is under development. If you
-need it please file an issue so we can escalate the priority.
-
-In this format the value of the functions at specially chosen collocation points
-(grid points) is read in. This allows SpECTRE to perform integrals, derivatives,
-and interpolation exactly on the input data. These grid points are
-Gauss-Legendre in $cos(\theta)$ and equally spaced in $\phi$. Below is a routine
-for computing the spherical harmonic $\theta$ and $\phi$ values. These can be
-used to compute the Cartesian locations for a given radius using the standard
-transformation. The routine supports \f$\ell\in[4, 32]\f$.
-
-<details id="details">
-<summary> C Code for computing SpECTRE CCE gridpoint locations </summary>
-\snippet Test_Spherepack.cpp spectre_cce_grid_point_locations
-</details>
-
-Each `dat` file holds `1 + (l_max + 1) * (2 * l_max + 1)` columns, with the
-first one being the `time`. The columns must be in \f$\theta\f$-varies-fastest
-ordering. That is,
-```
-"time",
-"Theta_0_Phi_0", "Theta_1_Phi_0", "Theta_2_Phi_0", "Theta_3_Phi_0",
-"Theta_4_Phi_0",
-"Theta_0_Phi_1", "Theta_1_Phi_1", "Theta_2_Phi_1", "Theta_3_Phi_1",
-"Theta_4_Phi_1",
-```
-
-
-#### Formatting of data types
-
-Each dataset in the file must also have an attribute named "Legend" which
-is an ASCII-encoded null-terminated variable-length string. That is, the HDF5
-type is:
-```
-DATATYPE  H5T_STRING {
-  STRSIZE H5T_VARIABLE;
-  STRPAD H5T_STR_NULLTERM;
-  CSET H5T_CSET_ASCII;
-  CTYPE H5T_C_S1;
-}
-```
-This can be checked for a dataset by running
-```
-h5dump -a DrLapse.dat/Legend CceR0150.h5
-```
-
-### Bondi-Sachs {#bondi_sachs}
-
-The second format is Bondi-Sachs metric component data.
-This format is far more space-efficient (by around a factor of 4) than the
-[cartesian_metric](#cartesian_metric_and_derivatives) format.
-
-The format is similar to the
-[cartesian_metric](#cartesian_metric_and_derivatives) format, except in
-spin-weighted spherical harmonic modes, and the real (spin-weight-0) quantities
-omit the redundant negative-m modes and imaginary parts of m=0 modes.
-The quantities that must be provided by the Bondi-Sachs metric data format are:
 - `Beta.dat`
 - `DrJ.dat`
 - `DuR.dat`
@@ -177,7 +99,31 @@ The quantities that must be provided by the Bondi-Sachs metric data format are:
 - `U.dat`
 - `W.dat`
 
-An example of the columns of these dat files is
+Each dataset in the file must also have an attribute named `Legend` which
+is an ASCII-encoded null-terminated variable-length string. That is, the HDF5
+type is:
+
+```
+DATATYPE  H5T_STRING {
+  STRSIZE H5T_VARIABLE;
+  STRPAD H5T_STR_NULLTERM;
+  CSET H5T_CSET_ASCII;
+  CTYPE H5T_C_S1;
+}
+```
+
+This can be checked for a dataset by running
+
+```
+h5dump -a Beta.dat/Legend WorldtubeFile.h5
+```
+
+For the ordering of the data, we use spherical harmonic conventions documented
+by the ylm::Spherepack class. Each row must start with the time stamp, and the
+remaining values are the complex modes in m-varies-fastest format. For
+spin-weight zero Bondi variables (`Beta`, `R`, `DuR`, `W`), we omit the
+redundant negative-m modes and imaginary parts of the m=0 modes to save space on
+disk. Here is an example of a legend for the spin-weight zero variables:
 
 ```
 "time", "Re(0,0)", "Re(1,0)", "Re(1,1)", "Im(1,1)", "Re(2,0)",
@@ -185,43 +131,170 @@ An example of the columns of these dat files is
 "Im(3,1)", "Re(3,2)", "Im(3,2)", "Re(3,3)", "Im(3,3)", ...
 ```
 
-See \cite Moxon2020gha for a description of these quantities.
-
-\note The columns of the legend of the
-[cartesian_metric](#cartesian_metric_and_derivatives) format are different from
-the [Bondi-Sachs](#bondi_sachs) format. In the
-[cartesian_metric](#cartesian_metric_and_derivatives), the name of the quantity
-is in the legend, while for [Bondi-Sachs](#bondi_sachs) it isn't.
-
-### Converting data formats
-
-Since the [Bondi-Sachs](#bondi_sachs) format is far more space-efficient,
-SpECTRE provides a separate executable for converting from the
-[cartesian_metric](#cartesian_metric_and_derivatives) format to the
-[Bondi-Sachs](#bondi_sachs) worldtube format called `ReduceCceWorldtube`.
-The `ReduceCceWorldtube` executable should be run on a
-[cartesian_metric](#cartesian_metric_and_derivatives) worldtube file, and will
-produce a corresponding 'reduced' Bondi-Sachs worldtube file.
-This executable works similarly to our other executables by accepting a YAML
-input file:
+For non-zero spin-weight Bondi variables (`J`, `DrJ`, `H`, `Q`, `U`) we must
+store all complex m-modes. Here is an example of a legend for variables where
+all complex m-modes must be specified:
 
 ```
-ReduceCceWorldtube --input-file ReduceCceWorldtube.yaml
+"time", "Re(0,0)", "Im(0,0)", "Re(1,-1)", "Im(1,-1)", "Re(1,0)", "Im(1,0)",
+"Re(1,1)", "Im(1,1)", "Re(2,-2)", "Im(2,-2)", "Re(2,-1)", "Im(2,-1)", "Re(2,0)",
+"Im(2,0)", "Re(2,1)", "Im(2,1)", "Re(2,2)", "Im(2,2)", ...
+```
+
+We don't have strict requirement on the name of the H5 file that holds the
+worldtube data. However, it is recommended to name the H5 file `...CceRXXXX.h5`,
+where the `XXXX` is to be replaced by the zero-padded integer for which the
+extraction radius is equal to `XXXX`M. For instance, a 100M extraction should
+have filename `...CceR0100.h5`. If you do not adhere to this naming convention,
+you will need to specify the extraction radius in your YAML input file.
+
+\note This scheme of labeling files with the extraction radius is constructed
+for compatibility with worldtube data from the SXS Collaboration's SpEC code.
+
+### Converting to the required H5 format {#converting_worldtube_data}
+
+Unless you are using worldtube data that was generated from SpECTRE (or SpEC),
+it's possible that your worldtube data is not in the correct format. We allow
+conversion into our data format from a few other data formats using the
+[`PreprocessCceWorldtube` executable provided](#acquiring_the_cce_module). These are
+
+- Nodal cartesian metric data (which we refer to as "metric nodal")
+- Modal cartesian metric data (which we refer to as "metric modal")
+- Nodal Bondi-Sachs data (which we refer to as "bondi nodal")
+
+Requirements for these data formats are listed below.
+
+#### Spherical harmonic modes {#spherical_modes}
+
+When we refer to a "modal" data format, we mean that the worldtube data are
+stored as spherical harmonic coefficients (a.k.a. modes). We use spherical
+harmonic conventions documented by the ylm::Spherepack class. For each dataset,
+each row must start with the time stamp, and the remaining values are the
+complex modes in m-varies-fastest format. That is,
+
+```
+"time", "Lapse_Re(0,0)", "Lapse_Im(0,0)",
+"Lapse_Re(1,1)", "Lapse_Im(1,1)", "Lapse_Re(1,0)", "Lapse_Im(1,0)",
+"Lapse_Re(1,-1)", "Lapse_Im(1,-1)",
+"Lapse_Re(2,2)", "Lapse_Im(2,2)", "Lapse_Re(2,1)", "Lapse_Im(2,1)",
+"Lapse_Re(2,0)", "Lapse_Im(2,0)", "Lapse_Re(2,-1)", "Lapse_Im(2,-1)",
+"Lapse_Re(2,-2)", "Lapse_Im(2,-2)"
+```
+
+Each dataset in the H5 file must also have an attribute
+named `Legend` which is an ASCII-encoded null-terminated variable-length string.
+
+##### Spherical harmonic nodes {#spherical_nodes}
+
+When we refer to a "nodal" data format, we mean that the worldtube data are
+stored as values at specially chosen collocation points (a.k.a. grid points or
+nodes). This allows SpECTRE to perform integrals, derivatives, and interpolation
+exactly on the input data. These grid points are Gauss-Legendre in $cos(\theta)$
+and equally spaced in $\phi$.
+
+Below is a routine for computing the spherical
+harmonic $\theta$ and $\phi$ values. These can be used to compute the Cartesian
+locations for a given radius using the standard transformation. The routine
+supports \f$\ell\in[4, 32]\f$.
+
+<details id="details">
+<summary> C Code for computing SpECTRE CCE gridpoint locations </summary>
+\snippet Test_Spherepack.cpp spectre_cce_grid_point_locations
+</details>
+
+Alternatively, if your code can read in grid points from a text file, you can
+run the `WriteCceWorldtubeCoordsToFile` executable like so to get a text file
+with three columns for the x,y,z coordinates of each point.
+
+```
+./WriteCceWorldtubeCoordsToFile -r 200 -L 16 -o GridPointsR200.txt
+```
+
+Each dataset holds `1 + (l_max + 1) * (2 * l_max + 1)` columns, with the
+first one being the `time`. The columns must be in \f$\theta\f$-varies-fastest
+ordering. That is,
+
+```
+"time",
+"Phi_0_Theta_0", "Phi_0_Theta_1", "Phi_0_Theta_2", "Phi_0_Theta_3", "Phi_0_Theta_4",
+"Phi_1_Theta_0", "Phi_1_Theta_1", "Phi_1_Theta_2", "Phi_1_Theta_3", "Phi_1_Theta_4",
+```
+
+Each dataset in the H5 file must also have an attribute
+named `Legend` which is an ASCII-encoded null-terminated variable-length string.
+
+\note Nodal data is likely the easiest to write out since no conversion to
+spherical harmonic coefficients is necessary.
+
+#### Cartesian metric and derivatives {#cartesian_metric_and_derivatives}
+
+For worldtube data stored in an H5 file in either the "metric nodal" or "metric
+modal" formats, there must be the following datasets with these exact names
+(including the `.dat` suffix):
+
+- `gxx.dat`, `gxy.dat`, `gxz.dat`, `gyy.dat`, `gyz.dat`, `gzz.dat`
+- `Drgxx.dat`, `Drgxy.dat`, `Drgxz.dat`, `Drgyy.dat`, `Drgyz.dat`, `Drgzz.dat`
+- `Dtgxx.dat`, `Dtgxy.dat`, `Dtgxz.dat`, `Dtgyy.dat`, `Dtgyz.dat`, `Dtgzz.dat`
+- `Shiftx.dat`, `Shifty.dat`, `Shiftz.dat`
+- `DrShiftx.dat`, `DrShifty.dat`, `DrShiftz.dat`
+- `DtShiftx.dat`, `DtShifty.dat`, `DtShiftz.dat`
+- `Lapse.dat`
+- `DrLapse.dat`
+- `DtLapse.dat`
+
+The layout of each of these datasets must be in either
+[spherical harmonic modes](#spherical_modes) or
+[spherical harmonic nodes](#spherical_nodes).
+
+#### Bondi-Sachs {#bondi_sachs}
+
+In the "bondi nodal" format, you must have the same Bondi variables as the
+[required format](#required_h5_worldtube_data_format), but each variable layout
+must be the [spherical harmonic nodal layout](#spherical_nodes).
+
+If you already have data in the
+[required "bondi modal" format](#required_h5_worldtube_data_format), then
+nothing needs to be done.
+
+#### Running the PreprocessCceWorldtube executable
+
+The `PreprocessCceWorldtube` executable should be run on any of the
+[allowed input formats](#converting_worldtube_data), and will produce a
+corresponding Bondi-Sachs worldtube file that can be read in by CCE. This
+executable works similarly to our other executables by accepting a YAML input
+file:
+
+```
+PreprocessCceWorldtube --input-file PreprocessCceWorldtube.yaml
 ```
 
 with a YAML file
 
-\snippet ReduceCceWorldtube.yaml reduce_cce_worldtube_yaml_doxygen_example
+\snippet PreprocessCceWorldtube.yaml preprocess_cce_worldtube_yaml_doxygen_example
 
-The option `LMaxFactor` determines the factor by which the resolution of
-the boundary computation that is run will exceed the resolution of the
-input and output files.
-Empirically, we have found that `LMaxFactor` of 3 is sufficient to achieve
-roundoff precision in all boundary data we have attempted, and an `LMaxFactor`
-of 2 is usually sufficient to vastly exceed the precision of the simulation that
-provided the boundary dataset.
+In addition to converting worldtube data formats, `PreprocessCceWorldtube` also
+accepts multiple input worldtube H5 files that have sequential times (e.g. from
+different checkpoints) and will combine the times from all H5 files alongside
+converting the worldtube data format. If there are duplicate or overlapping
+times, the last/latest of the times are chosen. If you pass multiple input
+worldtube H5 files, it is assumed that they are ordered increasing in time.
 
-### What Worldtube data "should" look like
+Here are some notes about the different options in the YAML input file:
+
+- If the extraction radius is in the `InputH5File` names, then the
+  `ExtractionRadius` option can be `Auto`. Otherwise, it must be specified.
+- The option `LMaxFactor` determines the factor by which the resolution of the
+  boundary computation that is run will exceed the resolution of the input and
+  output files. Empirically, we have found that `LMaxFactor` of 3 is sufficient
+  to achieve roundoff precision in all boundary data we have attempted, and an
+  `LMaxFactor` of 2 is usually sufficient to vastly exceed the precision of the
+  simulation that provided the boundary dataset.
+- `FixSpecNormalization` should always be `False` unless you are using a
+  particualy old version of SpEC
+- `BufferDepth` is an advanced option that lets you load more data into RAM at
+  once so there are fewer filesystem accesses.
+
+### What Worldtube data "should" look like {#worldtube_data_looks}
 
 While no two simulations will look exactly the same, there are some general
 trends in the worldtube data to look for. Here is a plot of some modes of the
@@ -347,7 +420,7 @@ with h5py.File(input_file,'r') as input_h5,\
 ```
 
 The rechunked data will still be in the same
-[format](#input_worldtube_data_formats) as before, but will just have a
+[format](#input_worldtube_data_format) as before, but will just have a
 different underlying structure in the H5 file that makes it faster to read in.
 
 ## Running the CCE executable {#running_the_cce_executable}

@@ -411,7 +411,7 @@ bool BondiWorldtubeDataManager::populate_hypersurface_boundary_data(
       du_r / bondi_r;
 
   // there's only a couple of tags desired by the core computation that aren't
-  // stored in the 'reduced' format, so we perform the remaining computation
+  // stored in the bondi format, so we perform the remaining computation
   // in-line here.
   const auto& du_bondi_j = get(get<Tags::BoundaryValue<Tags::Du<Tags::BondiJ>>>(
       *boundary_data_variables));
