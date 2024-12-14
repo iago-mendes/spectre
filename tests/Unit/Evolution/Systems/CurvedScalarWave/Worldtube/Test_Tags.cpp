@@ -831,6 +831,8 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.CurvedScalarWave.Worldtube.Tags",
       "TimeDilationFactor");
   TestHelpers::db::test_simple_tag<Tags::BackgroundQuantities<3>>(
       "BackgroundQuantities");
+  TestHelpers::db::test_simple_tag<Tags::AccelerationTerms>(
+      "AccelerationTerms");
   test_excision_sphere_tag();
   test_self_force_options();
   test_radius_options();

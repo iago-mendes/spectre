@@ -59,15 +59,31 @@ struct IteratePunctureField {
             const auto iterated_puncture_field) {
           tnsr::I<double, Dim> iterated_acceleration{
               {self_force_data[0], self_force_data[1], self_force_data[2]}};
+          const size_t face_size =
+              get<0>(centered_face_coordinates.value()).size();
+
           if (not iterated_puncture_field->has_value()) {
-            iterated_puncture_field->emplace(
-                get<0>(centered_face_coordinates.value()).size());
+            iterated_puncture_field->emplace(face_size);
           }
 
           puncture_field(make_not_null(&iterated_puncture_field->value()),
                          centered_face_coordinates.value(),
                          position_velocity[0], position_velocity[1],
                          iterated_acceleration, 1., order);
+          Variables<tmpl::list<CurvedScalarWave::Tags::Psi,
+                               ::Tags::dt<CurvedScalarWave::Tags::Psi>,
+                               ::Tags::deriv<CurvedScalarWave::Tags::Psi,
+                                             tmpl::size_t<3>, Frame::Inertial>>>
+              acceleration_terms(face_size);
+          acceleration_terms_1(
+              make_not_null(&acceleration_terms),
+              centered_face_coordinates.value(), position_velocity[0],
+              position_velocity[1], iterated_acceleration, self_force_data[3],
+              self_force_data[4], self_force_data[5], self_force_data[6],
+              self_force_data[7], self_force_data[8], self_force_data[9],
+              self_force_data[10], self_force_data[11], self_force_data[12],
+              self_force_data[13], self_force_data[14], 1.);
+          iterated_puncture_field->value() += acceleration_terms;
           iterated_puncture_field->value() *= charge;
         },
         make_not_null(&box));

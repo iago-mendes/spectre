@@ -13,6 +13,7 @@
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/IterateAccelerationTerms.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/ObserveWorldtubeSolution.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/ReceiveElementData.hpp"
+#include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/SendAccelerationTerms.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/SendToElements.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/SingletonActions/UpdateAcceleration.hpp"
 #include "IO/Observer/Actions/RegisterSingleton.hpp"
@@ -87,7 +88,8 @@ struct WorldtubeSingleton {
   };
   using step_actions =
       tmpl::list<Actions::ChangeSlabSize, Actions::ReceiveElementData,
-                 Actions::IterateAccelerationTerms<Metavariables>,
+                 ::Actions::MutateApply<IterateAccelerationTerms>,
+                 Actions::SendAccelerationTerms<Metavariables>,
                  ::Actions::MutateApply<UpdateAcceleration>,
                  ::Actions::RecordTimeStepperData<worldtube_system>,
                  ::Actions::UpdateU<worldtube_system>,

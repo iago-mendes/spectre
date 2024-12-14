@@ -108,7 +108,8 @@ struct MockWorldtubeSingleton {
       Parallel::PhaseActions<
           Parallel::Phase::Testing,
           tmpl::list<Actions::ReceiveElementData,
-                     Actions::IterateAccelerationTerms<Metavariables>,
+                     ::Actions::MutateApply<IterateAccelerationTerms>,
+                     Actions::SendAccelerationTerms<Metavariables>,
                      ::Actions::MutateApply<UpdateAcceleration>>>>;
   using component_being_mocked = WorldtubeSingleton<Metavariables>;
 };
