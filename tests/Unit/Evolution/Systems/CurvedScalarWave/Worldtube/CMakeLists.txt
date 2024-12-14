@@ -10,6 +10,7 @@ set(LIBRARY_SOURCES
   Test_RadiusFunctions.cpp
   Test_SelfForce.cpp
   Test_Tags.cpp
+  Test_Triggers.cpp
   ElementActions/Test_SendToWorldtube.cpp
   ElementActions/Test_ReceiveWorldtubeData.cpp
   ElementActions/Test_InitializeConstraintGammas.cpp
