@@ -242,6 +242,12 @@ authors:
   family-names: Pannone
   given-names: Kyle
   orcid: https://orcid.org/0009-0005-8607-2113
+- affiliation: International Centre for Theoretical Sciences - Tata Institute of Fundamental
+    Research (ICTS-TIFR), Survey No. 151, Shivakote, Hesaraghatta Hobli, Bengaluru
+    - 560 089, Karnataka, India.
+  family-names: Prasad
+  given-names: Vaishak
+  orcid: https://orcid.org/0000-0001-6712-2457
 - affiliation: Nicholas and Lee Begovich Center for Gravitational-Wave Physics and
     Astronomy, California State University, Fullerton, Fullerton, California 92831,
     USA
@@ -308,8 +314,8 @@ authors:
   given-names: Jooheon
   orcid: https://orcid.org/0000-0002-3251-0924
 cff-version: 1.2.0
-date-released: 2024-09-29
-doi: 10.5281/zenodo.13858965
+date-released: 2024-12-16
+doi: 10.5281/zenodo.14503530
 keywords:
 - Software
 - Astrophysics
@@ -1027,4 +1033,4 @@ references:
 repository-code: https://github.com/sxs-collaboration/spectre
 title: SpECTRE
 url: https://spectre-code.org
-version: 2024.09.29
+version: 2024.12.16
