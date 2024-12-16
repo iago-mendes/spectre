@@ -3,7 +3,11 @@
 
 #include "Domain/Structure/SegmentId.hpp"
 
+#if BOOST_VERSION >= 106700
 #include <boost/container_hash/hash.hpp>
+#else
+#include <boost/functional/hash.hpp>
+#endif
 #include <cstddef>
 #include <functional>
 #include <ostream>
