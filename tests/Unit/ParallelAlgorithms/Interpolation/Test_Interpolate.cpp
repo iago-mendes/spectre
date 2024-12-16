@@ -289,10 +289,6 @@ SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Interpolator.InterpolateEvent",
 
   metavars::event event{};
 
-  // Functions of time aren't ready yet.
-  CHECK_FALSE(static_cast<const Event&>(event).is_ready(
-      box, cache, array_index, std::add_pointer_t<elem_component>{}));
-
   // Update time in box and functions of time
   db::mutate<::Tags::Time>([](gsl::not_null<double*> time) { *time = 1.0; },
                            make_not_null(&box));
@@ -300,9 +296,6 @@ SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Interpolator.InterpolateEvent",
                    control_system::UpdateSingleFunctionOfTime>(
       cache, name, initial_expr_time, DataVector{1, 0.0}, observation_time);
 
-  // Now everything should be ready
-  CHECK(static_cast<const Event&>(event).is_ready(
-      box, cache, array_index, std::add_pointer_t<elem_component>{}));
   CHECK(event.needs_evolved_variables());
 
   auto obs_box = make_observation_box<

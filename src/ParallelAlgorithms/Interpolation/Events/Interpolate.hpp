@@ -13,7 +13,6 @@
 #include "Parallel/ArrayCollection/PerformAlgorithmOnElement.hpp"
 #include "Parallel/ArrayCollection/Tags/ElementLocations.hpp"
 #include "Parallel/GlobalCache.hpp"
-#include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/GetItemFromDistributedObject.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "ParallelAlgorithms/Interpolation/Events/GetComputeItemsOnSource.hpp"
@@ -34,9 +33,6 @@ class GlobalCache;
 namespace Tags {
 struct Time;
 }  // namespace Tags
-namespace domain::Tags {
-struct FunctionsOfTime;
-}  // namespace domain::Tags
 namespace Events::Tags {
 template <size_t Dim>
 struct ObserverMesh;
@@ -111,27 +107,13 @@ class Interpolate<VolumeDim, InterpolationTargetTag,
     }
   }
 
-  using is_ready_argument_tags = tmpl::list<::Tags::Time>;
+  using is_ready_argument_tags = tmpl::list<>;
 
   template <typename Metavariables, typename ArrayIndex, typename Component>
-  bool is_ready(const double time, Parallel::GlobalCache<Metavariables>& cache,
-                const ArrayIndex& array_index,
-                const Component* const component) const {
-    if constexpr (Parallel::is_dg_element_collection_v<Component>) {
-      const auto element_location = static_cast<int>(
-          Parallel::local_synchronous_action<
-              Parallel::Actions::GetItemFromDistributedOject<
-                  Parallel::Tags::ElementLocations<VolumeDim>>>(
-              Parallel::get_parallel_component<Component>(cache))
-              ->at(array_index));
-      return domain::functions_of_time_are_ready_threaded_action_callback<
-          domain::Tags::FunctionsOfTime,
-          Parallel::Actions::PerformAlgorithmOnElement<false>>(
-          cache, element_location, component, time, std::nullopt, array_index);
-    } else {
-      return domain::functions_of_time_are_ready_algorithm_callback<
-          domain::Tags::FunctionsOfTime>(cache, array_index, component, time);
-    }
+  bool is_ready(Parallel::GlobalCache<Metavariables>& /*cache*/,
+                const ArrayIndex& /*array_index*/,
+                const Component* const /*component*/) const {
+    return true;
   }
 
   bool needs_evolved_variables() const override { return true; }
