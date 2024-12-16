@@ -173,12 +173,9 @@ each row must start with the time stamp, and the remaining values are the
 complex modes in m-varies-fastest format. That is,
 
 ```
-"time", "Lapse_Re(0,0)", "Lapse_Im(0,0)",
-"Lapse_Re(1,1)", "Lapse_Im(1,1)", "Lapse_Re(1,0)", "Lapse_Im(1,0)",
-"Lapse_Re(1,-1)", "Lapse_Im(1,-1)",
-"Lapse_Re(2,2)", "Lapse_Im(2,2)", "Lapse_Re(2,1)", "Lapse_Im(2,1)",
-"Lapse_Re(2,0)", "Lapse_Im(2,0)", "Lapse_Re(2,-1)", "Lapse_Im(2,-1)",
-"Lapse_Re(2,-2)", "Lapse_Im(2,-2)"
+"time", "Re(0,0)", "Im(0,0)", "Re(1,-1)", "Im(1,-1)", "Re(1,0)", "Im(1,0)",
+"Re(1,1)", "Im(1,1)", "Re(2,-2)", "Im(2,-2)", "Re(2,-1)", "Im(2,-1)", "Re(2,0)",
+"Im(2,0)", "Re(2,1)", "Im(2,1)", "Re(2,2)", "Im(2,2)", ...
 ```
 
 Each dataset in the H5 file must also have an attribute
@@ -187,10 +184,10 @@ named `Legend` which is an ASCII-encoded null-terminated variable-length string.
 ##### Spherical harmonic nodes {#spherical_nodes}
 
 When we refer to a "nodal" data format, we mean that the worldtube data are
-stored as values at specially chosen collocation points (a.k.a. grid points or
-nodes). This allows SpECTRE to perform integrals, derivatives, and interpolation
-exactly on the input data. These grid points are Gauss-Legendre in $cos(\theta)$
-and equally spaced in $\phi$.
+stored as complex values at specially chosen collocation points (a.k.a. grid
+points or nodes). This allows SpECTRE to perform integrals, derivatives, and
+interpolation exactly on the input data. These grid points are Gauss-Legendre in
+$cos(\theta)$ and equally spaced in $\phi$.
 
 Below is a routine for computing the spherical
 harmonic $\theta$ and $\phi$ values. These can be used to compute the Cartesian
@@ -242,7 +239,11 @@ modal" formats, there must be the following datasets with these exact names
 - `DrLapse.dat`
 - `DtLapse.dat`
 
-The layout of each of these datasets must be in either
+Here `g` represents the spacetime metric, but we only require the spatial
+components (e.g. `gxx.dat`, `gxy.dat`, etc...) so in practice, those are the
+tensor components of the spatial metric. The temporal components of the
+spacetime metric are stored separately in the lapse and shift. The layout of
+each of these datasets must be in either
 [spherical harmonic modes](#spherical_modes) or
 [spherical harmonic nodes](#spherical_nodes).
 
