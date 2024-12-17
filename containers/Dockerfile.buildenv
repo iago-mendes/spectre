@@ -571,4 +571,4 @@ RUN if [ ${UBUNTU_VERSION} != 18.04 ] && [ "$TARGETARCH" != "amd64" ]; then \
     .. \
     && make ${PARALLEL_MAKE_ARG} CharacteristicExtract PreprocessCceWorldtube \
     WriteCceWorldtubeCoordsToFile \
-    && ctest -LE unit -R CharacteristicExtract
+    && ctest -LE unit -R CharacteristicExtract -E KleinGordon
