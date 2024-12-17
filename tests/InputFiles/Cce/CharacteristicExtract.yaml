@@ -58,8 +58,8 @@ Cce:
       - LimitIncrease:
           Factor: 2
       - ErrorControl(SwshVars):
-          AbsoluteTolerance: 1e-8
-          RelativeTolerance: 1e-6
+          AbsoluteTolerance: 1e-9
+          RelativeTolerance: 1e-7
           # These factors control how much the time step is changed at once.
           MaxFactor: 2
           MinFactor: 0.25
@@ -69,8 +69,8 @@ Cce:
           # time steps.
           SafetyFactor: 0.9
       - ErrorControl(CoordVars):
-          AbsoluteTolerance: 1e-8
-          RelativeTolerance: 1e-7
+          AbsoluteTolerance: 1e-9
+          RelativeTolerance: 1e-8
           # These factors control how much the time step is changed at once.
           MaxFactor: 2
           MinFactor: 0.25
