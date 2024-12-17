@@ -66,9 +66,11 @@ SPECTRE_ALWAYS_INLINE constexpr decltype(auto) cube(const T& x) {
  * \ingroup ConstantExpressionsGroup
  * \brief Compute the falling factorial of \f$(x)_{n}\f$
  *
- * See http://mathworld.wolfram.com/FallingFactorial.html
- * \note The largest representable factorial is 20!. It is up to the user to
- * ensure this is satisfied
+ * \details The falling factorial \f$(x_)_n = x (x - 1) \ldots (x - n - 1) =
+ * \frac{x!}{(x-n)!}\f$
+ *
+ * \note The largest representable factorial is 20!. It is
+ * up to the user to ensure this is satisfied
  */
 KOKKOS_FUNCTION constexpr uint64_t falling_factorial(const uint64_t x,
                                                      const uint64_t n) {
