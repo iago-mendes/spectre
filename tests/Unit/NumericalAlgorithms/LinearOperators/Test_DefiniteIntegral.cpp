@@ -9,8 +9,10 @@
 #include "DataStructures/Index.hpp"
 #include "DataStructures/IndexIterator.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/NumericalAlgorithms/SphericalHarmonics/YlmTestFunctions.hpp"
 #include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
+#include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "NumericalAlgorithms/Spectral/Spectral.hpp"
@@ -105,6 +107,35 @@ void test_definite_integral_3d(const Mesh<3>& mesh) {
     }
   }
 }
+
+void test_definite_integral_spherical_shell(const size_t n_r, const size_t L) {
+  CAPTURE(n_r);
+  CAPTURE(L);
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * L + 1},
+      {Spectral::Basis::Legendre, Spectral::Basis::SphericalHarmonic,
+       Spectral::Basis::SphericalHarmonic},
+      {Spectral::Quadrature::Gauss, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const auto xi_vector = logical_coordinates(mesh);
+  const DataVector r = xi_vector.get(0) + 2.0;
+  for (size_t pow_nx = 0; pow_nx <= L; ++pow_nx) {
+    CAPTURE(pow_nx);
+    for (size_t pow_ny = 0; pow_ny <= L - pow_nx; ++pow_ny) {
+      CAPTURE(pow_ny);
+      for (size_t pow_nz = 0; pow_nz <= L - pow_nx - pow_ny; ++pow_nz) {
+        CAPTURE(pow_nz);
+        const YlmTestFunctions::ProductOfPolynomials y_lm{
+            n_r, L, L, pow_nx, pow_ny, pow_nz};
+
+        const DataVector integrand = r * y_lm.f();
+        CHECK(4.0 * y_lm.definite_integral() ==
+              approx(definite_integral(integrand, mesh)));
+      }
+    }
+  }
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.DefiniteIntegral",
@@ -134,6 +165,12 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.DefiniteIntegral",
                                           Spectral::Basis::Legendre,
                                           Spectral::Quadrature::GaussLobatto});
       }
+    }
+  }
+
+  for (size_t n_r = 2; n_r < 5; ++n_r) {
+    for (size_t L = 2; L < 9; ++L) {
+      test_definite_integral_spherical_shell(n_r, L);
     }
   }
 
