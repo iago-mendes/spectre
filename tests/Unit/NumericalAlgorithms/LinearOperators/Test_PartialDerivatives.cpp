@@ -27,8 +27,10 @@
 #include "Domain/CoordinateMaps/Affine.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.tpp"
+#include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
+#include "Domain/CoordinateMaps/SphericalToCartesianPfaffian.hpp"
 #include "Domain/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
@@ -576,6 +578,74 @@ void test_partial_derivatives_3d(const Mesh<3>& mesh) {
     }
   }
 }
+
+template <typename VariableTags, typename GradientTags = VariableTags>
+void test_partial_derivatives_spherical_shell() {
+  const size_t L = 4;
+  const size_t n_r = 4;
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * L + 1},
+      {Spectral::Basis::Legendre, Spectral::Basis::SphericalHarmonic,
+       Spectral::Basis::SphericalHarmonic},
+      {Spectral::Quadrature::Gauss, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const size_t number_of_grid_points = mesh.number_of_grid_points();
+  const auto prod_map3d =
+      domain::make_coordinate_map<Frame::ElementLogical, Frame::Grid>(
+          domain::CoordinateMaps::ProductOf2Maps<
+              Affine, domain::CoordinateMaps::Identity<2>>{
+              Affine{-1.0, 1.0, 1.0, 1.5},
+              domain::CoordinateMaps::Identity<2>{}},
+          domain::CoordinateMaps::SphericalToCartesianPfaffian{});
+  const auto xi = logical_coordinates(mesh);
+  const auto x = prod_map3d(xi);
+  const InverseJacobian<DataVector, 3, Frame::ElementLogical, Frame::Grid>
+      inverse_jacobian = prod_map3d.inv_jacobian(xi);
+
+  Variables<VariableTags> u(number_of_grid_points);
+  Variables<
+      db::wrap_tags_in<Tags::deriv, GradientTags, tmpl::size_t<3>, Frame::Grid>>
+      expected_du(number_of_grid_points);
+  Approx local_approx = Approx::custom().epsilon(1e-13).scale(1.0);
+  for (size_t a = 0; a < L; ++a) {
+    CAPTURE(a);
+    for (size_t b = 0; b < L - a; ++b) {
+      CAPTURE(b);
+      for (size_t c = 0; c < L - a - b; ++c) {
+        CAPTURE(c);
+        tmpl::for_each<VariableTags>([&a, &b, &c, &x, &u](auto tag) {
+          using Tag = typename decltype(tag)::type;
+          get<Tag>(u) = Tag::f({{a, b, c}}, x);
+        });
+        tmpl::for_each<GradientTags>([&a, &b, &c, &x, &expected_du](auto tag) {
+          using Tag = typename decltype(tag)::type;
+          using DerivativeTag = Tags::deriv<Tag, tmpl::size_t<3>, Frame::Grid>;
+          get<DerivativeTag>(expected_du) = Tag::df({{a, b, c}}, x);
+        });
+
+        CHECK_VARIABLES_CUSTOM_APPROX(
+            (partial_derivatives<GradientTags>(u, mesh, inverse_jacobian)),
+            expected_du, local_approx);
+        using vars_type = decltype(partial_derivatives<GradientTags>(
+            u, mesh, inverse_jacobian));
+        vars_type du{};
+        partial_derivatives(make_not_null(&du), u, mesh, inverse_jacobian);
+        CHECK_VARIABLES_CUSTOM_APPROX(du, expected_du, local_approx);
+
+        vars_type du_with_logical{};
+        partial_derivatives(make_not_null(&du_with_logical),
+                            logical_partial_derivatives<GradientTags>(u, mesh),
+                            inverse_jacobian);
+        CHECK_VARIABLES_CUSTOM_APPROX(du_with_logical, expected_du,
+                                      local_approx);
+
+        // We've checked that du is correct, now test that taking derivatives of
+        // individual tensors gets the matching result.
+        test_partial_derivative_per_tensor(du, u, mesh, inverse_jacobian);
+      }
+    }
+  }
+}
 }  // namespace
 
 // [[Timeout, 60]]
@@ -668,6 +738,9 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.LogicalDerivs",
 // [[Timeout, 90]]
 SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.PartialDerivs",
                   "[NumericalAlgorithms][LinearOperators][Unit]") {
+  test_partial_derivatives_spherical_shell<two_vars<DataVector, 3>>();
+  test_partial_derivatives_spherical_shell<two_vars<DataVector, 3>,
+                                           one_var<DataVector, 3>>();
   const size_t n0 =
       Spectral::maximum_number_of_points<Spectral::Basis::Legendre> / 2;
   const size_t n1 =
