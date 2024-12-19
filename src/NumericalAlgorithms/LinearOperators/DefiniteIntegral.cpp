@@ -9,6 +9,8 @@
 #include "DataStructures/DataVector.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Spectral.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
+#include "NumericalAlgorithms/SphericalHarmonics/SpherepackCache.hpp"
 #include "Utilities/Blas.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 
@@ -82,33 +84,51 @@ double definite_integral<3>(const DataVector& integrand, const Mesh<3>& mesh) {
   const auto sliced_meshes = mesh.slices();
   const size_t x_size = sliced_meshes[0].number_of_grid_points();
   const size_t x_last_unrolled = x_size - x_size % 2;
-  const size_t y_size = sliced_meshes[1].number_of_grid_points();
-  const size_t z_size = sliced_meshes[2].number_of_grid_points();
   const double* const w_x =
       Spectral::quadrature_weights(sliced_meshes[0]).data();
-  const double* const w_y =
-      Spectral::quadrature_weights(sliced_meshes[1]).data();
-  const double* const w_z =
-      Spectral::quadrature_weights(sliced_meshes[2]).data();
-
   double result = 0.0;
-  for (size_t k = 0; k < z_size; ++k) {
-    for (size_t j = 0; j < y_size; ++j) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      const double prod = w_z[k] * w_y[j];
-      const size_t offset = x_size * (j + y_size * k);
-      // Unrolling at 2 gives better performance on AVX machines (the most
-      // common in 2018). The stride will probably need to be updated as
-      // hardware changes. Note: using a single loop is ~15% faster when
-      // x_size == 3, and both loop styles are comparable for x_size == 2.
+  if (mesh.basis(1) == Spectral::Basis::SphericalHarmonic) {
+    const auto& ylm = ylm::get_spherepack_cache(mesh.extents(1) - 1);
+    const size_t angular_size = ylm.physical_size();
+    const std::vector<double>& w_ylm = ylm.integration_weights();
+    for (size_t j = 0; j < angular_size; ++j) {
+      const size_t offset = j * x_size;
       for (size_t i = 0; i < x_last_unrolled; i += 2) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        result += prod * w_x[i] * integrand[i + offset] +
-                  prod * w_x[i + 1] * integrand[i + 1 + offset];  // NOLINT
+        result += w_ylm[j] * w_x[i] * integrand[i + offset] +
+                  w_ylm[j] * w_x[i + 1] * integrand[i + 1 + offset];  // NOLINT
       }
       for (size_t i = x_last_unrolled; i < x_size; ++i) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        result += prod * w_x[i] * integrand[i + offset];
+        result += w_ylm[j] * w_x[i] * integrand[i + offset];
+      }
+    }
+  } else {
+    const size_t y_size = sliced_meshes[1].number_of_grid_points();
+    const size_t z_size = sliced_meshes[2].number_of_grid_points();
+    const double* const w_y =
+        Spectral::quadrature_weights(sliced_meshes[1]).data();
+    const double* const w_z =
+        Spectral::quadrature_weights(sliced_meshes[2]).data();
+
+    for (size_t k = 0; k < z_size; ++k) {
+      for (size_t j = 0; j < y_size; ++j) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+        const double prod = w_z[k] * w_y[j];
+        const size_t offset = x_size * (j + y_size * k);
+        // Unrolling at 2 gives better performance on AVX machines (the most
+        // common in 2018). The stride will probably need to be updated as
+        // hardware changes. Note: using a single loop is ~15% faster when
+        // x_size == 3, and both loop styles are comparable for x_size == 2.
+        for (size_t i = 0; i < x_last_unrolled; i += 2) {
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+          result += prod * w_x[i] * integrand[i + offset] +
+                    prod * w_x[i + 1] * integrand[i + 1 + offset];  // NOLINT
+        }
+        for (size_t i = x_last_unrolled; i < x_size; ++i) {
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+          result += prod * w_x[i] * integrand[i + offset];
+        }
       }
     }
   }

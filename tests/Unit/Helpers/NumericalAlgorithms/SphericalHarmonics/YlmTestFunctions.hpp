@@ -18,6 +18,25 @@
 
 namespace YlmTestFunctions {
 
+class ProductOfPolynomials {
+ public:
+  ProductOfPolynomials(size_t n_r, size_t L, size_t M, size_t pow_nx,
+                       size_t pow_ny, size_t pow_nz);
+  DataVector f() const;
+  DataVector df_dth() const;
+  // This is the Pfaffiaan derivative (extra factor 1/sin(th))
+  DataVector df_dph() const;
+  double definite_integral() const;
+
+ private:
+  size_t n_pts_;
+  size_t pow_nx_;
+  size_t pow_ny_;
+  size_t pow_nz_;
+  DataVector theta_;
+  DataVector phi_;
+};
+
 template <size_t l, int m>
 class Ylm {
  public:
