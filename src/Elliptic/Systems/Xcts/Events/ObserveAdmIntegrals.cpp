@@ -11,8 +11,8 @@
 #include "NumericalAlgorithms/DiscontinuousGalerkin/ProjectToBoundary.hpp"
 #include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
-#include "PointwiseFunctions/Xcts/AdmLinearMomentum.hpp"
 #include "PointwiseFunctions/Xcts/AdmMass.hpp"
+#include "PointwiseFunctions/Xcts/AdmMomentum.hpp"
 #include "PointwiseFunctions/Xcts/CenterOfMass.hpp"
 
 namespace Events {
@@ -20,6 +20,7 @@ namespace Events {
 void local_adm_integrals(
     gsl::not_null<Scalar<double>*> adm_mass,
     gsl::not_null<tnsr::I<double, 3>*> adm_linear_momentum,
+    gsl::not_null<Scalar<double>*> adm_angular_momentum_z,
     gsl::not_null<tnsr::I<double, 3>*> center_of_mass,
     const Scalar<DataVector>& conformal_factor,
     const tnsr::i<DataVector, 3>& deriv_conformal_factor,
@@ -38,6 +39,7 @@ void local_adm_integrals(
     const DirectionMap<3, tnsr::i<DataVector, 3>>& conformal_face_normals) {
   // Initialize integrals to 0
   adm_mass->get() = 0;
+  adm_angular_momentum_z->get() = 0;
   for (int I = 0; I < 3; I++) {
     adm_linear_momentum->get(I) = 0;
     center_of_mass->get(I) = 0;
@@ -126,6 +128,9 @@ void local_adm_integrals(
         Xcts::adm_linear_momentum_surface_integrand(
             face_conformal_factor, face_inv_spatial_metric,
             face_inv_extrinsic_curvature, face_trace_extrinsic_curvature);
+    const auto angular_momentum_z_integrand =
+        Xcts::adm_angular_momentum_z_surface_integrand(
+            linear_momentum_integrand, face_inertial_coords);
     const auto center_of_mass_integrand =
         Xcts::center_of_mass_surface_integrand(face_conformal_factor,
                                                face_inertial_coords);
@@ -135,10 +140,15 @@ void local_adm_integrals(
         tenex::evaluate(mass_integrand(ti::I) * conformal_face_normal(ti::i));
     const auto contracted_linear_momentum_integrand = tenex::evaluate<ti::I>(
         linear_momentum_integrand(ti::I, ti::J) * flat_face_normal(ti::j));
+    const auto contracted_angular_momentum_z_integrand = tenex::evaluate(
+        angular_momentum_z_integrand(ti::I) * flat_face_normal(ti::i));
 
     // Take integrals
     adm_mass->get() += definite_integral(
         get(contracted_mass_integrand) * get(conformal_area_element),
+        face_mesh);
+    adm_angular_momentum_z->get() += definite_integral(
+        get(contracted_angular_momentum_z_integrand) * get(flat_area_element),
         face_mesh);
     for (int I = 0; I < 3; I++) {
       adm_linear_momentum->get(I) += definite_integral(

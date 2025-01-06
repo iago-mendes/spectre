@@ -24,7 +24,7 @@
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Xcts/Schwarzschild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Xcts/WrappedGr.hpp"
-#include "PointwiseFunctions/Xcts/AdmLinearMomentum.hpp"
+#include "PointwiseFunctions/Xcts/AdmMomentum.hpp"
 
 namespace {
 
@@ -32,15 +32,18 @@ using Schwarzschild = Xcts::Solutions::Schwarzschild;
 using KerrSchild = Xcts::Solutions::WrappedGr<gr::Solutions::KerrSchild>;
 
 template <typename Solution>
-void test_infinite_surface_integral(const double distance, const double mass,
-                                    const double horizon_radius,
-                                    const double boost_speed,
-                                    const Solution& solution) {
+void test_infinite_surface_integrals(const double distance, const double mass,
+                                     const double horizon_radius,
+                                     const double boost_speed,
+                                     const Solution& solution) {
+  // Define x-shift in the domain
+  const double x_shift = 1.;
+
   // Set up domain
   const size_t h_refinement = 1;
   const size_t p_refinement = 6;
   const domain::creators::Sphere shell{
-      /* inner_radius */ horizon_radius,
+      /* inner_radius */ horizon_radius + x_shift,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -56,8 +59,9 @@ void test_infinite_surface_integral(const double distance, const double mass,
   const Mesh<2> face_mesh{p_refinement + 1, Spectral::Basis::Legendre,
                           Spectral::Quadrature::GaussLobatto};
 
-  // Initialize surface integral
-  tnsr::I<double, 3> surface_integral({0., 0., 0.});
+  // Initialize surface integrals
+  tnsr::I<double, 3> linear_momentum({0., 0., 0.});
+  Scalar<double> angular_momentum_z(0.);
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
@@ -90,9 +94,13 @@ void test_infinite_surface_integral(const double distance, const double mass,
       const auto inv_jacobian =
           logical_to_inertial_map.inv_jacobian(logical_coords);
 
+      // Shift x-coordinate
+      auto shifted_coords = inertial_coords;
+      shifted_coords.get(0) -= x_shift;
+
       // Get required fields
       const auto background_fields = solution.variables(
-          inertial_coords,
+          shifted_coords,
           tmpl::list<
               Xcts::Tags::ConformalFactor<DataVector>,
               gr::Tags::InverseSpatialMetric<DataVector, 3, Frame::Inertial>,
@@ -128,27 +136,42 @@ void test_infinite_surface_integral(const double distance, const double mass,
         flat_face_normal.get(d) /= get(face_normal_magnitude);
       }
 
-      // Evaluate surface integral
-      const auto surface_integrand =
+      // Evaluate linear momentum surface integral
+      const auto linear_momentum_surface_integrand =
           Xcts::adm_linear_momentum_surface_integrand(
               conformal_factor, inv_spatial_metric, inv_extrinsic_curvature,
               trace_extrinsic_curvature);
-      const auto contracted_integrand = tenex::evaluate<ti::I>(
-          surface_integrand(ti::I, ti::J) * flat_face_normal(ti::j));
+      const auto linear_momentum_contracted_integrand = tenex::evaluate<ti::I>(
+          linear_momentum_surface_integrand(ti::I, ti::J) *
+          flat_face_normal(ti::j));
       for (int I = 0; I < 3; I++) {
-        surface_integral.get(I) += definite_integral(
-            contracted_integrand.get(I) * get(flat_area_element), face_mesh);
+        linear_momentum.get(I) +=
+            definite_integral(linear_momentum_contracted_integrand.get(I) *
+                                  get(flat_area_element),
+                              face_mesh);
       }
+
+      // Evaluate angular momentum surface integral
+      const auto angular_momentum_surface_integrand =
+          Xcts::adm_angular_momentum_z_surface_integrand(
+              linear_momentum_surface_integrand, inertial_coords);
+      const auto angular_momentum_contracted_integrand = tenex::evaluate(
+          angular_momentum_surface_integrand(ti::I) * flat_face_normal(ti::i));
+      angular_momentum_z.get() += definite_integral(
+          get(angular_momentum_contracted_integrand) * get(flat_area_element),
+          face_mesh);
     }
   }
 
-  // Check result
+  // Check results
   auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
   const double lorentz_factor = 1. / sqrt(1. - square(boost_speed));
-  CHECK(get<0>(surface_integral) == custom_approx(0.));
-  CHECK(get<1>(surface_integral) == custom_approx(0.));
-  CHECK(get<2>(surface_integral) ==
+  CHECK(get<0>(linear_momentum) == custom_approx(0.));
+  CHECK(get<1>(linear_momentum) ==
         custom_approx(lorentz_factor * mass * boost_speed));
+  CHECK(get<2>(linear_momentum) == custom_approx(0.));
+  CHECK(get(angular_momentum_z) ==
+        custom_approx(x_shift * lorentz_factor * mass * boost_speed));
 }
 
 template <typename Solution>
@@ -156,11 +179,14 @@ void test_infinite_volume_integral(const double distance, const double mass,
                                    const double horizon_radius,
                                    const double boost_speed,
                                    const Solution& solution) {
+  // Define x-shift in the domain
+  const double x_shift = 1.;
+
   // Set up domain
   const size_t h_refinement = 1;
   const size_t p_refinement = 6;
   const domain::creators::Sphere shell{
-      /* inner_radius */ 2 * horizon_radius,
+      /* inner_radius */ horizon_radius + x_shift,
       /* outer_radius */ distance,
       /* interior */ domain::creators::Sphere::Excision{},
       /* initial_refinement */ h_refinement,
@@ -178,8 +204,9 @@ void test_infinite_volume_integral(const double distance, const double mass,
   const Mesh<2> face_mesh{p_refinement + 1, Spectral::Basis::Legendre,
                           Spectral::Quadrature::GaussLobatto};
 
-  // Initialize surface integral
-  tnsr::I<double, 3> total_integral({0., 0., 0.});
+  // Initialize integrals
+  tnsr::I<double, 3> linear_momentum({0., 0., 0.});
+  Scalar<double> angular_momentum_z(0.);
 
   // Compute integrals by summing over each element
   for (const auto& element_id : element_ids) {
@@ -198,9 +225,13 @@ void test_infinite_volume_integral(const double distance, const double mass,
     const auto inv_jacobian =
         logical_to_inertial_map.inv_jacobian(logical_coords);
 
+    // Shift x-coordinate
+    auto shifted_coords = inertial_coords;
+    shifted_coords.get(0) -= x_shift;
+
     // Get required fields
     const auto solution_fields = solution.variables(
-        inertial_coords,
+        shifted_coords,
         tmpl::list<
             Xcts::Tags::ConformalFactor<DataVector>,
             ::Tags::deriv<Xcts::Tags::ConformalFactorMinusOne<DataVector>,
@@ -249,28 +280,41 @@ void test_infinite_volume_integral(const double distance, const double mass,
                                       inv_spatial_metric(ti::J, ti::L) *
                                       extrinsic_curvature(ti::k, ti::l));
 
-    const auto surface_integrand = Xcts::adm_linear_momentum_surface_integrand(
-        conformal_factor, inv_spatial_metric, inv_extrinsic_curvature,
-        trace_extrinsic_curvature);
-
-    const auto volume_integrand = Xcts::adm_linear_momentum_volume_integrand(
-        surface_integrand, conformal_factor, deriv_conformal_factor,
-        conformal_metric, inv_conformal_metric,
-        conformal_christoffel_second_kind, conformal_christoffel_contracted);
+    // Evaluate linear momentum volume integral
+    const auto linear_momentum_surface_integrand =
+        Xcts::adm_linear_momentum_surface_integrand(
+            conformal_factor, inv_spatial_metric, inv_extrinsic_curvature,
+            trace_extrinsic_curvature);
+    const auto linear_momentum_volume_integrand =
+        Xcts::adm_linear_momentum_volume_integrand(
+            linear_momentum_surface_integrand, conformal_factor,
+            deriv_conformal_factor, conformal_metric, inv_conformal_metric,
+            conformal_christoffel_second_kind,
+            conformal_christoffel_contracted);
     for (int I = 0; I < 3; I++) {
-      total_integral.get(I) +=
-          definite_integral(volume_integrand.get(I) * get(det_jacobian), mesh);
+      linear_momentum.get(I) += definite_integral(
+          linear_momentum_volume_integrand.get(I) * get(det_jacobian), mesh);
     }
+
+    // Evaluate angular momentum volume integral
+    const auto angular_momentum_surface_integrand =
+        Xcts::adm_angular_momentum_z_surface_integrand(
+            linear_momentum_surface_integrand, inertial_coords);
+    const auto angular_momentum_volume_integrand =
+        Xcts::adm_angular_momentum_z_volume_integrand(
+            linear_momentum_volume_integrand, inertial_coords);
+    angular_momentum_z.get() += definite_integral(
+        get(angular_momentum_volume_integrand) * get(det_jacobian), mesh);
 
     // Loop over external boundaries
     for (auto boundary_direction : current_element.external_boundaries()) {
-      // Skip interfaces not at the outer boundary
+      // Skip interfaces not at the inner boundary
       if (boundary_direction != Direction<3>::lower_zeta()) {
         continue;
       }
 
       // Get interface coordinates.
-      const auto face_logical_coords =
+      auto face_logical_coords =
           interface_logical_coordinates(face_mesh, boundary_direction);
       const auto face_inv_jacobian =
           logical_to_inertial_map.inv_jacobian(face_logical_coords);
@@ -278,8 +322,11 @@ void test_infinite_volume_integral(const double distance, const double mass,
       // Slice required fields to the interface
       const size_t slice_index =
           index_to_slice_at(mesh.extents(), boundary_direction);
-      const auto& face_surface_integrand =
-          data_on_slice(surface_integrand, mesh.extents(),
+      const auto& face_linear_momentum_surface_integrand =
+          data_on_slice(linear_momentum_surface_integrand, mesh.extents(),
+                        boundary_direction.dimension(), slice_index);
+      const auto& face_angular_momentum_surface_integrand =
+          data_on_slice(angular_momentum_surface_integrand, mesh.extents(),
                         boundary_direction.dimension(), slice_index);
 
       // Compute Euclidean area element
@@ -294,25 +341,36 @@ void test_infinite_volume_integral(const double distance, const double mass,
         flat_face_normal.get(d) /= get(face_normal_magnitude);
       }
 
-      // Compute surface integrand
-      const auto contracted_integrand = tenex::evaluate<ti::I>(
-          -face_surface_integrand(ti::I, ti::J) * flat_face_normal(ti::j));
-
-      // Compute contribution to surface integral
+      // Evaluate linear momentum surface integral
+      const auto linear_momentum_contracted_integrand = tenex::evaluate<ti::I>(
+          -face_linear_momentum_surface_integrand(ti::I, ti::J) *
+          flat_face_normal(ti::j));
       for (int I = 0; I < 3; I++) {
-        total_integral.get(I) += definite_integral(
-            contracted_integrand.get(I) * get(flat_area_element), face_mesh);
+        linear_momentum.get(I) +=
+            definite_integral(linear_momentum_contracted_integrand.get(I) *
+                                  get(flat_area_element),
+                              face_mesh);
       }
+
+      // Evaluate angular momentum surface integral
+      const auto angular_momentum_contracted_integrand =
+          tenex::evaluate(-face_angular_momentum_surface_integrand(ti::I) *
+                          flat_face_normal(ti::i));
+      angular_momentum_z.get() += definite_integral(
+          get(angular_momentum_contracted_integrand) * get(flat_area_element),
+          face_mesh);
     }
   }
 
   // Check result
   const double lorentz_factor = 1. / sqrt(1. - square(boost_speed));
   auto custom_approx = Approx::custom().epsilon(10. / distance).scale(1.0);
-  CHECK(get<0>(total_integral) == custom_approx(0.));
-  CHECK(get<1>(total_integral) == custom_approx(0.));
-  CHECK(get<2>(total_integral) ==
+  CHECK(get<0>(linear_momentum) == custom_approx(0.));
+  CHECK(get<1>(linear_momentum) ==
         custom_approx(lorentz_factor * mass * boost_speed));
+  CHECK(get<2>(linear_momentum) == custom_approx(0.));
+  CHECK(get(angular_momentum_z) ==
+        custom_approx(x_shift * lorentz_factor * mass * boost_speed));
 }
 
 }  // namespace
@@ -327,10 +385,10 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmLinearMomentum",
     const Xcts::Solutions::WrappedGr<gr::Solutions::KerrSchild> solution(
         mass, std::array<double, 3>{{0., 0., 0.}},
         std::array<double, 3>{{0., 0., 0.}},
-        std::array<double, 3>{{0., 0., boost_speed}});
+        std::array<double, 3>{{0., boost_speed, 0.}});
     for (const double distance : std::array<double, 3>({1.e4, 1.e5, 1.e6})) {
-      test_infinite_surface_integral(distance, mass, horizon_radius,
-                                     boost_speed, solution);
+      test_infinite_surface_integrals(distance, mass, horizon_radius,
+                                      boost_speed, solution);
       test_infinite_volume_integral(distance, mass, horizon_radius, boost_speed,
                                     solution);
     }
@@ -343,10 +401,10 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmLinearMomentum",
     const Xcts::Solutions::WrappedGr<gr::Solutions::KerrSchild> solution(
         mass, std::array<double, 3>{{0., 0., 0.}},
         std::array<double, 3>{{0., 0., 0.}},
-        std::array<double, 3>{{0., 0., boost_speed}});
+        std::array<double, 3>{{0., boost_speed, 0.}});
     for (const double distance : std::array<double, 3>({1.e4, 1.e5, 1.e6})) {
-      test_infinite_surface_integral(distance, mass, horizon_radius,
-                                     boost_speed, solution);
+      test_infinite_surface_integrals(distance, mass, horizon_radius,
+                                      boost_speed, solution);
       // Note: the volume integral currently doesn't work with this test case.
     }
   }
@@ -358,8 +416,8 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.Xcts.AdmLinearMomentum",
     const Xcts::Solutions::Schwarzschild solution(
         mass, Xcts::Solutions::SchwarzschildCoordinates::Isotropic);
     for (const double distance : std::array<double, 3>({1.e4, 1.e5, 1.e6})) {
-      test_infinite_surface_integral(distance, mass, horizon_radius,
-                                     boost_speed, solution);
+      test_infinite_surface_integrals(distance, mass, horizon_radius,
+                                      boost_speed, solution);
       test_infinite_volume_integral(distance, mass, horizon_radius, boost_speed,
                                     solution);
     }

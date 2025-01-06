@@ -23,8 +23,8 @@
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Xcts/Schwarzschild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Xcts/WrappedGr.hpp"
-#include "PointwiseFunctions/Xcts/AdmLinearMomentum.hpp"
 #include "PointwiseFunctions/Xcts/AdmMass.hpp"
+#include "PointwiseFunctions/Xcts/AdmMomentum.hpp"
 
 namespace {
 

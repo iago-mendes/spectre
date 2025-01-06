@@ -1,7 +1,7 @@
 // Distributed under the MIT License.
 // See LICENSE.txt for details.
 
-#include "PointwiseFunctions/Xcts/AdmLinearMomentum.hpp"
+#include "PointwiseFunctions/Xcts/AdmMomentum.hpp"
 
 namespace Xcts {
 
@@ -65,6 +65,47 @@ tnsr::I<DataVector, 3> adm_linear_momentum_volume_integrand(
       make_not_null(&result), surface_integrand, conformal_factor,
       deriv_conformal_factor, conformal_metric, inv_conformal_metric,
       conformal_christoffel_second_kind, conformal_christoffel_contracted);
+  return result;
+}
+
+void adm_angular_momentum_z_surface_integrand(
+    gsl::not_null<tnsr::I<DataVector, 3>*> result,
+    const tnsr::II<DataVector, 3>& linear_momentum_surface_integrand,
+    const tnsr::I<DataVector, 3>& coords) {
+  // Note: we can ignore the $1/(8\pi)$ term below because it is already
+  // included in `linear_momentum_surface_integrand`.
+  for (int I = 0; I < 3; I++) {
+    result->get(I) =
+        get<0>(coords) * linear_momentum_surface_integrand.get(1, I) -
+        get<1>(coords) * linear_momentum_surface_integrand.get(0, I);
+  }
+}
+
+tnsr::I<DataVector, 3> adm_angular_momentum_z_surface_integrand(
+    const tnsr::II<DataVector, 3>& linear_momentum_surface_integrand,
+    const tnsr::I<DataVector, 3>& coords) {
+  tnsr::I<DataVector, 3> result;
+  adm_angular_momentum_z_surface_integrand(
+      make_not_null(&result), linear_momentum_surface_integrand, coords);
+  return result;
+}
+
+void adm_angular_momentum_z_volume_integrand(
+    gsl::not_null<Scalar<DataVector>*> result,
+    const tnsr::I<DataVector, 3>& linear_momentum_volume_integrand,
+    const tnsr::I<DataVector, 3>& coords) {
+  // Note: we can ignore the $-1/(8\pi)$ term below because it is already
+  // included in `linear_momentum_volume_integrand`.
+  result->get() = get<0>(coords) * get<1>(linear_momentum_volume_integrand) -
+                  get<1>(coords) * get<0>(linear_momentum_volume_integrand);
+}
+
+Scalar<DataVector> adm_angular_momentum_z_volume_integrand(
+    const tnsr::I<DataVector, 3>& linear_momentum_volume_integrand,
+    const tnsr::I<DataVector, 3>& coords) {
+  Scalar<DataVector> result;
+  adm_angular_momentum_z_volume_integrand(
+      make_not_null(&result), linear_momentum_volume_integrand, coords);
   return result;
 }
 
