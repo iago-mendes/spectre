@@ -1,0 +1,17 @@
+*.o
+*.so
+#*
+*~
+*.pyc
+*.pyo
+
+/auto
+/autom4te.cache
+/config.log
+/config.status
+/config/config.auto
+/configure
+/sharp_oracle.inc
+
+/python/libsharp/libsharp.c
+/python/libsharp/libsharp_mpi.c

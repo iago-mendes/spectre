@@ -1,13 +1,3 @@
-# SpECTRE Copy
-
-Changes:
-- Everything is put in one directory for easier compilation.
-- pragma omp are commented out in sharp.c and sharp_legendre_roots.c
-- Factor m=0 iteration out of loop in `if (spin==0)` of `sharp_Ylmgen_init`
-  in `sharp_ylmgen_c.c` in order to avoid FPE with Clang. Clang optimizes too
-  aggressively and always evaluates the `1./gen->root[m]` in the ternary
-  `(m==0) ? 0. : 1./gen->root[m];`.
-
 # Development has moved
 
 This repository has been archived and is only kept so that packages depending on
@@ -70,39 +60,3 @@ the compiler to crash during libsharp compilation. This appears to be fixed
 in the gcc 4.4.7 release. It is possible to work around this problem by adding
 the compiler flag "-fno-tree-fre" after the other optimization flags - the
 configure script should do this automatically.
-
-
-ls_fft description:
-
-This package is intended to calculate one-dimensional real or complex FFTs
-with high accuracy and good efficiency even for lengths containing large
-prime factors.
-The code is written in C, but a Fortran wrapper exists as well.
-
-Before any FFT is executed, a plan must be generated for it. Plan creation
-is designed to be fast, so that there is no significant overhead if the
-plan is only used once or a few times.
-
-The main component of the code is based on Paul N. Swarztrauber's FFTPACK in the
-double precision incarnation by Hugh C. Pumphrey
-(http://www.netlib.org/fftpack/dp.tgz).
-
-I replaced the iterative sine and cosine calculations in radfg() and radbg()
-by an exact calculation, which slightly improves the transform accuracy for
-real FFTs with lengths containing large prime factors.
-
-Since FFTPACK becomes quite slow for FFT lengths with large prime factors
-(in the worst case of prime lengths it reaches O(n*n) complexity), I
-implemented Bluestein's algorithm, which computes a FFT of length n by
-several FFTs of length n2>=2*n-1 and a convolution. Since n2 can be chosen
-to be highly composite, this algorithm is more efficient if n has large
-prime factors. The longer FFTs themselves are then computed using the FFTPACK
-routines.
-Bluestein's algorithm was implemented according to the description at
-http://en.wikipedia.org/wiki/Bluestein's_FFT_algorithm.
-
-Thread-safety:
-All routines can be called concurrently; all information needed by ls_fft
-is stored in the plan variable. However, using the same plan variable on
-multiple threads simultaneously is not supported and will lead to data
-corruption.
