@@ -78,61 +78,66 @@ void local_adm_integrals(
 
   // Loop over external boundaries
   for (const auto boundary_direction : element.external_boundaries()) {
+    // Skip non-zeta boundaries
+    if (boundary_direction.dimension() != 2) {
+        continue;
+    }
+
+    // Project fields to the boundary
+    const auto face_conformal_factor = dg::project_tensor_to_boundary(
+        conformal_factor, mesh, boundary_direction);
+    const auto face_deriv_conformal_factor = dg::project_tensor_to_boundary(
+        deriv_conformal_factor, mesh, boundary_direction);
+    const auto face_conformal_metric = dg::project_tensor_to_boundary(
+        conformal_metric, mesh, boundary_direction);
+    const auto face_inv_conformal_metric = dg::project_tensor_to_boundary(
+        inv_conformal_metric, mesh, boundary_direction);
+    const auto face_conformal_christoffel_second_kind =
+        dg::project_tensor_to_boundary(conformal_christoffel_second_kind,
+                                        mesh, boundary_direction);
+    const auto face_conformal_christoffel_contracted =
+        dg::project_tensor_to_boundary(conformal_christoffel_contracted, mesh,
+                                        boundary_direction);
+    const auto face_spatial_metric = dg::project_tensor_to_boundary(
+        spatial_metric, mesh, boundary_direction);
+    const auto face_inv_spatial_metric = dg::project_tensor_to_boundary(
+        inv_spatial_metric, mesh, boundary_direction);
+    const auto face_extrinsic_curvature = dg::project_tensor_to_boundary(
+        extrinsic_curvature, mesh, boundary_direction);
+    const auto face_trace_extrinsic_curvature =
+        dg::project_tensor_to_boundary(trace_extrinsic_curvature, mesh,
+                                        boundary_direction);
+    const auto face_inertial_coords = dg::project_tensor_to_boundary(
+        inertial_coords, mesh, boundary_direction);
+    // This projection could be avoided by using
+    // domain::Tags::DetSurfaceJacobian from the DataBox, which is computed
+    // directly on the face (not projected). That would be better on Gauss
+    // meshes that have no grid point at the boundary. The DetSurfaceJacobian
+    // could then be multiplied by the (conformal) metric determinant to form
+    // the area element. Note that the DetSurfaceJacobian is computed using
+    // the conformal metric.
+    const auto face_inv_jacobian = dg::project_tensor_to_boundary(
+        inv_jacobian, mesh, boundary_direction);
+
+    // Get interface mesh and normal
+    const auto& face_mesh = mesh.slice_away(boundary_direction.dimension());
+    const auto& conformal_face_normal =
+        conformal_face_normals.at(boundary_direction);
+    const auto face_normal_magnitude = magnitude(conformal_face_normal);
+    const auto flat_face_normal = tenex::evaluate<ti::i>(
+        conformal_face_normal(ti::i) / face_normal_magnitude());
+
+    // Compute curved and flat area elements
+    const auto face_sqrt_det_conformal_metric =
+        Scalar<DataVector>(sqrt(get(determinant(face_conformal_metric))));
+    const auto conformal_area_element = area_element(
+        face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
+        face_sqrt_det_conformal_metric);
+    const auto flat_area_element =
+        euclidean_area_element(face_inv_jacobian, boundary_direction);
+
     // Interfaces at the inner boundary
     if (boundary_direction == Direction<3>::lower_zeta()) {
-      // Project fields to the boundary
-      const auto face_conformal_factor = dg::project_tensor_to_boundary(
-          conformal_factor, mesh, boundary_direction);
-      const auto face_deriv_conformal_factor = dg::project_tensor_to_boundary(
-          deriv_conformal_factor, mesh, boundary_direction);
-      const auto face_conformal_metric = dg::project_tensor_to_boundary(
-          conformal_metric, mesh, boundary_direction);
-      const auto face_inv_conformal_metric = dg::project_tensor_to_boundary(
-          inv_conformal_metric, mesh, boundary_direction);
-      const auto face_conformal_christoffel_second_kind =
-          dg::project_tensor_to_boundary(conformal_christoffel_second_kind,
-                                         mesh, boundary_direction);
-      const auto face_conformal_christoffel_contracted =
-          dg::project_tensor_to_boundary(conformal_christoffel_contracted, mesh,
-                                         boundary_direction);
-      const auto face_spatial_metric = dg::project_tensor_to_boundary(
-          spatial_metric, mesh, boundary_direction);
-      const auto face_inv_spatial_metric = dg::project_tensor_to_boundary(
-          inv_spatial_metric, mesh, boundary_direction);
-      const auto face_extrinsic_curvature = dg::project_tensor_to_boundary(
-          extrinsic_curvature, mesh, boundary_direction);
-      const auto face_trace_extrinsic_curvature =
-          dg::project_tensor_to_boundary(trace_extrinsic_curvature, mesh,
-                                         boundary_direction);
-      const auto face_inertial_coords = dg::project_tensor_to_boundary(
-          inertial_coords, mesh, boundary_direction);
-      // This projection could be avoided by using
-      // domain::Tags::DetSurfaceJacobian from the DataBox, which is computed
-      // directly on the face (not projected). That would be better on Gauss
-      // meshes that have no grid point at the boundary. The DetSurfaceJacobian
-      // could then be multiplied by the (conformal) metric determinant to form
-      // the area element. Note that the DetSurfaceJacobian is computed using
-      // the conformal metric.
-      const auto face_inv_jacobian = dg::project_tensor_to_boundary(
-          inv_jacobian, mesh, boundary_direction);
-
-      // Get interface mesh and normal
-      const auto& face_mesh = mesh.slice_away(boundary_direction.dimension());
-      const auto& conformal_face_normal =
-          conformal_face_normals.at(boundary_direction);
-      const auto face_normal_magnitude = magnitude(conformal_face_normal);
-      const auto flat_face_normal = tenex::evaluate<ti::i>(
-          conformal_face_normal(ti::i) / face_normal_magnitude());
-
-      // Compute curved and flat area elements
-      const auto face_sqrt_det_conformal_metric =
-          Scalar<DataVector>(sqrt(get(determinant(face_conformal_metric))));
-      const auto conformal_area_element = area_element(
-          face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
-          face_sqrt_det_conformal_metric);
-      const auto flat_area_element =
-          euclidean_area_element(face_inv_jacobian, boundary_direction);
-
       // Compute surface integrands
       const auto face_linear_momentum_surface_integrand =
           dg::project_tensor_to_boundary(linear_momentum_surface_integrand,
@@ -163,59 +168,6 @@ void local_adm_integrals(
 
     // Interfaces at the outer boundary
     if (boundary_direction == Direction<3>::upper_zeta()) {
-      // Project fields to the boundary
-      const auto face_conformal_factor = dg::project_tensor_to_boundary(
-          conformal_factor, mesh, boundary_direction);
-      const auto face_deriv_conformal_factor = dg::project_tensor_to_boundary(
-          deriv_conformal_factor, mesh, boundary_direction);
-      const auto face_conformal_metric = dg::project_tensor_to_boundary(
-          conformal_metric, mesh, boundary_direction);
-      const auto face_inv_conformal_metric = dg::project_tensor_to_boundary(
-          inv_conformal_metric, mesh, boundary_direction);
-      const auto face_conformal_christoffel_second_kind =
-          dg::project_tensor_to_boundary(conformal_christoffel_second_kind,
-                                         mesh, boundary_direction);
-      const auto face_conformal_christoffel_contracted =
-          dg::project_tensor_to_boundary(conformal_christoffel_contracted, mesh,
-                                         boundary_direction);
-      const auto face_spatial_metric = dg::project_tensor_to_boundary(
-          spatial_metric, mesh, boundary_direction);
-      const auto face_inv_spatial_metric = dg::project_tensor_to_boundary(
-          inv_spatial_metric, mesh, boundary_direction);
-      const auto face_extrinsic_curvature = dg::project_tensor_to_boundary(
-          extrinsic_curvature, mesh, boundary_direction);
-      const auto face_trace_extrinsic_curvature =
-          dg::project_tensor_to_boundary(trace_extrinsic_curvature, mesh,
-                                         boundary_direction);
-      const auto face_inertial_coords = dg::project_tensor_to_boundary(
-          inertial_coords, mesh, boundary_direction);
-      // This projection could be avoided by using
-      // domain::Tags::DetSurfaceJacobian from the DataBox, which is computed
-      // directly on the face (not projected). That would be better on Gauss
-      // meshes that have no grid point at the boundary. The DetSurfaceJacobian
-      // could then be multiplied by the (conformal) metric determinant to form
-      // the area element. Note that the DetSurfaceJacobian is computed using
-      // the conformal metric.
-      const auto face_inv_jacobian = dg::project_tensor_to_boundary(
-          inv_jacobian, mesh, boundary_direction);
-
-      // Get interface mesh and normal
-      const auto& face_mesh = mesh.slice_away(boundary_direction.dimension());
-      const auto& conformal_face_normal =
-          conformal_face_normals.at(boundary_direction);
-      const auto face_normal_magnitude = magnitude(conformal_face_normal);
-      const auto flat_face_normal = tenex::evaluate<ti::i>(
-          conformal_face_normal(ti::i) / face_normal_magnitude());
-
-      // Compute curved and flat area elements
-      const auto face_sqrt_det_conformal_metric =
-          Scalar<DataVector>(sqrt(get(determinant(face_conformal_metric))));
-      const auto conformal_area_element = area_element(
-          face_inv_jacobian, boundary_direction, face_inv_conformal_metric,
-          face_sqrt_det_conformal_metric);
-      const auto flat_area_element =
-          euclidean_area_element(face_inv_jacobian, boundary_direction);
-
       // Compute surface integrands
       const auto mass_surface_integrand = Xcts::adm_mass_surface_integrand(
           face_deriv_conformal_factor, face_inv_conformal_metric,

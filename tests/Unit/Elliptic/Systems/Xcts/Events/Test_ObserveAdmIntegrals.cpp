@@ -25,13 +25,11 @@
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 #include "PointwiseFunctions/GeneralRelativity/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Lapse.hpp"
-#include "PointwiseFunctions/GeneralRelativity/Ricci.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Shift.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "PointwiseFunctions/SpecialRelativity/LorentzBoostMatrix.hpp"
 #include "PointwiseFunctions/Xcts/ExtrinsicCurvature.hpp"
-#include "PointwiseFunctions/Xcts/LongitudinalOperator.hpp"
 
 namespace {
 
@@ -198,8 +196,6 @@ void test_local_adm_integrals(const double& distance,
         deriv_conformal_metric, inv_conformal_metric);
     const auto conformal_christoffel_contracted = tenex::evaluate<ti::i>(
         conformal_christoffel_second_kind(ti::J, ti::i, ti::j));
-    const auto deriv_conformal_christoffel_second_kind = partial_derivative(
-        conformal_christoffel_second_kind, mesh, inv_jacobian);
 
     // Define variables that appear in the formulas of dt_spatial_metric.
     const auto& x = get<0>(inertial_coords);
@@ -232,24 +228,6 @@ void test_local_adm_integrals(const double& distance,
                                 dt_spatial_metric, deriv_spatial_metric);
     const auto trace_extrinsic_curvature = tenex::evaluate(
         inv_spatial_metric(ti::I, ti::J) * extrinsic_curvature(ti::i, ti::j));
-
-    // Compute longitudinal operator quantities
-    tnsr::II<DataVector, 3, Frame::Inertial> longitudinal_shift;
-    Xcts::longitudinal_operator(make_not_null(&longitudinal_shift), shift,
-                                deriv_shift, inv_conformal_metric,
-                                conformal_christoffel_second_kind);
-    const auto longitudinal_shift_background_minus_dt_conformal_metric =
-        tenex::evaluate<ti::I, ti::J>(longitudinal_shift(ti::I, ti::J));
-    const auto longitudinal_shift_excess =
-        make_with_value<tnsr::II<DataVector, 3, Frame::Inertial>>(
-            inertial_coords, 0.0);
-
-    // Compute conformal Ricci scalar
-    const auto conformal_ricci_tensor =
-        gr::ricci_tensor(conformal_christoffel_second_kind,
-                         deriv_conformal_christoffel_second_kind);
-    const auto conformal_ricci_scalar =
-        gr::ricci_scalar(conformal_ricci_tensor, inv_conformal_metric);
 
     // Compute face normals (related to the conformal metric)
     auto lower_conformal_face_normal = unnormalized_face_normal(
