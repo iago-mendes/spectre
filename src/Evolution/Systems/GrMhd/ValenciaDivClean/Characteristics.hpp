@@ -7,6 +7,7 @@
 #include <cstddef>
 
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/Matrix.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/FaceNormal.hpp"
@@ -27,6 +28,8 @@ struct Normalized;
 
 namespace grmhd {
 namespace ValenciaDivClean {
+
+namespace approx {
 
 /// @{
 /*!
@@ -118,6 +121,42 @@ void characteristic_speeds(
         equation_of_state);
 /// @}
 
+}  // namespace approx
+
+namespace detail {
+
+void flux_jacobian_hydro(
+    gsl::not_null<tnsr::iJ<DataVector, 5>*> characteristic_matrix,
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, 2>& equation_of_state,
+    const Scalar<DataVector>& specific_enthalpy);
+
+}  // namespace detail
+
+std::pair<std::array<DataVector, 5>,
+          std::pair<std::array<tnsr::I<DataVector, 5>, 5>,
+                    std::array<tnsr::I<DataVector, 5>, 5>>>
+numerical_eigensystem(
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, 2>& equation_of_state,
+    const Scalar<DataVector>& specific_enthalpy);
+
 namespace Tags {
 /// \brief Compute the characteristic speeds for the Valencia formulation of
 /// GRMHD with divergence cleaning.
@@ -158,7 +197,7 @@ struct CharacteristicSpeedsCompute : Tags::CharacteristicSpeeds,
       const tnsr::i<DataVector, 3>& unit_normal,
       const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
           equation_of_state) {
-    characteristic_speeds<ThermodynamicDim>(
+    approx::characteristic_speeds<ThermodynamicDim>(
         result, rest_mass_density, specific_internal_energy, specific_enthalpy,
         spatial_velocity, lorentz_factor, magnetic_field, lapse, shift,
         spatial_metric, unit_normal, equation_of_state);
