@@ -147,9 +147,6 @@ void test_hydro_numerical_eigensystem(const DataVector& used_for_size) {
 
   const auto normal_velocity =
       tenex::evaluate(spatial_velocity(ti::I) * unit_normal(ti::i));
-  // std::cout << "\tnormal_velocity = " << std::defaultfloat << normal_velocity
-  // << std::endl;
-
   // std::cout << "Starting numerical eigensystem test..." << std::endl;
 
   // std::cout << std::endl << "Random variables:" << std::endl
@@ -188,12 +185,15 @@ void test_hydro_numerical_eigensystem(const DataVector& used_for_size) {
   // std::cout << "... built expected matrix!" << std::endl;
 
   // Loop over each point and verify solution
+  std::cout << "test_hydro_numerical_eigensystem:" << std::endl;
   double old_error = 0.0;
   double error = 0.0;
   const size_t num_points = used_for_size.size();
   constexpr size_t matrix_size = 5;
   for (size_t i = 0; i < num_points; ++i) {
     std::cout << "point " << i << ":" << std::endl;
+    std::cout << "\tv_n = " << std::defaultfloat << get(normal_velocity)[i]
+              << std::endl;
 
     // Reconstruct characteristic matrix
     // std::cout << "Getting point expected matrix..." << std::endl;
@@ -311,7 +311,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   // with vector components being 0.
   // test_with_normal_along_coordinate_axes(dv);
   for (size_t i = 0; i < 100; ++i) {
-    std::cout << std::endl << "Test " << i + 1 << std::endl;
+    std::cout << std::endl << "====== Test " << i + 1 << " ======" << std::endl;
     test_hydro_numerical_eigensystem(dv);
   }
 

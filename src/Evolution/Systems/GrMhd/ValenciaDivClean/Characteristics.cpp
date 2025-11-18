@@ -12,6 +12,13 @@
 #include <gsl/gsl_vector.h>
 #include <iostream>
 
+#include <gsl/gsl_complex.h>
+#include <gsl/gsl_complex_math.h>
+#include <gsl/gsl_eigen.h>
+#include <gsl/gsl_math.h>
+#include <gsl/gsl_matrix.h>
+#include <gsl/gsl_vector.h>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
@@ -438,6 +445,8 @@ numerical_eigensystem(
     const tnsr::i<DataVector, 3>& unit_normal,
     const EquationsOfState::EquationOfState<true, 2>& equation_of_state,
     const Scalar<DataVector>& specific_enthalpy) {
+  std::cout << "numerical_eigensystem:" << std::endl;
+
   // Define size of variables declared below
   const size_t num_points = get(rest_mass_density).size();
   constexpr size_t matrix_size = 5;
@@ -486,16 +495,42 @@ numerical_eigensystem(
   gsl_matrix_complex* complex_left_eigenvectors =
       gsl_matrix_complex_alloc(matrix_size, matrix_size);
 
+  // Allocate memory to with with blaze::geev
+  Matrix blaze_point_matrix(matrix_size, matrix_size);
+  blaze::DynamicVector<blaze::complex<double>> blaze_complex_eigenvalues(
+      matrix_size);
+  blaze::DynamicMatrix<blaze::complex<double>> blaze_complex_L(matrix_size,
+                                                               matrix_size);
+  blaze::DynamicMatrix<blaze::complex<double>> blaze_complex_R(matrix_size,
+                                                               matrix_size);
+  std::vector<double> blaze_real_eigenvalues(matrix_size);
+
   // Loop over each grid point
   for (size_t point = 0; point < num_points; ++point) {
+    std::cout << "point " << point << ":" << std::endl;
+
     // Build matrix (and its transpose) at this grid point
+    std::cout << "A = {" << std::endl;
     for (size_t row = 0; row < matrix_size; ++row) {
+      std::cout << "\t{";
       for (size_t col = 0; col < matrix_size; ++col) {
         double entry = characteristic_matrix.get(row, col)[point];
         gsl_matrix_set(point_matrix, row, col, entry);
         gsl_matrix_set(point_matrix_T, col, row, entry);
+        blaze_point_matrix(row, col) = entry;
+        std::cout << std::fixed << std::setprecision(16);
+        std::cout << entry;
+        if (col != matrix_size - 1) {
+          std::cout << ",";
+        }
       }
+      std::cout << "}";
+      if (row != matrix_size - 1) {
+        std::cout << "," << std::endl;
+      }
+      std::cout << std::endl;
     }
+    std::cout << "};" << std::endl;
 
     // Solve right eigensystem (A * R = lambda * R)
     // Note: the right eigenvectors of A are stored as columns of
@@ -516,7 +551,18 @@ numerical_eigensystem(
     gsl_eigen_nonsymmv_sort(complex_left_eigenvalues, complex_left_eigenvectors,
                             GSL_EIGEN_SORT_ABS_DESC);
 
-    std::cout << "R = {";
+    std::cout << "Vgsl = {";
+    for (size_t i = 0; i < matrix_size; ++i) {
+      gsl_complex entry = gsl_vector_complex_get(complex_right_eigenvalues, i);
+      std::cout << std::fixed << std::setprecision(16);
+      std::cout << GSL_REAL(entry);
+      if (i < matrix_size - 1) {
+        std::cout << ",";
+      }
+    }
+    std::cout << "};" << std::endl;
+
+    std::cout << "Rgsl = {";
     for (size_t row = 0; row < matrix_size; ++row) {
       std::cout << "\t{";
       for (size_t col = 0; col < matrix_size; ++col) {
@@ -537,7 +583,7 @@ numerical_eigensystem(
     }
     std::cout << "};" << std::endl;
 
-    std::cout << "L = {";
+    std::cout << "Lgsl = {";
     for (size_t row = 0; row < matrix_size; ++row) {
       std::cout << "\t{";
       for (size_t col = 0; col < matrix_size; ++col) {
@@ -558,6 +604,65 @@ numerical_eigensystem(
     }
     std::cout << "};" << std::endl;
 
+    // Solve eigensystem using blaze:geev for comparison
+    blaze::geev(blaze_point_matrix, blaze_complex_L, blaze_complex_eigenvalues,
+                blaze_complex_R);
+    for (size_t i = 0; i < matrix_size; ++i) {
+      blaze_real_eigenvalues[i] = blaze_complex_eigenvalues[i].real();
+    }
+    std::sort(blaze_real_eigenvalues.begin(), blaze_real_eigenvalues.end(),
+              [](const double& a, const double& b) {
+                return std::abs(a) > std::abs(b);
+              });
+
+    std::cout << "Vblaze = {";
+    for (size_t i = 0; i < matrix_size; ++i) {
+      std::cout << std::fixed << std::setprecision(16);
+      std::cout << blaze_real_eigenvalues[i];
+      if (i < matrix_size - 1) {
+        std::cout << ",";
+      }
+    }
+    std::cout << "};" << std::endl;
+
+    std::cout << "Rblaze = {" << std::endl;
+    for (size_t i = 0; i < matrix_size; ++i) {
+      std::cout << "\t{";
+      for (size_t j = 0; j < matrix_size; ++j) {
+        std::cout << std::fixed << std::setprecision(16);
+        std::cout << blaze_complex_R(i, j).real() << "+"
+                  << blaze_complex_R(i, j).imag() << "I";
+        if (j < matrix_size - 1) {
+          std::cout << ",";
+        }
+      }
+      std::cout << "}";
+      if (i < matrix_size - 1) {
+        std::cout << ",";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << "};" << std::endl;
+
+    std::cout << "Lblaze = {" << std::endl;
+    for (size_t i = 0; i < matrix_size; ++i) {
+      std::cout << "\t{";
+      for (size_t j = 0; j < matrix_size; ++j) {
+        std::cout << std::fixed << std::setprecision(16);
+        std::cout << blaze_complex_L(i, j).real() << "+"
+                  << blaze_complex_L(i, j).imag() << "I";
+        if (j < matrix_size - 1) {
+          std::cout << ",";
+        }
+      }
+      std::cout << "}";
+      if (i < matrix_size - 1) {
+        std::cout << ",";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << "};" << std::endl;
+
     // Check and save results
     const double tolerance = 1.0e-10;
     // To-do: improve names / handling of complex conjugate pairs
@@ -565,7 +670,6 @@ numerical_eigensystem(
     bool is_left_pair_from_previous = false;
     // Note: we're looping through the ith eigenvalue/vector, not the ith row!
     for (size_t i = 0; i < matrix_size; ++i) {
-      std::cout << "Eigenvalue/vectors " << i << "..." << std::endl;
       // Get eigenvalue from the right eigensystem
       gsl_complex eigenvalue =
           gsl_vector_complex_get(complex_right_eigenvalues, i);
@@ -582,6 +686,12 @@ numerical_eigensystem(
              "Eigenvalues from left/right eigensystems differ by "
                  << std::abs(GSL_REAL(eigenvalue) - GSL_REAL(left_eigenvalue))
                  << ".");
+
+      double diff_with_blaze =
+          std::abs(GSL_REAL(eigenvalue) - blaze_real_eigenvalues[i]);
+      ASSERT(diff_with_blaze < tolerance,
+             "Eigenvalue " << i << " from GSL and blaze::geev differ by "
+                           << diff_with_blaze << ".");
 
       // Store eigenvalue
       all_eigenvalues[i][point] = GSL_REAL(eigenvalue);
