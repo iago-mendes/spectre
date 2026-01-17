@@ -183,7 +183,8 @@ def inspiral_parameters(
     # Place the cutting plane such that it is at the point of contact of two
     # spheres orbiting around their the Newtonian center-of-mass, scaling in
     # size with decreasing separation between them.
-    cutting_plane_position = x_A * mass_b + x_B * mass_a
+    # cutting_plane_position = x_A * mass_b + x_B * mass_a
+    cutting_plane_position = "Auto"
     # The excision in the grid frame will grow during the inspiral by a factor
     # of initial_separation / 2 due to the expansion map, so we have to make
     # sure that the cubes are large enough to contain the excisions plus some
@@ -227,8 +228,12 @@ def inspiral_parameters(
         "ExcisionRadiusB": excision_radius_b,
         # The object outer radius must be smaller than D * mass_{a,b} to ensure
         # that the shell is contained within the cube.
-        "ObjectAOuterRadius": 0.8 * initial_separation * mass_a,
-        "ObjectBOuterRadius": 0.8 * initial_separation * mass_b,
+        "ObjectAOuterRadius": min(
+            0.8 * initial_separation * mass_a, 0.45 * initial_separation
+        ),
+        "ObjectBOuterRadius": min(
+            0.8 * initial_separation * mass_b, 0.45 * initial_separation
+        ),
         "XCoordA": x_A,
         "XCoordB": x_B,
         "CubeScale": cube_scale,
@@ -247,8 +252,9 @@ def inspiral_parameters(
         # positioning of the cutting plane and the scaling of the cube with mass
         # ratio. To compensate for this factor of 1.5 to 2 for mass ratios 2+,
         # we add an extra radial refinement level.
-        "ExtraRadRef": 1 if round(mass_ratio) > 1 else 0,
-        "ExtraRadPoints": round(mass_ratio) if round(mass_ratio) > 1 else 0,
+        "ExtraRadRef": round(0.5 * np.log(mass_ratio)),
+        "ExtraRadPoints": round(2.0 * np.log(mass_ratio)),
+        "CubeBLogMapStrength": 1.0 + 0.5 * np.log(mass_ratio),
     }
 
     # Initial functions of time (set from ID or load from evolution data)

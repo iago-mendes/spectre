@@ -82,6 +82,7 @@ DomainCreator:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
       UseLogarithmicMap: true
+      LogarithmicMapStrength: 1.0
     ObjectB:
       InnerRadius: &ExcisionRadiusB {{ ExcisionRadiusB }}
       OuterRadius: {{ ObjectBOuterRadius }}
@@ -90,6 +91,7 @@ DomainCreator:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
       UseLogarithmicMap: true
+      LogarithmicMapStrength: {{ CubeBLogMapStrength }}
     CuttingPlanePosition: {{ CuttingPlanePosition }}
     CenterOfMassOffset:
       - &YOffset {{ CenterOfMassOffset_y }}
