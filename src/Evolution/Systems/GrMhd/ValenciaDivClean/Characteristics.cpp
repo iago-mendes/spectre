@@ -361,8 +361,8 @@ void eigenvectors_hydro(
     const Scalar<DataVector>& specific_internal_energy,
     const Scalar<DataVector>& specific_enthalpy,
     const Scalar<DataVector>& electron_fraction,
-    const Scalar<DataVector>& lorentz_factor, const Scalar<DataVector>& kappa,
-    const Scalar<DataVector>& zeta, const tnsr::i<DataVector, 3>& unit_normal,
+    const Scalar<DataVector>& lorentz_factor,
+    const tnsr::i<DataVector, 3>& unit_normal,
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
         equation_of_state) {
@@ -385,9 +385,6 @@ void eigenvectors_hydro(
   };
   allocate_and_zero(*right_eigenvectors);
   allocate_and_zero(*left_eigenvectors);
-
-  // This is for the case for zeta = 0.
-  const double zeta_max_abs = max(abs(get(zeta)));
 
   Scalar<DataVector> det_spatial_metric{num_grid_points};
   tnsr::II<DataVector, 3, Frame::Inertial> inv_spatial_metric{num_grid_points};
@@ -438,6 +435,8 @@ void eigenvectors_hydro(
               spatial_velocity_one_form);
 
   Scalar<DataVector> sound_speed_squared{num_grid_points};
+  Scalar<DataVector> kappa{num_grid_points};
+  Scalar<DataVector> zeta{num_grid_points};
   Scalar<DataVector> pressure{num_grid_points};
 
   if constexpr (ThermodynamicDim == 1) {
@@ -448,16 +447,25 @@ void eigenvectors_hydro(
     get(sound_speed_squared) /= get(specific_enthalpy);
     get(pressure) =
         get(equation_of_state.pressure_from_density(rest_mass_density));
+    get(kappa) = 0.0;
+    get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 2) {
     get(sound_speed_squared) =
-        get(equation_of_state.chi_from_density_and_energy(
-            rest_mass_density, specific_internal_energy)) +
-        get(equation_of_state
-                .kappa_times_p_over_rho_squared_from_density_and_energy(
-                    rest_mass_density, specific_internal_energy));
-    get(sound_speed_squared) /= get(specific_enthalpy);
+        (get(equation_of_state.chi_from_density_and_energy(
+             rest_mass_density, specific_internal_energy)) +
+         get(equation_of_state
+                 .kappa_times_p_over_rho_squared_from_density_and_energy(
+                     rest_mass_density, specific_internal_energy))) /
+        get(specific_enthalpy);
+    const Scalar<DataVector> kappa_times_p_over_rho_squared =
+        equation_of_state
+            .kappa_times_p_over_rho_squared_from_density_and_energy(
+                rest_mass_density, specific_internal_energy);
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy));
+    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
+                 square(get(rest_mass_density));
+    get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
     const auto temperature =
         equation_of_state.temperature_from_density_and_energy(
@@ -467,7 +475,27 @@ void eigenvectors_hydro(
             rest_mass_density, temperature, electron_fraction));
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy, electron_fraction));
+    // So, we're currently using the equations from an ideal fluid EoS to set
+    // kappa, assuming the same adiabatic index as used in the tests. This
+    // approach will need to be improved during the code review process..
+    const double adiabatic_index = 1.5;
+    const Scalar<DataVector> chi =
+        tenex::evaluate(specific_internal_energy() * (adiabatic_index - 1.0));
+    const Scalar<DataVector> kappa_times_p_over_rho_squared = tenex::evaluate(
+        square(adiabatic_index - 1.0) * specific_internal_energy());
+    const DataVector sound_speed_squared_ideal_fluid =
+        (get(chi) + get(kappa_times_p_over_rho_squared)) /
+        get(specific_enthalpy);
+    ASSERT(max(abs(get(sound_speed_squared) -
+                   sound_speed_squared_ideal_fluid)) < 1e-10,
+           "The ideal fluid approximation for kappa is not valid.");
+    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
+                 square(get(rest_mass_density));
+    get(zeta) = 0.0;
   }
+
+  // This is for the case for zeta = 0.
+  const double zeta_max_abs = max(abs(get(zeta)));
 
   const DataVector sound_speed = sqrt(get(sound_speed_squared));
   const DataVector W_squared = square(get(lorentz_factor));
@@ -1286,7 +1314,6 @@ GENERATE_INSTANTIATIONS(FUNCTION_INSTANTIATION, (1, 2, 3))
       const Scalar<DataVector>& specific_enthalpy,                             \
       const Scalar<DataVector>& electron_fraction,                             \
       const Scalar<DataVector>& lorentz_factor,                                \
-      const Scalar<DataVector>& kappa, const Scalar<DataVector>& zeta,         \
       const tnsr::i<DataVector, 3>& unit_normal,                               \
       const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
       const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \

@@ -172,8 +172,8 @@ void test_hydro_analytic_eigenvectors(const DataVector& used_for_size) {
     grmhd::ValenciaDivClean::eigenvectors_hydro<3>(
         make_not_null(&right_eigenvectors), make_not_null(&left_eigenvectors),
         spatial_velocity, rest_mass_density, specific_internal_energy,
-        specific_enthalpy, electron_fraction, lorentz_factor, kappa, zeta,
-        unit_normal, spatial_metric, *eos_3d);
+        specific_enthalpy, electron_fraction, lorentz_factor, unit_normal,
+        spatial_metric, *eos_3d);
 
     // Analytic characteristic speeds
     const std::array<DataVector, 3> analytic_speeds =

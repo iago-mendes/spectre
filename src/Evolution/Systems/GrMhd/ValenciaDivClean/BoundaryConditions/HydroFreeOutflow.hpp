@@ -143,10 +143,14 @@ class HydroFreeOutflow final : public BoundaryCondition {
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
       gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
           spatial_velocity_one_form,
+      gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*> spatial_metric,
       gsl::not_null<Scalar<DataVector>*> rest_mass_density,
       gsl::not_null<Scalar<DataVector>*> electron_fraction,
       gsl::not_null<Scalar<DataVector>*> temperature,
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> spatial_velocity,
+      gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+      gsl::not_null<Scalar<DataVector>*> pressure,
+      gsl::not_null<Scalar<DataVector>*> lorentz_factor,
       gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
           inv_spatial_metric,
 

@@ -344,8 +344,8 @@ void eigenvectors_hydro(
     const Scalar<DataVector>& specific_internal_energy,
     const Scalar<DataVector>& specific_enthalpy,
     const Scalar<DataVector>& electron_fraction,
-    const Scalar<DataVector>& lorentz_factor, const Scalar<DataVector>& kappa,
-    const Scalar<DataVector>& zeta, const tnsr::i<DataVector, 3>& unit_normal,
+    const Scalar<DataVector>& lorentz_factor,
+    const tnsr::i<DataVector, 3>& unit_normal,
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
         equation_of_state);

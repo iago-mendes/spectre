@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
@@ -35,8 +37,14 @@ namespace grmhd::ValenciaDivClean::BoundaryCorrections {
  */
 class Marquina final : public evolution::BoundaryCorrection {
  private:
-  struct AbsCharSpeed : db::SimpleTag {
-    using type = Scalar<DataVector>;
+  struct CharacteristicSpeeds : db::SimpleTag {
+    using type = tnsr::i<DataVector, 3, Frame::NoFrame>;
+  };
+  struct LeftCharacteristicFields : db::SimpleTag {
+    using type = tnsr::iJ<DataVector, 6, Frame::NoFrame>;
+  };
+  struct RightCharacteristicFields : db::SimpleTag {
+    using type = tnsr::ij<DataVector, 6, Frame::NoFrame>;
   };
 
  public:
@@ -67,15 +75,21 @@ class Marquina final : public evolution::BoundaryCorrection {
                  ::Tags::NormalDotFlux<Tags::TildeTau>,
                  ::Tags::NormalDotFlux<Tags::TildeS<Frame::Inertial>>,
                  ::Tags::NormalDotFlux<Tags::TildeB<Frame::Inertial>>,
-                 ::Tags::NormalDotFlux<Tags::TildePhi>, AbsCharSpeed>;
+                 ::Tags::NormalDotFlux<Tags::TildePhi>, CharacteristicSpeeds,
+                 LeftCharacteristicFields, RightCharacteristicFields>;
+
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>,
+      gr::Tags::SpatialMetric<DataVector, 3, Frame::Inertial>>;
   using dg_package_data_primitive_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
                  hydro::Tags::Temperature<DataVector>,
-                 hydro::Tags::SpatialVelocity<DataVector, 3>>;
+                 hydro::Tags::SpatialVelocity<DataVector, 3>,
+                 hydro::Tags::SpecificInternalEnergy<DataVector>,
+                 hydro::Tags::Pressure<DataVector>,
+                 hydro::Tags::LorentzFactor<DataVector>>;
   using dg_package_data_volume_tags =
       tmpl::list<hydro::Tags::GrmhdEquationOfState>;
   using dg_boundary_terms_volume_tags = tmpl::list<>;
@@ -95,7 +109,12 @@ class Marquina final : public evolution::BoundaryCorrection {
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
           packaged_normal_dot_flux_tilde_b,
       gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_phi,
-      gsl::not_null<Scalar<DataVector>*> packaged_abs_char_speed,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::NoFrame>*>
+          packaged_characteristic_speeds,
+      gsl::not_null<tnsr::iJ<DataVector, 6, Frame::NoFrame>*>
+          packaged_left_characteristic_fields,
+      gsl::not_null<tnsr::ij<DataVector, 6, Frame::NoFrame>*>
+          packaged_right_characteristic_fields,
 
       const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
       const Scalar<DataVector>& tilde_tau,
@@ -110,23 +129,26 @@ class Marquina final : public evolution::BoundaryCorrection {
       const tnsr::IJ<DataVector, 3, Frame::Inertial>& flux_tilde_b,
       const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_phi,
 
-      const Scalar<DataVector>& lapse,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
+      const Scalar<DataVector>& /*lapse*/,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& /*shift*/,
       const tnsr::i<DataVector, 3,
                     Frame::Inertial>& /*spatial_velocity_one_form*/,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
-      const Scalar<DataVector>& /*rest_mass_density*/,
-      const Scalar<DataVector>& /*electron_fraction*/,
+      const Scalar<DataVector>& rest_mass_density,
+      const Scalar<DataVector>& electron_fraction,
       const Scalar<DataVector>& /*temperature*/,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& /*spatial_velocity*/,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+      const Scalar<DataVector>& specific_internal_energy,
+      const Scalar<DataVector>& pressure,
+      const Scalar<DataVector>& lorentz_factor,
 
       const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& /*normal_vector*/,
       const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
       /*mesh_velocity*/,
-      const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
-      const EquationsOfState::EquationOfState<true, 3>&
-      /*equation_of_state*/);
+      const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
 
   static void dg_boundary_terms(
       gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_d,
@@ -151,7 +173,11 @@ class Marquina final : public evolution::BoundaryCorrection {
       const tnsr::I<DataVector, 3, Frame::Inertial>&
           normal_dot_flux_tilde_b_int,
       const Scalar<DataVector>& normal_dot_flux_tilde_phi_int,
-      const Scalar<DataVector>& abs_char_speed_int,
+      const tnsr::i<DataVector, 3, Frame::NoFrame>& characteristic_speeds_int,
+      const tnsr::iJ<DataVector, 6, Frame::NoFrame>&
+          left_characteristic_fields_int,
+      const tnsr::ij<DataVector, 6, Frame::NoFrame>&
+          right_characteristic_fields_int,
       const Scalar<DataVector>& tilde_d_ext,
       const Scalar<DataVector>& tilde_ye_ext,
       const Scalar<DataVector>& tilde_tau_ext,
@@ -166,7 +192,11 @@ class Marquina final : public evolution::BoundaryCorrection {
       const tnsr::I<DataVector, 3, Frame::Inertial>&
           normal_dot_flux_tilde_b_ext,
       const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
-      const Scalar<DataVector>& abs_char_speed_ext,
+      const tnsr::i<DataVector, 3, Frame::NoFrame>& characteristic_speeds_ext,
+      const tnsr::iJ<DataVector, 6, Frame::NoFrame>&
+          left_characteristic_fields_ext,
+      const tnsr::ij<DataVector, 6, Frame::NoFrame>&
+          right_characteristic_fields_ext,
       dg::Formulation dg_formulation);
 };
 

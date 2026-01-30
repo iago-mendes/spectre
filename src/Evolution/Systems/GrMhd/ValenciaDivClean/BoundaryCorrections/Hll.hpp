@@ -144,114 +144,125 @@ class Hll final : public evolution::BoundaryCorrection {
                  LargestOutgoingCharSpeed, LargestIngoingCharSpeed>;
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>,
+      gr::Tags::SpatialMetric<DataVector, 3, Frame::Inertial>>;
   using dg_package_data_primitive_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
                  hydro::Tags::Temperature<DataVector>,
-                 hydro::Tags::SpatialVelocity<DataVector, 3>>;
+                 hydro::Tags::SpatialVelocity<DataVector, 3>,
+                 hydro::Tags::SpecificInternalEnergy<DataVector>,
+                 hydro::Tags::Pressure<DataVector>,
+                 hydro::Tags::LorentzFactor<DataVector>>;
   using dg_package_data_volume_tags =
       tmpl::list<hydro::Tags::GrmhdEquationOfState>;
     using dg_boundary_terms_volume_tags = tmpl::list<>;
 
-  double dg_package_data(
-      gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
-      gsl::not_null<Scalar<DataVector>*> packaged_tilde_ye,
-      gsl::not_null<Scalar<DataVector>*> packaged_tilde_tau,
-      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> packaged_tilde_s,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> packaged_tilde_b,
-      gsl::not_null<Scalar<DataVector>*> packaged_tilde_phi,
-      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_d,
-      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_ye,
-      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_tau,
-      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-          packaged_normal_dot_flux_tilde_s,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
-          packaged_normal_dot_flux_tilde_b,
-      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_phi,
-      gsl::not_null<Scalar<DataVector>*> packaged_largest_outgoing_char_speed,
-      gsl::not_null<Scalar<DataVector>*> packaged_largest_ingoing_char_speed,
+    double dg_package_data(
+        gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
+        gsl::not_null<Scalar<DataVector>*> packaged_tilde_ye,
+        gsl::not_null<Scalar<DataVector>*> packaged_tilde_tau,
+        gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+            packaged_tilde_s,
+        gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+            packaged_tilde_b,
+        gsl::not_null<Scalar<DataVector>*> packaged_tilde_phi,
+        gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_d,
+        gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_ye,
+        gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_tau,
+        gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+            packaged_normal_dot_flux_tilde_s,
+        gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+            packaged_normal_dot_flux_tilde_b,
+        gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_phi,
+        gsl::not_null<Scalar<DataVector>*> packaged_largest_outgoing_char_speed,
+        gsl::not_null<Scalar<DataVector>*> packaged_largest_ingoing_char_speed,
 
-      const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
-      const Scalar<DataVector>& tilde_tau,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-      const Scalar<DataVector>& tilde_phi,
+        const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
+        const Scalar<DataVector>& tilde_tau,
+        const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
+        const Scalar<DataVector>& tilde_phi,
 
-      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_d,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_ye,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_tau,
-      const tnsr::Ij<DataVector, 3, Frame::Inertial>& flux_tilde_s,
-      const tnsr::IJ<DataVector, 3, Frame::Inertial>& flux_tilde_b,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_phi,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_d,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_ye,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_tau,
+        const tnsr::Ij<DataVector, 3, Frame::Inertial>& flux_tilde_s,
+        const tnsr::IJ<DataVector, 3, Frame::Inertial>& flux_tilde_b,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_phi,
 
-      const Scalar<DataVector>& lapse,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
+        const Scalar<DataVector>& lapse,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
+        const tnsr::i<DataVector, 3, Frame::Inertial>&
+            spatial_velocity_one_form,
+        const tnsr::ii<DataVector, 3, Frame::Inertial>& /*spatial_metric*/,
 
-      const Scalar<DataVector>& rest_mass_density,
-      const Scalar<DataVector>& electron_fraction,
-      const Scalar<DataVector>& temperature,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+        const Scalar<DataVector>& rest_mass_density,
+        const Scalar<DataVector>& electron_fraction,
+        const Scalar<DataVector>& temperature,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+        const Scalar<DataVector>& /*specific_internal_energy*/,
+        const Scalar<DataVector>& /*pressure*/,
+        const Scalar<DataVector>& /*lorentz_factor*/,
 
-      const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
-      const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
-      /*mesh_velocity*/,
-      const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
-      const EquationsOfState::EquationOfState<true, 3>& equation_of_state)
-      const;
+        const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
+        const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
+        /*mesh_velocity*/,
+        const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
+        const EquationsOfState::EquationOfState<true, 3>& equation_of_state)
+        const;
 
-  static void dg_boundary_terms(
-      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_d,
-      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_ye,
-      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_tau,
-      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-          boundary_correction_tilde_s,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
-          boundary_correction_tilde_b,
-      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_phi,
-      const Scalar<DataVector>& tilde_d_int,
-      const Scalar<DataVector>& tilde_ye_int,
-      const Scalar<DataVector>& tilde_tau_int,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_int,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_int,
-      const Scalar<DataVector>& tilde_phi_int,
-      const Scalar<DataVector>& normal_dot_flux_tilde_d_int,
-      const Scalar<DataVector>& normal_dot_flux_tilde_ye_int,
-      const Scalar<DataVector>& normal_dot_flux_tilde_tau_int,
-      const tnsr::i<DataVector, 3, Frame::Inertial>&
-          normal_dot_flux_tilde_s_int,
-      const tnsr::I<DataVector, 3, Frame::Inertial>&
-          normal_dot_flux_tilde_b_int,
-      const Scalar<DataVector>& normal_dot_flux_tilde_phi_int,
-      const Scalar<DataVector>& largest_outgoing_char_speed_int,
-      const Scalar<DataVector>& largest_ingoing_char_speed_int,
-      const Scalar<DataVector>& tilde_d_ext,
-      const Scalar<DataVector>& tilde_ye_ext,
-      const Scalar<DataVector>& tilde_tau_ext,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_ext,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_ext,
-      const Scalar<DataVector>& tilde_phi_ext,
-      const Scalar<DataVector>& normal_dot_flux_tilde_d_ext,
-      const Scalar<DataVector>& normal_dot_flux_tilde_ye_ext,
-      const Scalar<DataVector>& normal_dot_flux_tilde_tau_ext,
-      const tnsr::i<DataVector, 3, Frame::Inertial>&
-          normal_dot_flux_tilde_s_ext,
-      const tnsr::I<DataVector, 3, Frame::Inertial>&
-          normal_dot_flux_tilde_b_ext,
-      const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
-      const Scalar<DataVector>& largest_outgoing_char_speed_ext,
-      const Scalar<DataVector>& largest_ingoing_char_speed_ext,
-      dg::Formulation dg_formulation);
+    static void dg_boundary_terms(
+        gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_d,
+        gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_ye,
+        gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_tau,
+        gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+            boundary_correction_tilde_s,
+        gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+            boundary_correction_tilde_b,
+        gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_phi,
+        const Scalar<DataVector>& tilde_d_int,
+        const Scalar<DataVector>& tilde_ye_int,
+        const Scalar<DataVector>& tilde_tau_int,
+        const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_int,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_int,
+        const Scalar<DataVector>& tilde_phi_int,
+        const Scalar<DataVector>& normal_dot_flux_tilde_d_int,
+        const Scalar<DataVector>& normal_dot_flux_tilde_ye_int,
+        const Scalar<DataVector>& normal_dot_flux_tilde_tau_int,
+        const tnsr::i<DataVector, 3, Frame::Inertial>&
+            normal_dot_flux_tilde_s_int,
+        const tnsr::I<DataVector, 3, Frame::Inertial>&
+            normal_dot_flux_tilde_b_int,
+        const Scalar<DataVector>& normal_dot_flux_tilde_phi_int,
+        const Scalar<DataVector>& largest_outgoing_char_speed_int,
+        const Scalar<DataVector>& largest_ingoing_char_speed_int,
+        const Scalar<DataVector>& tilde_d_ext,
+        const Scalar<DataVector>& tilde_ye_ext,
+        const Scalar<DataVector>& tilde_tau_ext,
+        const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_ext,
+        const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_ext,
+        const Scalar<DataVector>& tilde_phi_ext,
+        const Scalar<DataVector>& normal_dot_flux_tilde_d_ext,
+        const Scalar<DataVector>& normal_dot_flux_tilde_ye_ext,
+        const Scalar<DataVector>& normal_dot_flux_tilde_tau_ext,
+        const tnsr::i<DataVector, 3, Frame::Inertial>&
+            normal_dot_flux_tilde_s_ext,
+        const tnsr::I<DataVector, 3, Frame::Inertial>&
+            normal_dot_flux_tilde_b_ext,
+        const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
+        const Scalar<DataVector>& largest_outgoing_char_speed_ext,
+        const Scalar<DataVector>& largest_ingoing_char_speed_ext,
+        dg::Formulation dg_formulation);
 
- private:
-  friend bool operator==(const Hll& lhs, const Hll& rhs);
+   private:
+    friend bool operator==(const Hll& lhs, const Hll& rhs);
 
-  double magnetic_field_magnitude_for_hydro_{
-      std::numeric_limits<double>::signaling_NaN()};
-  double light_speed_density_cutoff_{
-      std::numeric_limits<double>::signaling_NaN()};
+    double magnetic_field_magnitude_for_hydro_{
+        std::numeric_limits<double>::signaling_NaN()};
+    double light_speed_density_cutoff_{
+        std::numeric_limits<double>::signaling_NaN()};
 };
 bool operator!=(const Hll& lhs, const Hll& rhs);
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections

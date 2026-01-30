@@ -65,11 +65,16 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         spatial_velocity_one_form,
+    const gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
+        spatial_metric,
     const gsl::not_null<Scalar<DataVector>*> rest_mass_density,
     const gsl::not_null<Scalar<DataVector>*> electron_fraction,
     const gsl::not_null<Scalar<DataVector>*> temperature,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         spatial_velocity,
+    const gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+    const gsl::not_null<Scalar<DataVector>*> pressure,
+    const gsl::not_null<Scalar<DataVector>*> lorentz_factor,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         inv_spatial_metric,
 
@@ -117,14 +122,6 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
   auto& interior_sqrt_det_spatial_metric =
       get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(temp_buffer);
 
-  get(*lapse) = get(interior_lapse);
-  for (size_t i = 0; i < 3; ++i) {
-    (*shift).get(i) = interior_shift.get(i);
-    for (size_t j = 0; j < 3; ++j) {
-      (*inv_spatial_metric).get(i, j) = interior_inv_spatial_metric.get(i, j);
-    }
-  }
-
   // spatial metric and sqrt determinant of spatial metric can be retrived from
   // Databox but only as gridless_tags with whole volume data (unlike all the
   // other arguments which are face tensors). Rather than doing expensive tensor
@@ -135,6 +132,15 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
                           interior_inv_spatial_metric);
   get(interior_sqrt_det_spatial_metric) =
       1.0 / sqrt(get(interior_sqrt_det_spatial_metric));
+
+  get(*lapse) = get(interior_lapse);
+  for (size_t i = 0; i < 3; ++i) {
+    (*shift).get(i) = interior_shift.get(i);
+    for (size_t j = 0; j < 3; ++j) {
+      (*inv_spatial_metric).get(i, j) = interior_inv_spatial_metric.get(i, j);
+      (*spatial_metric).get(i, j) = interior_spatial_metric.get(i, j);
+    }
+  }
 
   // copy-paste interior spatial velocity to exterior spatial velocity, but
   // kill ingoing normal component to zero
@@ -161,6 +167,9 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
   *rest_mass_density = interior_rest_mass_density;
   *electron_fraction = interior_electron_fraction;
   *temperature = interior_temperature;
+  *specific_internal_energy = interior_specific_internal_energy;
+  *pressure = interior_pressure;
+  *lorentz_factor = interior_lorentz_factor;
   tenex::evaluate<ti::i>(
       spatial_velocity_one_form,
       (*spatial_velocity)(ti::J) * (interior_spatial_metric(ti::i, ti::j)));
