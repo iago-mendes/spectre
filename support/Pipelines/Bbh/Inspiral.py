@@ -171,10 +171,12 @@ def inspiral_parameters(
     # For unequal masses, this was found through trial and error that
     # decreasing the excision size of object b allowed the runs to evolve
     # without early incoming char speeds.
-    excision_radius_factor_a = 1.0 if id_from_evolution else 1.0385
-    excision_radius_factor_b = (
-        1.0 if (id_from_evolution or mass_ratio > 2.0) else 1.0385
-    )
+    # excision_radius_factor_a = 1.0 if id_from_evolution else 1.0385
+    # excision_radius_factor_b = (
+    #     1.0 if (id_from_evolution or mass_ratio > 2.0) else 1.0385
+    # )
+    excision_radius_factor_a = 1.00
+    excision_radius_factor_b = 1.00
     initial_separation = (
         id_domain_creator["ObjectA"]["XCoord"]
         - id_domain_creator["ObjectB"]["XCoord"]
@@ -229,12 +231,19 @@ def inspiral_parameters(
         # may need to be ported over eventually. The CCE extraction radii may
         # also need to be adjusted to account for different outer shell radii.
         "OuterShellRadius": 600.0 / 15.0 * initial_separation,
-        # Extra resolution for unequal masses (to be replaced with AMR)
-        # This extra refinement was found through trial and error and allowed
-        # mass ratio 6 to evolve through inspiral stably.
-        "ExtraRadRef": round(mass_ratio / 2.0) - 1 if (mass_ratio > 2.0) else 0,
-        "ExtraRadPoints": round(mass_ratio / 5.0) if (mass_ratio > 5.0) else 0,
+        # Extra resolution for unequal masses (to be replaced with AMR).
+        # The distance from the center of the smaller black hole to the outer
+        # cube boundary grows as (2 - 1/q) with mass ratio due to the
+        # positioning of the cutting plane and the scaling of the cube with mass
+        # ratio. To compensate for this factor of 1.5 to 2 for mass ratios 2+,
+        # we add an extra radial refinement level.
+        "ExtraRadRef": round(0.3 * np.log(mass_ratio)),
+        "ExtraRadPoints": round(1.0 * np.log(mass_ratio)),
+        "ObjectBLogMapStrength": 1.0 + 0.1 * np.log(mass_ratio),
     }
+    # assert (
+    #     polynomial_order + 1 + round(1.0 * np.log(mass_ratio)) <= 20
+    # ), "The polynomial order + extra radial points exceeds the maximum of 20."
 
     # Initial functions of time (set from ID or load from evolution data)
     if id_from_evolution:

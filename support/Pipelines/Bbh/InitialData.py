@@ -93,6 +93,7 @@ def id_parameters(
             required_target in target_params
         ), f"{required_target} must be specified in 'target_params'."
 
+    q = target_params["MassA"] / target_params["MassB"]
     x_A = (
         target_params["MassB"]
         / (target_params["MassA"] + target_params["MassB"])
@@ -113,13 +114,19 @@ def id_parameters(
     if negative_expansion_bc:
         # For high spins, we need to place the excisions closer to the outer
         # horizon in order to avoid the inner horizon.
-        excision_factor = (
-            0.97
-            if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9
-            else 0.93
-        )
+        # excision_factor = (
+        #     0.97
+        #     if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9
+        #     else 0.85 if q > 4.0 else 0.93
+        # )
+        excision_factor_a = 0.93
+        if q > 4.0:
+            excision_factor_b = 0.80
+        else:
+            excision_factor_b = 0.93
     else:
-        excision_factor = 1.0
+        excision_factor_a = 1.0
+        excision_factor_b = 1.0
     # Falloff widths of superposition
     L1_dist_A = L1_distance(conformal_mass_a, conformal_mass_b, separation)
     L1_dist_B = separation - L1_dist_A
@@ -130,9 +137,12 @@ def id_parameters(
     # seem to scale linearly with mass ratio. The current hard-coded limits (3
     # and 5) were enough to find initial data for mass ratio 50 (no evolution
     # attempted).
-    q = target_params["MassA"] / target_params["MassB"]
-    extra_radial_refinement_l = min(round(q / 3.0) - 1 if (q > 3.0) else 0, 3)
-    extra_radial_refinement_p = min(round(q / 5.0) if (q > 5.0) else 0, 5)
+    extra_radial_refinement_l = round(0.5 * np.log(q))
+    extra_radial_refinement_p = round(0.5 * np.log(q))
+    assert (
+        polynomial_order + 5 + extra_radial_refinement_p <= 20
+    ), "The polynomial order + extra radial points exceeds the maximum of 20."
+    object_b_log_map_strength = 1.0 + 0.1 * np.log(q)
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
@@ -146,9 +156,10 @@ def id_parameters(
         "LinearVelocity_x": linear_velocity[0],
         "LinearVelocity_y": linear_velocity[1],
         "LinearVelocity_z": linear_velocity[2],
-        "ExcisionRadiusRight": excision_factor * r_plus_A,
-        "ExcisionRadiusLeft": excision_factor * r_plus_B,
+        "ExcisionRadiusRight": excision_factor_a * r_plus_A,
+        "ExcisionRadiusLeft": excision_factor_b * r_plus_B,
         "ObjectOuterRadius": separation / 3.75,
+        "ObjectBLogMapStrength": object_b_log_map_strength,
         "OrbitalAngularVelocity": orbital_angular_velocity,
         "RadialExpansionVelocity": radial_expansion_velocity,
         "ConformalSpinRight_x": chi_A[0],

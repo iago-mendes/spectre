@@ -3,6 +3,8 @@
 
 #include "Domain/Creators/BinaryCompactObject.hpp"
 
+#include <iostream>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -27,6 +29,7 @@
 #include "Domain/CoordinateMaps/Distribution.hpp"
 #include "Domain/CoordinateMaps/Equiangular.hpp"
 #include "Domain/CoordinateMaps/Frustum.hpp"
+#include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CoordinateMaps/Interval.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
@@ -535,14 +538,49 @@ Domain<3> BinaryCompactObject<UseWorldtube>::create_domain() const {
             : std::make_optional(std::make_pair(
                   length_inner_cube_ * 0.5,
                   std::array<double, 3>{{offset_x_coord_b_, 0.0, 0.0}}));
-    Maps maps_center_B =
-        domain::make_vector_coordinate_map_base<Frame::BlockLogical,
-                                                Frame::Inertial, 3>(
-            sph_wedge_coordinate_maps(
-                object_b.inner_radius, object_b.outer_radius,
-                inner_sphericity_B, 1.0, use_equiangular_map_,
-                offset_b_optional, false, {}, object_B_radial_distribution),
-            translation_B);
+
+    Maps maps_center_B;
+    for (auto& wedge : sph_wedge_coordinate_maps(
+             object_b.inner_radius, object_b.outer_radius, inner_sphericity_B,
+             1.0, use_equiangular_map_, offset_b_optional, false, {},
+             {domain::CoordinateMaps::Distribution::Linear})) {
+      //  object_B_radial_distribution)) {
+      // const double radial_singularity_position = -1. - 0.5 *
+      // length_inner_cube_ / object_b.outer_radius;
+      // const double radial_singularity_position = -1.1;
+
+      const double R_in = object_b.inner_radius;
+      const double R_out = object_b.outer_radius;
+
+      // SCHEME 1: Scale alpha linearly with mass ratio
+      // At q=1, alpha=1.0 (Standard)
+      // At q=50, alpha=2.0 (Twice as dense at horizon relative to boundary)
+      // You need to pass 'mass_ratio' into this function or access it from your
+      // domain creator. const double mass_ratio = object_a.inner_radius /
+      // object_b.inner_radius; const double alpha = 1.0 + 0.02 * (mass_ratio
+      // - 1.0);
+      const double alpha = object_b.logarithmic_map_strength;
+
+      // Compute Physical r0 using your formula
+      const double physical_r0 =
+          (R_in * R_out * (1.0 - alpha)) / (R_in - alpha * R_out);
+
+      // Map to logical coordinate (same as before)
+      const double logical_r0 =
+          (2.0 * physical_r0 - (R_out + R_in)) / (R_out - R_in);
+
+      std::cout << "Alpha: " << alpha << ", Physical r0: " << physical_r0
+                << ", Logical r0: " << logical_r0 << std::endl;
+
+      const auto grid_distribution = RadialInterval3D{
+          Identity{}, Identity{},
+          Interval{-1., 1., -1., 1.,
+                   domain::CoordinateMaps::Distribution::Logarithmic,
+                   logical_r0}};
+      maps_center_B.emplace_back(
+          make_coordinate_map_base<Frame::BlockLogical, Frame::Inertial>(
+              grid_distribution, std::move(wedge), translation_B));
+    }
     Maps maps_cube_B =
         domain::make_vector_coordinate_map_base<Frame::BlockLogical,
                                                 Frame::Inertial, 3>(
