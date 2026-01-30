@@ -353,7 +353,7 @@ namespace detail {
 
 template <size_t ThermodynamicDim>
 void flux_jacobian_hydro(
-    gsl::not_null<tnsr::iJ<DataVector, 6>*> characteristic_matrix,
+    const gsl::not_null<tnsr::iJ<DataVector, 6>*> characteristic_matrix,
     /* primitive variables */
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
     const Scalar<DataVector>& rest_mass_density,
@@ -388,17 +388,15 @@ void flux_jacobian_hydro(
     get(kappa) = 0.0;
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 2) {
-    get(sound_speed_squared) =
-        (get(equation_of_state.chi_from_density_and_energy(
-             rest_mass_density, specific_internal_energy)) +
-         get(equation_of_state
-                 .kappa_times_p_over_rho_squared_from_density_and_energy(
-                     rest_mass_density, specific_internal_energy))) /
-        get(specific_enthalpy);
     const Scalar<DataVector> kappa_times_p_over_rho_squared =
         equation_of_state
             .kappa_times_p_over_rho_squared_from_density_and_energy(
                 rest_mass_density, specific_internal_energy);
+    get(sound_speed_squared) =
+        (get(equation_of_state.chi_from_density_and_energy(
+             rest_mass_density, specific_internal_energy)) +
+         get(kappa_times_p_over_rho_squared)) /
+        get(specific_enthalpy);
     const Scalar<DataVector> pressure =
         equation_of_state.pressure_from_density_and_energy(
             rest_mass_density, specific_internal_energy);
@@ -406,34 +404,31 @@ void flux_jacobian_hydro(
                  square(get(rest_mass_density));
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
-    // The following computation works for a general 3D EoS, but it doesn't
-    // allow getting kappa.
-    const auto temperature =
-        equation_of_state.temperature_from_density_and_energy(
-            rest_mass_density, specific_internal_energy, electron_fraction);
+    // Currently, we can only get kappa directly and set zeta=0 for a 3D EoS
+    // if it is composition is in equilibrium. So, here we throw an error
+    // if we have a 3D EoS that is not Equilibrium3D.
+    const auto* equilibrium_eos =
+        dynamic_cast<const EquationsOfState::Equilibrium3D<
+            EquationsOfState::EquationOfState<true, 2>>*>(&equation_of_state);
+    if (equilibrium_eos == nullptr) {
+      ERROR(
+          "The only 3D equation of state currently supported is "
+          "Equilibrium3D.");
+    }
+
+    const Scalar<DataVector> kappa_times_p_over_rho_squared =
+        equilibrium_eos->kappa_times_p_over_rho_squared_from_density_and_energy(
+            rest_mass_density, specific_internal_energy);
     get(sound_speed_squared) =
-        get(equation_of_state.sound_speed_squared_from_density_and_temperature(
-            rest_mass_density, temperature, electron_fraction));
-    // So, we're currently using the equations from an ideal fluid EoS to set
-    // kappa, assuming the same adiabatic index as used in the tests. This
-    // approach will need to be improved during the code review process..
-    const double adiabatic_index = 1.5;
-    const Scalar<DataVector> chi =
-        tenex::evaluate(specific_internal_energy() * (adiabatic_index - 1.0));
-    const Scalar<DataVector> kappa_times_p_over_rho_squared = tenex::evaluate(
-        square(adiabatic_index - 1.0) * specific_internal_energy());
-    const DataVector sound_speed_squared_ideal_fluid =
-        (get(chi) + get(kappa_times_p_over_rho_squared)) /
+        (get(equilibrium_eos->chi_from_density_and_energy(
+             rest_mass_density, specific_internal_energy)) +
+         get(kappa_times_p_over_rho_squared)) /
         get(specific_enthalpy);
-    ASSERT(max(abs(get(sound_speed_squared) -
-                   sound_speed_squared_ideal_fluid)) < 1e-10,
-           "The ideal fluid approximation for kappa is not valid.");
-    const auto pressure = equation_of_state.pressure_from_density_and_energy(
-        rest_mass_density, specific_internal_energy, electron_fraction);
+    const Scalar<DataVector> pressure =
+        equation_of_state.pressure_from_density_and_energy(
+            rest_mass_density, specific_internal_energy);
     get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
                  square(get(rest_mass_density));
-    // For now, we assume that we are at compositional equilibrium, so we set
-    // zeta to zero.
     get(zeta) = 0.0;
   }
 
@@ -542,10 +537,11 @@ void flux_jacobian_hydro(
 
 template <size_t ThermodynamicDim>
 void numerical_eigensystem(
-    gsl::not_null<std::array<Scalar<DataVector>, 6>*> all_eigenvalues,
-    gsl::not_null<std::array<tnsr::i<DataVector, 6>, 6>*>
+    const gsl::not_null<std::array<Scalar<DataVector>, 6>*> all_eigenvalues,
+    const gsl::not_null<std::array<tnsr::i<DataVector, 6>, 6>*>
         all_right_eigenvectors,
-    gsl::not_null<std::array<tnsr::I<DataVector, 6>, 6>*> all_left_eigenvectors,
+    const gsl::not_null<std::array<tnsr::I<DataVector, 6>, 6>*>
+        all_left_eigenvectors,
     /* primitive variables */
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
     const Scalar<DataVector>& rest_mass_density,

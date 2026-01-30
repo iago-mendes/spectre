@@ -170,6 +170,25 @@ class Equilibrium3D : public EquationOfState<EquilEos::is_relativistic, 3> {
   /// The baryon mass for this EoS
   double baryon_mass() const override { return underlying_eos_.baryon_mass(); }
 
+  /// Computes \f$\chi = \partial p / \partial \rho\f$ using the
+  /// underlying 2D EoS.
+  Scalar<double> chi_from_density_and_energy(
+      const Scalar<double>& rest_mass_density,
+      const Scalar<double>& specific_internal_energy) const {
+    return underlying_eos_.chi_from_density_and_energy(
+        rest_mass_density, specific_internal_energy);
+  }
+
+  /// Computes \f$\kappa p/\rho^2 = (p/\rho^2) \partial p / \partial \epsilon\f$
+  /// using the underlying 2D EoS.
+  Scalar<double> kappa_times_p_over_rho_squared_from_density_and_energy(
+      const Scalar<double>& rest_mass_density,
+      const Scalar<double>& specific_internal_energy) const {
+    return underlying_eos_
+        .kappa_times_p_over_rho_squared_from_density_and_energy(
+            rest_mass_density, specific_internal_energy);
+  }
+
  private:
   EQUATION_OF_STATE_FORWARD_DECLARE_MEMBER_IMPLS(3)
   EquilEos underlying_eos_;

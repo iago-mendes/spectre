@@ -204,18 +204,18 @@ namespace detail {
  * \brief Compute the flux Jacobian matrix (aka, characteristic matrix) for
  * relativistic hydrodynamics with composition dependence (electron fraction).
  *
- * We label the characteristic matrix in a given direction, $A_c^{\ b}$, such
+ * We label the characteristic matrix in a given direction, $A_c{}^{b}$, such
  * that the index $b$ labels columns and the index $c$ labels rows.
  * With this choice of indices, the right eigenvectors $R_b$ satisfy
  *
  * \begin{equation}
- *   A_c^{\ b} R_b = \lambda R_c,
+ *  \sum_b A_c{}^{b} R_b = \lambda R_c,
  * \end{equation}
  *
- * while the left eigenvectors $L^c$ satisfy $L^c A_c^{\ b} = \lambda L^b$.
+ * while the left eigenvectors $L^c$ satisfy $L^c A_c{}^{b} = \lambda L^b$.
  *
  * \begin{equation}
- *   L^c A_c^{\ b} = \lambda L^b,
+ *   \sum_c L^c A_c{}^{b} = \lambda L^b,
  * \end{equation}
  *
  * where $\lambda$ is the corresponding eigenvalue (characteristic speed).
@@ -228,11 +228,13 @@ namespace detail {
 template <size_t ThermodynamicDim>
 void flux_jacobian_hydro(
     gsl::not_null<tnsr::iJ<DataVector, 6>*> characteristic_matrix,
+
     /* primitive variables */
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
     const Scalar<DataVector>& rest_mass_density,
     const Scalar<DataVector>& specific_internal_energy,
     const Scalar<DataVector>& electron_fraction,
+
     /* other helpful quantities */
     const Scalar<DataVector>& lorentz_factor,
     const Scalar<DataVector>& specific_enthalpy,
