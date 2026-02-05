@@ -82,6 +82,7 @@ DomainCreator:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
       UseLogarithmicMap: true
+      LogarithmicMapStrength: 1.0
     ObjectB:
       InnerRadius: &ExcisionRadiusB {{ ExcisionRadiusB }}
       OuterRadius: {{ ObjectBOuterRadius }}
@@ -90,6 +91,7 @@ DomainCreator:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
       UseLogarithmicMap: true
+      LogarithmicMapStrength: {{ CubeBLogMapStrength }}
     CuttingPlanePosition: {{ CuttingPlanePosition }}
     CenterOfMassOffset:
       - &YOffset {{ CenterOfMassOffset_y }}
@@ -182,7 +184,7 @@ DomainCreator:
             - {{ ExcisionAShapeSpin_y }}
             - {{ ExcisionAShapeSpin_z }}
   {% endif %}
-        SizeInitialValues: [0.0, 0.0, 0.0]
+        SizeInitialValues: Auto
         TransitionEndsAtCube: true
       ShapeMapB:
         LMax: *ShapeLMax
@@ -197,7 +199,7 @@ DomainCreator:
             - {{ ExcisionBShapeSpin_y }}
             - {{ ExcisionBShapeSpin_z }}
   {% endif %}
-        SizeInitialValues: [0.0, 0.0, 0.0]
+        SizeInitialValues: Auto
         TransitionEndsAtCube: true
       GridCenters: None
 {% endif %}
@@ -219,8 +221,8 @@ Evolution:
     - ErrorControl:
         # Found that 100x smaller timestep tolerances reduced the noise in the
         # constraints significantly
-        AbsoluteTolerance: 1e-10
-        RelativeTolerance: 1e-8
+        AbsoluteTolerance: 1e-12
+        RelativeTolerance: 1e-10
         MaxFactor: 2
         MinFactor: 0.25
         SafetyFactor: 0.95

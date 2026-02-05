@@ -455,10 +455,108 @@ def control_id(
     while iteration < max_iterations:
         iteration += 1
 
+        max_horizon_residual = np.max(
+            np.abs(
+                np.array(
+                    [
+                        F[param_index_map["MassA"]],
+                        F[param_index_map["MassB"]],
+                        F[param_index_map["DimensionlessSpinA"] + 0],
+                        F[param_index_map["DimensionlessSpinA"] + 1],
+                        F[param_index_map["DimensionlessSpinA"] + 2],
+                        F[param_index_map["DimensionlessSpinB"] + 0],
+                        F[param_index_map["DimensionlessSpinB"] + 1],
+                        F[param_index_map["DimensionlessSpinB"] + 2],
+                    ]
+                )
+            )
+        )
+        delay_asymptotic_control = max_horizon_residual > 1.0e-2
+        logger.info(
+            f"Max residual of horizon parameters = {max_horizon_residual:e}."
+            f" {'Delaying' if delay_asymptotic_control else 'Not delaying'}"
+            " control of asymptotic parameters."
+        )
+
         # Update the free parameters using a quasi-Newton-Raphson method
         Delta_u = -np.dot(np.linalg.inv(J), F)
-        if iteration < control_delay:
+        if delay_asymptotic_control:
             Delta_u[delayed_indices] = 0.0
+
+        # Check if the update would violate the "effective spin" constraint
+        def effective_spin_norm(
+            conformal_mass, conformal_spin, horizon_rotation
+        ):
+            r = conformal_mass * (
+                1.0 + np.sqrt(1.0 - np.dot(conformal_spin, conformal_spin))
+            )
+            effective_spin = -2.0 * r * horizon_rotation
+            return np.linalg.norm(effective_spin)
+
+        for mass_key, spin_key in zip(
+            ["MassA", "MassB"],
+            ["DimensionlessSpinA", "DimensionlessSpinB"],
+        ):
+            if mass_key not in control_params or spin_key not in control_params:
+                continue
+            new_conformal_mass = (
+                u[param_index_map[mass_key]]
+                + Delta_u[param_index_map[mass_key]]
+            )
+            conformal_spin = target_params[spin_key]
+            new_r = new_conformal_mass * (
+                1.0 + np.sqrt(1.0 - np.dot(conformal_spin, conformal_spin))
+            )
+            prev_horizon_rotation = u[
+                param_index_map[spin_key] : param_index_map[spin_key] + 3
+            ]
+            delta_horizon_rotation = Delta_u[
+                param_index_map[spin_key] : param_index_map[spin_key] + 3
+            ]
+            epsilon = 1.0e-4
+            current_effective_spin = effective_spin_norm(
+                new_conformal_mass,
+                conformal_spin,
+                prev_horizon_rotation + delta_horizon_rotation,
+            )
+            if current_effective_spin > 1.0 - epsilon:
+                a = np.dot(delta_horizon_rotation, delta_horizon_rotation)
+                b = 2.0 * np.dot(prev_horizon_rotation, delta_horizon_rotation)
+                c = (
+                    np.dot(prev_horizon_rotation, prev_horizon_rotation)
+                    - (1.0 - epsilon) ** 2 / (2.0 * new_r) ** 2
+                )
+                discriminant = b**2 - 4.0 * a * c
+                if discriminant < 0:
+                    logger.warning(
+                        f"Norm of"
+                        f" exceeds 1.0, and there's no valid update that"
+                        f" doesn't violate the spin constraint."
+                    )
+                else:
+                    if b < 0:
+                        alpha = (-b + np.sqrt(discriminant)) / (2 * a)
+                    else:
+                        alpha = (2 * c) / (-b - np.sqrt(discriminant))
+                    Delta_u[
+                        param_index_map[spin_key] : param_index_map[spin_key]
+                        + 3
+                    ] *= alpha
+                    delta_horizon_rotation = Delta_u[
+                        param_index_map[spin_key] : param_index_map[spin_key]
+                        + 3
+                    ]
+                    new_effective_spin = effective_spin_norm(
+                        new_conformal_mass,
+                        conformal_spin,
+                        prev_horizon_rotation + delta_horizon_rotation,
+                    )
+                    logger.warning(
+                        f"Norm of effective spin for {spin_key} exceeded 1 -"
+                        f" {epsilon} ({current_effective_spin}).Update was"
+                        " scaled down so that the new norm is"
+                        f" {new_effective_spin}."
+                    )
 
         u += Delta_u
 
@@ -466,7 +564,7 @@ def control_id(
         F = Residual(u)
         if np.max(np.abs(F)) < residual_tolerance:
             break
-        if iteration < control_delay:
+        if delay_asymptotic_control:
             F[delayed_indices] = 0.0
 
         # Update the Jacobian using Broyden's method

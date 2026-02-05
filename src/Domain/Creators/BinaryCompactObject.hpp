@@ -37,6 +37,7 @@ class Affine;
 class Equiangular;
 template <size_t VolumeDim>
 class Identity;
+class Interval;
 template <typename Map1, typename Map2>
 class ProductOf2Maps;
 template <typename Map1, typename Map2, typename Map3>
@@ -161,7 +162,11 @@ class BinaryCompactObject : public DomainCreator<3> {
   // Time-independent maps
   using Affine = CoordinateMaps::Affine;
   using Affine3D = CoordinateMaps::ProductOf3Maps<Affine, Affine, Affine>;
+  using Identity = CoordinateMaps::Identity<1>;
   using Identity2D = CoordinateMaps::Identity<2>;
+  using Interval = CoordinateMaps::Interval;
+  using RadialInterval3D =
+      CoordinateMaps::ProductOf3Maps<Identity, Identity, Interval>;
   // The Translation type is no longer needed, but it is kept here for backwards
   // compatibility with old domains.
   using Translation = CoordinateMaps::ProductOf2Maps<Affine, Identity2D>;
@@ -194,6 +199,9 @@ class BinaryCompactObject : public DomainCreator<3> {
                             Affine3D>,
       domain::CoordinateMap<Frame::BlockLogical, Frame::Inertial,
                             CoordinateMaps::Wedge<3>, Affine3D>,
+      domain::CoordinateMap<Frame::BlockLogical, Frame::Inertial,
+                            RadialInterval3D, CoordinateMaps::Wedge<3>,
+                            Affine3D>,
       bco::TimeDependentMapOptions<false>::maps_list>>;
 
   /// Options for an excision region in the domain
@@ -259,6 +267,10 @@ class BinaryCompactObject : public DomainCreator<3> {
           "Use a logarithmically spaced radial grid in the part of Layer 1 "
           "enveloping the object (requires the interior is excised)"};
     };
+    struct LogarithmicMapStrength {
+      using type = double;
+      static constexpr Options::String help = {"TODO: write help text."};
+    };
     template <typename Metavariables>
     using options = tmpl::list<
         InnerRadius, OuterRadius, XCoord,
@@ -266,11 +278,12 @@ class BinaryCompactObject : public DomainCreator<3> {
             domain::BoundaryConditions::has_boundary_conditions_base_v<
                 typename Metavariables::system>,
             Interior, ExciseInterior>,
-        UseLogarithmicMap>;
+        UseLogarithmicMap, LogarithmicMapStrength>;
     Object() = default;
     Object(double local_inner_radius, double local_outer_radius,
            double local_x_coord, std::optional<Excision> interior,
-           bool local_use_logarithmic_map)
+           bool local_use_logarithmic_map,
+           double local_logarithmic_map_strength = 1.0)
         : inner_radius(local_inner_radius),
           outer_radius(local_outer_radius),
           x_coord(local_x_coord),
@@ -278,10 +291,12 @@ class BinaryCompactObject : public DomainCreator<3> {
               interior.has_value()
                   ? std::make_optional(std::move(interior->boundary_condition))
                   : std::nullopt),
-          use_logarithmic_map(local_use_logarithmic_map) {}
+          use_logarithmic_map(local_use_logarithmic_map),
+          logarithmic_map_strength(local_logarithmic_map_strength) {}
     Object(double local_inner_radius, double local_outer_radius,
            double local_x_coord, bool local_excise_interior,
-           bool local_use_logarithmic_map)
+           bool local_use_logarithmic_map,
+           double local_logarithmic_map_strength = 1.0)
         : inner_radius(local_inner_radius),
           outer_radius(local_outer_radius),
           x_coord(local_x_coord),
@@ -290,7 +305,8 @@ class BinaryCompactObject : public DomainCreator<3> {
                   ? std::optional<std::unique_ptr<
                         domain::BoundaryConditions::BoundaryCondition>>{nullptr}
                   : std::nullopt),
-          use_logarithmic_map(local_use_logarithmic_map) {}
+          use_logarithmic_map(local_use_logarithmic_map),
+          logarithmic_map_strength(local_logarithmic_map_strength) {}
 
     /// Whether or not the object should be excised from the domain, leaving a
     /// spherical hole. When this is true, `inner_boundary_condition` is
@@ -305,6 +321,7 @@ class BinaryCompactObject : public DomainCreator<3> {
         std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>>
         inner_boundary_condition;
     bool use_logarithmic_map{};
+    double logarithmic_map_strength{};
   };
 
   // Simpler version of an object: a single cube centered on (xCoord,0,0)

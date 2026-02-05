@@ -93,6 +93,7 @@ def id_parameters(
             required_target in target_params
         ), f"{required_target} must be specified in 'target_params'."
 
+    q = target_params["MassA"] / target_params["MassB"]
     x_A = (
         target_params["MassB"]
         / (target_params["MassA"] + target_params["MassB"])
@@ -104,22 +105,26 @@ def id_parameters(
     # Spins
     chi_A = np.asarray(target_params["DimensionlessSpinA"])
     r_plus_A = conformal_mass_a * (1.0 + np.sqrt(1 - np.dot(chi_A, chi_A)))
+    r_minus_A = conformal_mass_a * (1.0 - np.sqrt(1 - np.dot(chi_A, chi_A)))
     Omega_A = horizon_rotation_a
     Omega_A[2] += orbital_angular_velocity
     chi_B = np.asarray(target_params["DimensionlessSpinB"])
     r_plus_B = conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_B, chi_B)))
+    r_minus_B = conformal_mass_b * (1.0 - np.sqrt(1 - np.dot(chi_B, chi_B)))
     Omega_B = horizon_rotation_b
     Omega_B[2] += orbital_angular_velocity
     if negative_expansion_bc:
         # For high spins, we need to place the excisions closer to the outer
         # horizon in order to avoid the inner horizon.
-        excision_factor = (
-            0.97
-            if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9
-            else 0.93
+        excision_radius_a = max(0.93 * r_plus_A, 0.5 * (r_plus_A + r_minus_A))
+        # excision_factor_b = 0.93 if q <= 4.0 else 0.8
+        excision_factor_b = 0.93
+        excision_radius_b = max(
+            excision_factor_b * r_plus_B, 0.5 * (r_plus_B + r_minus_B)
         )
     else:
-        excision_factor = 1.0
+        excision_radius_a = r_plus_A
+        excision_radius_b = r_plus_B
     # Falloff widths of superposition
     L1_dist_A = L1_distance(conformal_mass_a, conformal_mass_b, separation)
     L1_dist_B = separation - L1_dist_A
@@ -130,9 +135,17 @@ def id_parameters(
     # seem to scale linearly with mass ratio. The current hard-coded limits (3
     # and 5) were enough to find initial data for mass ratio 50 (no evolution
     # attempted).
-    q = target_params["MassA"] / target_params["MassB"]
-    extra_radial_refinement_l = min(round(q / 3.0) - 1 if (q > 3.0) else 0, 3)
-    extra_radial_refinement_p = min(round(q / 5.0) if (q > 5.0) else 0, 5)
+    cube_b_log_map_strength = 1.0 + 0.15 * np.log(q)
+    extra_radial_refinement_l = round(0.3 * np.log(q))
+    extra_radial_refinement_p = round(0.9 * np.log(q))
+    assert (
+        polynomial_order + 2 + extra_radial_refinement_p <= 20
+    ), "The polynomial order + extra radial points exceeds the maximum of 20."
+    # extra_radial_refinement_l = 0
+    # extra_radial_refinement_p = 0
+    # extra_radial_refinement_p = round(0.5 * np.log(q))
+
+    # object_b_log_map_strength = 1.0 + 0.1 * np.log(q)
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
@@ -146,9 +159,13 @@ def id_parameters(
         "LinearVelocity_x": linear_velocity[0],
         "LinearVelocity_y": linear_velocity[1],
         "LinearVelocity_z": linear_velocity[2],
-        "ExcisionRadiusRight": excision_factor * r_plus_A,
-        "ExcisionRadiusLeft": excision_factor * r_plus_B,
-        "ObjectOuterRadius": separation / 3.75,
+        "ExcisionRadiusRight": excision_radius_a,
+        "ExcisionRadiusLeft": excision_radius_b,
+        "ObjectAOuterRadius": separation / 3.75,
+        "ObjectBOuterRadius": separation / 3.75 / q,
+        # "CubeScale": 1.2 * 2.0 * target_params["MassA"],
+        "CubeScale": 1.0,
+        "CubeBLogMapStrength": cube_b_log_map_strength,
         "OrbitalAngularVelocity": orbital_angular_velocity,
         "RadialExpansionVelocity": radial_expansion_velocity,
         "ConformalSpinRight_x": chi_A[0],

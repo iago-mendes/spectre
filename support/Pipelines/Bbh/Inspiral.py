@@ -172,10 +172,12 @@ def inspiral_parameters(
     # decreasing the excision size of object b allowed the runs to evolve
     # without early incoming char speeds.
     excision_radius_a = id_domain_creator["ObjectA"]["InnerRadius"] * (
-        1.0 if id_from_evolution else 1.0385
+        1.0
+        # if id_from_evolution else 1.0385
     )
     excision_radius_b = id_domain_creator["ObjectB"]["InnerRadius"] * (
-        1.0 if (id_from_evolution or mass_ratio > 2.0) else 1.0385
+        1.0
+        # if (id_from_evolution or mass_ratio > 2.0) else 1.0385
     )
     x_A = id_domain_creator["ObjectA"]["XCoord"]
     x_B = id_domain_creator["ObjectB"]["XCoord"]
@@ -183,7 +185,8 @@ def inspiral_parameters(
     # Place the cutting plane such that it is at the point of contact of two
     # spheres orbiting around their the Newtonian center-of-mass, scaling in
     # size with decreasing separation between them.
-    cutting_plane_position = x_A * mass_b + x_B * mass_a
+    # cutting_plane_position = x_A * mass_b + x_B * mass_a
+    cutting_plane_position = "Auto"
     # The excision in the grid frame will grow during the inspiral by a factor
     # of initial_separation / 2 due to the expansion map, so we have to make
     # sure that the cubes are large enough to contain the excisions plus some
@@ -191,7 +194,8 @@ def inspiral_parameters(
     # scale factor, and we find that for equal masses a scale factor of 1.2
     # works well. To handle unequal masses, we scale the cube also with the
     # excision radius, which is a factor of approx. 2 M_A = 2 q / (1 + q).
-    cube_scale = 1.2 * 2.0 * mass_a
+    # cube_scale = 1.2 * 2.0 * mass_a
+    cube_scale = 1.2
 
     # Resolve subfile name in the H5 files
     id_file_glob = str(
@@ -227,8 +231,10 @@ def inspiral_parameters(
         "ExcisionRadiusB": excision_radius_b,
         # The object outer radius must be smaller than D * mass_{a,b} to ensure
         # that the shell is contained within the cube.
-        "ObjectAOuterRadius": 0.8 * initial_separation * mass_a,
-        "ObjectBOuterRadius": 0.8 * initial_separation * mass_b,
+        # "ObjectAOuterRadius": 0.8 * initial_separation * mass_a,
+        # "ObjectBOuterRadius": 0.8 * initial_separation * mass_b,
+        "ObjectAOuterRadius": initial_separation / 2.5,
+        "ObjectBOuterRadius": initial_separation / 2.5 / mass_ratio,
         "XCoordA": x_A,
         "XCoordB": x_B,
         "CubeScale": cube_scale,
@@ -247,9 +253,16 @@ def inspiral_parameters(
         # positioning of the cutting plane and the scaling of the cube with mass
         # ratio. To compensate for this factor of 1.5 to 2 for mass ratios 2+,
         # we add an extra radial refinement level.
-        "ExtraRadRef": 1 if round(mass_ratio) > 1 else 0,
-        "ExtraRadPoints": round(mass_ratio) if round(mass_ratio) > 1 else 0,
+        "CubeBLogMapStrength": 1.0 + 0.15 * np.log(mass_ratio),
+        "ExtraRadRef": round(0.3 * np.log(mass_ratio)),
+        "ExtraRadPoints": round(0.9 * np.log(mass_ratio)),
+        # "ExtraRadRef": round(0.3 * np.log(mass_ratio)),
+        # "ExtraRadPoints": round(1.0 * np.log(mass_ratio)),
+        # "ObjectBLogMapStrength": 1.0 + 0.1 * np.log(mass_ratio),
     }
+    # assert (
+    #     polynomial_order + 1 + round(1.0 * np.log(mass_ratio)) <= 20
+    # ), "The polynomial order + extra radial points exceeds the maximum of 20."
 
     # Initial functions of time (set from ID or load from evolution data)
     if id_from_evolution:
@@ -369,14 +382,22 @@ def inspiral_parameters_spec(
         # SpEC excision in ID_Params.perl is 0.89 * horizon radius, but
         # usually you want to excise less than the maximum. Here use 6% larger,
         # or about 0.9434 * horizon radius.
-        "ExcisionRadiusA": id_params["ID_rExcA"] * 1.06,
-        "ExcisionRadiusB": id_params["ID_rExcB"] * 1.06,
-        "ObjectAOuterRadius": 0.8 * initial_separation * mass_right,
-        "ObjectBOuterRadius": 0.8 * initial_separation * mass_left,
+        # "ExcisionRadiusA": id_params["ID_rExcA"] * 1.06,
+        # "ExcisionRadiusB": id_params["ID_rExcB"] * 1.06,
+        "ExcisionRadiusA": id_params["ID_rExcA"] * 1.005,
+        "ExcisionRadiusB": id_params["ID_rExcB"] * 1.005,
+        # "ExcisionRadiusA": id_params["ID_rExcA"],
+        # "ExcisionRadiusB": id_params["ID_rExcB"],
+        # "ObjectAOuterRadius": 0.8 * initial_separation * mass_right,
+        # "ObjectBOuterRadius": 0.8 * initial_separation * mass_left,
+        "ObjectAOuterRadius": initial_separation / 2.5,
+        "ObjectBOuterRadius": initial_separation / 2.5 / mass_ratio,
         "XCoordA": x_A,
         "XCoordB": x_B,
-        "CubeScale": 1.2 * 2.0 * mass_right,
-        "CuttingPlanePosition": x_A * mass_left + x_B * mass_right,
+        # "CubeScale": 1.2 * 2.0 * mass_right,
+        "CubeScale": 1.2,
+        # "CuttingPlanePosition": x_A * mass_left + x_B * mass_right,
+        "CuttingPlanePosition": "Auto",
         # COM offset in y and z is the same for both objects
         "CenterOfMassOffset_y": id_params["ID_cA"][1],
         "CenterOfMassOffset_z": id_params["ID_cA"][2],
@@ -389,8 +410,11 @@ def inspiral_parameters_spec(
         # may need to be ported over eventually. The CCE extraction radii may
         # also need to be adjusted to account for different outer shell radii.
         "OuterShellRadius": 600.0 / 15.0 * initial_separation,
-        "ExtraRadRef": 1 if round(mass_ratio) > 1 else 0,
-        "ExtraRadPoints": round(mass_ratio) if round(mass_ratio) > 1 else 0,
+        # "ExtraRadRef": 1 if round(mass_ratio) > 1 else 0,
+        # "ExtraRadPoints": round(mass_ratio) if round(mass_ratio) > 1 else 0,
+        "CubeBLogMapStrength": 1.0 + 0.15 * np.log(mass_ratio),
+        "ExtraRadRef": round(0.3 * np.log(mass_ratio)),
+        "ExtraRadPoints": round(0.9 * np.log(mass_ratio)),
     }
 
     # Constraint damping parameters
@@ -411,6 +435,20 @@ def inspiral_parameters_spec(
             spin_magnitude_right=spin_magnitude_right,
         )
     )
+
+    # Store target parameters in the input file
+    target_params = {
+        "MassRatio": mass_ratio,
+        "MassA": mass_right,
+        "MassB": mass_left,
+        "DimensionlessSpinA": id_params["ID_chiA"],
+        "DimensionlessSpinB": id_params["ID_chiB"],
+    }
+    params["TargetParams"] = yaml.safe_dump(
+        {"TargetParams": target_params}
+    ).strip()
+
+    params["IdFromEvolution"] = False
 
     return params
 

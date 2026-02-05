@@ -305,7 +305,8 @@ struct EvolutionMetavars {
         ah::ComputeExcisionBoundaryVolumeQuantities;
     using vars_to_interpolate_to_target = tags_to_observe;
     using compute_items_on_source = tmpl::list<>;
-    using compute_items_on_target = tmpl::list<>;
+    using compute_items_on_target =
+        ylm::Tags::compute_items_tags<::Frame::Grid>;
     using compute_target_points =
         intrp::TargetPoints::Sphere<ExcisionBoundary<Excision>, ::Frame::Grid>;
     using post_interpolation_callbacks =

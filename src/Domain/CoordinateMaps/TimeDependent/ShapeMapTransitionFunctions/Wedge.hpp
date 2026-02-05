@@ -562,6 +562,7 @@ class Wedge final : public ShapeMapTransitionFunction {
   Axis axis_{};
   bool reverse_{false};
 
-  static constexpr double eps_ = std::numeric_limits<double>::epsilon() * 100;
+  static constexpr double eps_ =
+      std::numeric_limits<double>::epsilon() * 10000000;
 };
 }  // namespace domain::CoordinateMaps::ShapeMapTransitionFunctions

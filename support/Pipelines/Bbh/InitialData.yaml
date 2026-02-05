@@ -14,6 +14,7 @@ Next:
     pipeline_dir: {{ pipeline_dir | default("None") }}
     horizon_l_max: {{ HorizonLMax }}
     control: {{ control }}
+    control_delay: {{ control_delay | default(2) }}
     control_refinement_level: {{ L }}
     control_polynomial_order: {{ P }}
     control_params:
@@ -76,7 +77,7 @@ DomainCreator:
   BinaryCompactObject:
     ObjectA:
       InnerRadius: {{ ExcisionRadiusRight }}
-      OuterRadius: {{ ObjectOuterRadius }}
+      OuterRadius: {{ ObjectAOuterRadius }}
       XCoord: *x_right
       Interior:
         ExciseWithBoundaryCondition:
@@ -93,9 +94,10 @@ DomainCreator:
             NegativeExpansion: None
             {% endif %}
       UseLogarithmicMap: True
+      LogarithmicMapStrength: 1.0
     ObjectB:
       InnerRadius: {{ ExcisionRadiusLeft }}
-      OuterRadius: {{ ObjectOuterRadius }}
+      OuterRadius: {{ ObjectBOuterRadius }}
       XCoord: *x_left
       Interior:
         ExciseWithBoundaryCondition:
@@ -112,6 +114,7 @@ DomainCreator:
             NegativeExpansion: None
             {% endif %}
       UseLogarithmicMap: True
+      LogarithmicMapStrength: {{ CubeBLogMapStrength }}
     CuttingPlanePosition: Auto
     CenterOfMassOffset: [*y_offset, *z_offset]
     Envelope:
@@ -124,21 +127,21 @@ DomainCreator:
       OpeningAngle: 120.0
       BoundaryCondition: Robin
     UseEquiangularMap: True
-    CubeScale: 1.0
+    CubeScale: {{ CubeScale }}
     InitialRefinement:
       ObjectAShell:     [{{ L }}, {{ L }}, {{ L }}]
-      ObjectBShell:     [{{ L }}, {{ L }}, {{ L + ExtraRadRef }}]
+      ObjectBShell:     [{{ L }}, {{ L }}, {{ L }}]
       ObjectACube:      [{{ L }}, {{ L }}, {{ L }}]
-      ObjectBCube:      [{{ L }}, {{ L }}, {{ L }}]
+      ObjectBCube:      [{{ L }}, {{ L }}, {{ L + ExtraRadRef }}]
       Envelope:         [{{ L }}, {{ L }}, {{ L + 1 }}]
       OuterShell0:       [{{ L + 1 }}, {{ L + 1 }}, {{ L }}]
     # This p-refinement represents a crude manual optimization of the domain. We
     # will need AMR to optimize the domain further.
     InitialGridPoints:
       ObjectAShell:   [{{ P + 1}}, {{ P + 1}}, {{ P + 5}}]
-      ObjectBShell:   [{{ P + 1}}, {{ P + 1}}, {{ P + 5 + ExtraRadPoints}}]
+      ObjectBShell:   [{{ P + 1}}, {{ P + 1}}, {{ P + 5}}]
       ObjectACube:    [{{ P + 1}}, {{ P + 1}}, {{ P + 2}}]
-      ObjectBCube:    [{{ P + 1}}, {{ P + 1}}, {{ P + 2}}]
+      ObjectBCube:    [{{ P + 1}}, {{ P + 1}}, {{ P + 2 + ExtraRadPoints}}]
       Envelope:       [{{ P + 1}}, {{ P + 1}}, {{ P + 1}}]
       OuterShell0:     [{{ P + 1}}, {{ P + 1}}, {{ P + 1}}]
     TimeDependentMaps:
