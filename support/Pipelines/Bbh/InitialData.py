@@ -116,11 +116,23 @@ def id_parameters(
     if negative_expansion_bc:
         # For high spins, we need to place the excisions closer to the outer
         # horizon in order to avoid the inner horizon.
-        excision_radius_a = max(0.93 * r_plus_A, 0.5 * (r_plus_A + r_minus_A))
+        excision_factor_a = 0.93 if np.linalg.norm(chi_A) <= 0.95 else 0.99
+        print(f"\t excision_factor_a = {excision_factor_a}")
+        excision_radius_a = max(
+            excision_factor_a * r_plus_A, 0.5 * (r_plus_A + r_minus_A)
+        )
+        print(
+            f"\t effective excision_factor_a = {excision_radius_a / r_plus_A}"
+        )
         # excision_factor_b = 0.93 if q <= 4.0 else 0.8
-        excision_factor_b = 0.93
+        # excision_factor_b = 0.93
+        excision_factor_b = 0.93 if np.linalg.norm(chi_B) <= 0.95 else 0.99
+        print(f"\t excision_factor_b = {excision_factor_b}")
         excision_radius_b = max(
             excision_factor_b * r_plus_B, 0.5 * (r_plus_B + r_minus_B)
+        )
+        print(
+            f"\t effective excision_factor_b = {excision_radius_b / r_plus_B}"
         )
     else:
         excision_radius_a = r_plus_A

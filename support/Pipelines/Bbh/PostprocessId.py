@@ -111,7 +111,7 @@ def postprocess_id(
     if id_run_dir is None:
         id_run_dir = Path(id_input_file_path).resolve().parent
     id_volfiles = glob.glob(str(Path(id_run_dir) / (volfile_name + "*.h5")))
-    obs_id, _ = select_observation(
+    obs_id, obs_time = select_observation(
         open_volfiles(id_volfiles, id_subfile_name), step=-1
     )
 
@@ -126,7 +126,7 @@ def postprocess_id(
                 id_volfiles,
                 subfile_name=id_subfile_name,
                 obs_id=obs_id,
-                obs_time=0.0,
+                obs_time=obs_time,
                 initial_guess=Strahlkorper[Frame.Inertial](
                     l_max=horizon_l_max,
                     radius=excision_radius * 1.5,
@@ -143,7 +143,7 @@ def postprocess_id(
                 id_volfiles,
                 subfile_name=id_subfile_name,
                 obs_id=obs_id,
-                obs_time=0.0,
+                obs_time=obs_time,
                 l_max=horizon_l_max,
                 radius=excision_radius,
                 center=[xcoord, y_offset, z_offset],
