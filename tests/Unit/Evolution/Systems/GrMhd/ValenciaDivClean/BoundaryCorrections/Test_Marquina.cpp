@@ -36,7 +36,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
         make_not_null(&gen),
         grmhd::ValenciaDivClean::BoundaryCorrections::Marquina{},
         Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-        volume_data, ranges);
+        volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
 
   const auto marquina = TestHelpers::test_factory_creation<
       evolution::BoundaryCorrection,

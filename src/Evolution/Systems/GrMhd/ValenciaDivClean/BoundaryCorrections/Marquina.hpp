@@ -137,7 +137,7 @@ class Marquina final : public evolution::BoundaryCorrection {
 
       const Scalar<DataVector>& rest_mass_density,
       const Scalar<DataVector>& electron_fraction,
-      const Scalar<DataVector>& /*temperature*/,
+      const Scalar<DataVector>& temperature,
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
       const Scalar<DataVector>& specific_internal_energy,
       const Scalar<DataVector>& pressure,

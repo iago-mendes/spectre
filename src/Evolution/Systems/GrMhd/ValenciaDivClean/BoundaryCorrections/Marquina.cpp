@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <pup.h>
 
 #include <memory>
@@ -79,7 +78,7 @@ double Marquina::dg_package_data(
     const Scalar<DataVector>& /*temperature*/,
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
     const Scalar<DataVector>& specific_internal_energy,
-    const Scalar<DataVector>& pressure,
+    const Scalar<DataVector>& /*pressure*/,
     const Scalar<DataVector>& lorentz_factor,
 
     const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
@@ -89,10 +88,16 @@ double Marquina::dg_package_data(
     const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
   const size_t num_points = get(tilde_d).size();
+  const Scalar<DataVector> consistent_pressure =
+      equation_of_state.pressure_from_density_and_energy(
+          rest_mass_density, specific_internal_energy, electron_fraction);
   Scalar<DataVector> specific_enthalpy{num_points};
   get(specific_enthalpy) = 1.0 + get(specific_internal_energy) +
-                           get(pressure) / get(rest_mass_density);
-
+                           get(consistent_pressure) / get(rest_mass_density);
+  const auto& inv_spatial_metric =
+      determinant_and_inverse(spatial_metric).second;
+  const auto normal_covector_mag =
+      magnitude(normal_covector, inv_spatial_metric);
   tnsr::i<DataVector, 3, Frame::Inertial> unit_normal_covector{num_points};
   for (size_t i = 0; i < 3; ++i) {
     unit_normal_covector.get(i) =
