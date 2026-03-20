@@ -3,7 +3,9 @@
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Marquina.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <pup.h>
 
 #include <memory>
@@ -198,6 +200,41 @@ void Marquina::dg_boundary_terms(
     const tnsr::ij<DataVector, 6, Frame::NoFrame>&
         right_characteristic_fields_ext,
     dg::Formulation dg_formulation) {
+  auto aligned_characteristic_speeds_ext = characteristic_speeds_ext;
+  aligned_characteristic_speeds_ext.get(
+      grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity) =
+      -characteristic_speeds_ext.get(
+          grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity);
+  aligned_characteristic_speeds_ext.get(
+      grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus) =
+      -characteristic_speeds_ext.get(
+          grmhd::ValenciaDivClean::HydroSpeed::LambdaMinus);
+  aligned_characteristic_speeds_ext.get(
+      grmhd::ValenciaDivClean::HydroSpeed::LambdaMinus) =
+      -characteristic_speeds_ext.get(
+          grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus);
+
+  auto aligned_left_characteristic_fields_ext = left_characteristic_fields_ext;
+  auto aligned_right_characteristic_fields_ext =
+      right_characteristic_fields_ext;
+  for (size_t j = 0; j < 6; ++j) {
+    aligned_left_characteristic_fields_ext.get(
+        grmhd::ValenciaDivClean::HydroVectorR::Rplus, j) =
+        left_characteristic_fields_ext.get(
+            grmhd::ValenciaDivClean::HydroVectorR::Rminus, j);
+    aligned_left_characteristic_fields_ext.get(
+        grmhd::ValenciaDivClean::HydroVectorR::Rminus, j) =
+        left_characteristic_fields_ext.get(
+            grmhd::ValenciaDivClean::HydroVectorR::Rplus, j);
+    aligned_right_characteristic_fields_ext.get(
+        grmhd::ValenciaDivClean::HydroVectorR::Rplus, j) =
+        right_characteristic_fields_ext.get(
+            grmhd::ValenciaDivClean::HydroVectorR::Rminus, j);
+    aligned_right_characteristic_fields_ext.get(
+        grmhd::ValenciaDivClean::HydroVectorR::Rminus, j) =
+        right_characteristic_fields_ext.get(
+            grmhd::ValenciaDivClean::HydroVectorR::Rplus, j);
+  }
   // Initialize boundary corrections to zero, as we'll compute them by adding
   // the contributions from each characteristic field
   const size_t num_points = get(tilde_d_int).size();
@@ -247,12 +284,12 @@ void Marquina::dg_boundary_terms(
         left_characteristic_fields_int.get(i, 4) * get(tilde_tau_int) +
         left_characteristic_fields_int.get(i, 5) * get(tilde_ye_int);
     get(omega_i_ext) =
-        left_characteristic_fields_ext.get(i, 0) * get(tilde_d_ext) +
-        left_characteristic_fields_ext.get(i, 1) * get<0>(tilde_s_ext) +
-        left_characteristic_fields_ext.get(i, 2) * get<1>(tilde_s_ext) +
-        left_characteristic_fields_ext.get(i, 3) * get<2>(tilde_s_ext) +
-        left_characteristic_fields_ext.get(i, 4) * get(tilde_tau_ext) +
-        left_characteristic_fields_ext.get(i, 5) * get(tilde_ye_ext);
+        aligned_left_characteristic_fields_ext.get(i, 0) * get(tilde_d_ext) +
+        aligned_left_characteristic_fields_ext.get(i, 1) * get<0>(tilde_s_ext) +
+        aligned_left_characteristic_fields_ext.get(i, 2) * get<1>(tilde_s_ext) +
+        aligned_left_characteristic_fields_ext.get(i, 3) * get<2>(tilde_s_ext) +
+        aligned_left_characteristic_fields_ext.get(i, 4) * get(tilde_tau_ext) +
+        aligned_left_characteristic_fields_ext.get(i, 5) * get(tilde_ye_ext);
     get(phi_i_int) = left_characteristic_fields_int.get(i, 0) *
                          get(normal_dot_flux_tilde_d_int) +
                      left_characteristic_fields_int.get(i, 1) *
@@ -265,18 +302,18 @@ void Marquina::dg_boundary_terms(
                          get(normal_dot_flux_tilde_tau_int) +
                      left_characteristic_fields_int.get(i, 5) *
                          get(normal_dot_flux_tilde_ye_int);
-    get(phi_i_ext) = left_characteristic_fields_ext.get(i, 0) *
-                         get(normal_dot_flux_tilde_d_ext) +
-                     left_characteristic_fields_ext.get(i, 1) *
-                         get<0>(normal_dot_flux_tilde_s_ext) +
-                     left_characteristic_fields_ext.get(i, 2) *
-                         get<1>(normal_dot_flux_tilde_s_ext) +
-                     left_characteristic_fields_ext.get(i, 3) *
-                         get<2>(normal_dot_flux_tilde_s_ext) +
-                     left_characteristic_fields_ext.get(i, 4) *
-                         get(normal_dot_flux_tilde_tau_ext) +
-                     left_characteristic_fields_ext.get(i, 5) *
-                         get(normal_dot_flux_tilde_ye_ext);
+    get(phi_i_ext) = aligned_left_characteristic_fields_ext.get(i, 0) *
+                         (-get(normal_dot_flux_tilde_d_ext)) +
+                     aligned_left_characteristic_fields_ext.get(i, 1) *
+                         (-get<0>(normal_dot_flux_tilde_s_ext)) +
+                     aligned_left_characteristic_fields_ext.get(i, 2) *
+                         (-get<1>(normal_dot_flux_tilde_s_ext)) +
+                     aligned_left_characteristic_fields_ext.get(i, 3) *
+                         (-get<2>(normal_dot_flux_tilde_s_ext)) +
+                     aligned_left_characteristic_fields_ext.get(i, 4) *
+                         (-get(normal_dot_flux_tilde_tau_ext)) +
+                     aligned_left_characteristic_fields_ext.get(i, 5) *
+                         (-get(normal_dot_flux_tilde_ye_ext));
 
     // TO-DO: improve how we handle the indices of characteristic speeds
     size_t hydro_speed_index;
@@ -302,7 +339,7 @@ void Marquina::dg_boundary_terms(
     const DataVector& lambda_i_int =
         characteristic_speeds_int.get(hydro_speed_index);
     const DataVector& lambda_i_ext =
-        characteristic_speeds_ext.get(hydro_speed_index);
+        aligned_characteristic_speeds_ext.get(hydro_speed_index);
     for (size_t point = 0; point < num_points; ++point) {
       if (lambda_i_int[point] >= 0.0 and lambda_i_ext[point] >= 0.0) {
         get(phi_i_plus)[point] = get(phi_i_int)[point];
@@ -324,22 +361,22 @@ void Marquina::dg_boundary_terms(
     // TO-DO: handle dg_formulation (strong/weak)
     get(*boundary_correction_tilde_d) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 0) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 0);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 0);
     get<0>(*boundary_correction_tilde_s) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 1) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 1);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 1);
     get<1>(*boundary_correction_tilde_s) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 2) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 2);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 2);
     get<2>(*boundary_correction_tilde_s) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 3) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 3);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 3);
     get(*boundary_correction_tilde_tau) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 4) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 4);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 4);
     get(*boundary_correction_tilde_ye) +=
         get(phi_i_plus) * right_characteristic_fields_int.get(i, 5) +
-        get(phi_i_minus) * right_characteristic_fields_ext.get(i, 5);
+        get(phi_i_minus) * aligned_right_characteristic_fields_ext.get(i, 5);
   }
 
   if (dg_formulation == dg::Formulation::StrongInertial) {
