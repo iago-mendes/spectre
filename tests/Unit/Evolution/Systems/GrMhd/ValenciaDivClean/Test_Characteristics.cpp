@@ -440,6 +440,86 @@ void test_hydro_characteristics_symmetry(const DataVector& used_for_size) {
   }
 }
 
+void test_hydro_eigenvectors_identity(const DataVector& used_for_size) {
+  MAKE_GENERATOR(generator);
+  namespace helper = TestHelpers::hydro;
+  namespace gr_helper = TestHelpers::gr;
+  const auto nn_gen = make_not_null(&generator);
+
+  // Generate random quantities
+  const auto spatial_metric =
+      gr_helper::random_spatial_metric<3>(nn_gen, used_for_size);
+  const auto lorentz_factor =
+      helper::random_lorentz_factor(nn_gen, used_for_size);
+  const auto spatial_velocity =
+      helper::random_velocity(nn_gen, lorentz_factor, spatial_metric);
+  const auto rest_mass_density = helper::random_density(nn_gen, used_for_size);
+  const auto specific_internal_energy =
+      helper::random_specific_internal_energy(nn_gen, used_for_size);
+  const auto electron_fraction =
+      helper::random_electron_fraction(nn_gen, used_for_size);
+
+  const auto& inv_spatial_metric =
+      determinant_and_inverse(spatial_metric).second;
+
+  // Define equation of state
+  const EquationsOfState::IdealFluid<true> base_eos(1.5, 0.0);
+  const auto eos_3d = base_eos.promote_to_3d_eos();
+
+  // Compute derived quantities
+  const auto pressure = eos_3d->pressure_from_density_and_energy(
+      rest_mass_density, specific_internal_energy, electron_fraction);
+  const auto specific_enthalpy = hydro::relativistic_specific_enthalpy(
+      rest_mass_density, specific_internal_energy, pressure);
+
+  // Loop over directions
+  for (const auto& direction : Direction<3>::all_directions()) {
+    // Get unit normal in this direction
+    const auto unit_normal = unit_basis_form(direction, inv_spatial_metric);
+
+    // Analytic eigenvectors (RIGHT + LEFT)
+    constexpr size_t matrix_size = 6;
+    std::array<tnsr::i<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        right_eigenvectors{};
+    std::array<tnsr::I<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        left_eigenvectors{};
+    grmhd::ValenciaDivClean::eigenvectors_hydro<3>(
+        make_not_null(&right_eigenvectors), make_not_null(&left_eigenvectors),
+        spatial_velocity, rest_mass_density, specific_internal_energy,
+        specific_enthalpy, electron_fraction, lorentz_factor, unit_normal,
+        spatial_metric, *eos_3d);
+
+    constexpr double tolerance = 1e-12;
+
+    // Check that right_eigenvectors * left_eigenvectors = Identity matrix
+    // This evaluates \sum_k R^{(k)}_i L^{(k)}_j = \delta_{ij}
+    for (size_t i = 0; i < matrix_size; ++i) {
+      for (size_t j = 0; j < matrix_size; ++j) {
+        const double target = (i == j ? 1.0 : 0.0);
+
+        double max_scaled_error = 0.0;
+        for (size_t point = 0; point < used_for_size.size(); ++point) {
+          double dot_ij = 0.0;
+          double scale = 1.0;
+
+          for (size_t k = 0; k < matrix_size; ++k) {
+            const double product =
+                gsl::at(right_eigenvectors, k).get(i)[point] *
+                gsl::at(left_eigenvectors, k).get(j)[point];
+            dot_ij += product;
+            scale += std::abs(product);
+          }
+
+          const double err = std::abs(dot_ij - target);
+          max_scaled_error = std::max(max_scaled_error, err / scale);
+        }
+
+        CHECK(max_scaled_error < tolerance);
+      }
+    }
+  }
+}
+
 void test_hydro_numerical_eigensystem(const DataVector& used_for_size) {
   // Initialize number generator
   MAKE_GENERATOR(generator);
@@ -612,6 +692,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   test_with_normal_along_coordinate_axes(dv);
   test_hydro_characteristic_speed(dv);
   test_hydro_characteristics_symmetry(dv);
+  test_hydro_eigenvectors_identity(dv);
   test_hydro_numerical_eigensystem(dv);
   test_hydro_analytic_eigenvectors(dv);
 
