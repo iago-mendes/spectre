@@ -190,9 +190,8 @@ void Marquina::dg_boundary_terms(
     const Scalar<DataVector>& normal_dot_flux_tilde_ye_ext,
     const Scalar<DataVector>& normal_dot_flux_tilde_tau_ext,
     const tnsr::i<DataVector, 3, Frame::Inertial>& normal_dot_flux_tilde_s_ext,
-    const tnsr::I<DataVector, 3,
-                  Frame::Inertial>& /*normal_dot_flux_tilde_b_ext*/,
-    const Scalar<DataVector>& /*normal_dot_flux_tilde_phi_ext*/,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& normal_dot_flux_tilde_b_ext,
+    const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
     const tnsr::i<DataVector, 3, Frame::NoFrame>& characteristic_speeds_ext,
     const tnsr::iJ<DataVector, 6, Frame::NoFrame>&
         left_characteristic_fields_ext,
@@ -217,6 +216,16 @@ void Marquina::dg_boundary_terms(
     get<2>(*boundary_correction_tilde_b) = 0.0;
     get(*boundary_correction_tilde_phi) = 0.0;
   }
+
+  // Fallback flux for unmodeled B and Phi fields to satisfy DG contracts
+  for (size_t j = 0; j < 3; ++j) {
+    boundary_correction_tilde_b->get(j) =
+        0.5 * (normal_dot_flux_tilde_b_int.get(j) -
+               normal_dot_flux_tilde_b_ext.get(j));
+  }
+  get(*boundary_correction_tilde_phi) =
+      0.5 *
+      (get(normal_dot_flux_tilde_phi_int) - get(normal_dot_flux_tilde_phi_ext));
 
   // Temporary variables
   Scalar<DataVector> omega_i_int{num_points};
