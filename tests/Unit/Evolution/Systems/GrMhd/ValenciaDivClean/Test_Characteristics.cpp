@@ -32,6 +32,10 @@
 
 namespace {
 
+using HydroSpeed = grmhd::ValenciaDivClean::HydroSpeed;
+using HydroVectorR = grmhd::ValenciaDivClean::HydroVectorR;
+using HydroVectorL = grmhd::ValenciaDivClean::HydroVectorL;
+
 void test_characteristic_speeds(const DataVector& /*used_for_size*/) {
   //  Arbitrary random numbers can produce a negative radicand in Lambda^\pm.
   //  This bound helps to prevent that situation.
@@ -189,13 +193,11 @@ void test_hydro_analytic_eigenvectors(const DataVector& used_for_size) {
       get(gsl::at(all_eigenvalues, i)).destructive_resize(num_points);
     }
     for (size_t i = 0; i < 4; ++i) {
-      get(gsl::at(all_eigenvalues, i)) = analytic_speeds
-          [grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity];
+      get(gsl::at(all_eigenvalues, i)) =
+          analytic_speeds[HydroSpeed::NormalDotVelocity];
     }
-    get(gsl::at(all_eigenvalues, 4)) =
-        analytic_speeds[grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus];
-    get(gsl::at(all_eigenvalues, 5)) =
-        analytic_speeds[grmhd::ValenciaDivClean::HydroSpeed::LambdaMinus];
+    get(gsl::at(all_eigenvalues, 4)) = analytic_speeds[HydroSpeed::LambdaPlus];
+    get(gsl::at(all_eigenvalues, 5)) = analytic_speeds[HydroSpeed::LambdaMinus];
 
     // Get characteristic matrix to check eigensystem relations
     tnsr::iJ<DataVector, 6> characteristic_matrix =
@@ -324,6 +326,120 @@ void test_hydro_characteristic_speed(const DataVector& used_for_size) {
   }
 }
 
+/**
+ * Tests that the characteristics remain the same for an opposite unit normal
+ * as long as we (1) flip the sign of the eigenvalues and (2) swap the outgoing
+ * and ingoing acoustic waves (R+ and R- / L+ and L-).
+ */
+void test_hydro_characteristics_symmetry(const DataVector& used_for_size) {
+  MAKE_GENERATOR(generator);
+  namespace helper = TestHelpers::hydro;
+  namespace gr_helper = TestHelpers::gr;
+  const auto nn_gen = make_not_null(&generator);
+
+  const auto spatial_metric =
+      gr_helper::random_spatial_metric<3>(nn_gen, used_for_size);
+  const auto lorentz_factor =
+      helper::random_lorentz_factor(nn_gen, used_for_size);
+  const auto spatial_velocity =
+      helper::random_velocity(nn_gen, lorentz_factor, spatial_metric);
+  const auto rest_mass_density = helper::random_density(nn_gen, used_for_size);
+  const auto specific_internal_energy =
+      helper::random_specific_internal_energy(nn_gen, used_for_size);
+  const auto electron_fraction =
+      helper::random_electron_fraction(nn_gen, used_for_size);
+
+  const auto equation_of_state_2d =
+      EquationsOfState::IdealFluid<true>(1.5, 0.0);
+  const auto equation_of_state_3d = equation_of_state_2d.promote_to_3d_eos();
+
+  const auto pressure = equation_of_state_3d->pressure_from_density_and_energy(
+      rest_mass_density, specific_internal_energy, electron_fraction);
+  const auto specific_enthalpy = hydro::relativistic_specific_enthalpy(
+      rest_mass_density, specific_internal_energy, pressure);
+  const auto& inv_spatial_metric =
+      determinant_and_inverse(spatial_metric).second;
+
+  constexpr double tolerance = 1.0e-12;
+  const Approx custom_approx = Approx::custom().epsilon(tolerance);
+
+  for (const auto& direction : Direction<3>::all_directions()) {
+    const auto unit_normal = unit_basis_form(direction, inv_spatial_metric);
+    auto unit_normal_opposite = unit_normal;
+    for (size_t i = 0; i < 3; ++i) {
+      unit_normal_opposite.get(i) *= -1.0;
+    }
+
+    const std::array<DataVector, 3> eigenvalues =
+        grmhd::ValenciaDivClean::characteristic_speeds_hydro<3>(
+            spatial_velocity, rest_mass_density, specific_internal_energy,
+            specific_enthalpy, electron_fraction, lorentz_factor, unit_normal,
+            spatial_metric, *equation_of_state_3d);
+    const std::array<DataVector, 3> eigenvalues_opposite =
+        grmhd::ValenciaDivClean::characteristic_speeds_hydro<3>(
+            spatial_velocity, rest_mass_density, specific_internal_energy,
+            specific_enthalpy, electron_fraction, lorentz_factor,
+            unit_normal_opposite, spatial_metric, *equation_of_state_3d);
+
+    CHECK_ITERABLE_CUSTOM_APPROX(
+        eigenvalues[HydroSpeed::NormalDotVelocity],
+        -eigenvalues_opposite[HydroSpeed::NormalDotVelocity], custom_approx);
+    CHECK_ITERABLE_CUSTOM_APPROX(eigenvalues[HydroSpeed::LambdaPlus],
+                                 -eigenvalues_opposite[HydroSpeed::LambdaMinus],
+                                 custom_approx);
+    CHECK_ITERABLE_CUSTOM_APPROX(eigenvalues[HydroSpeed::LambdaMinus],
+                                 -eigenvalues_opposite[HydroSpeed::LambdaPlus],
+                                 custom_approx);
+
+    constexpr size_t matrix_size = 6;
+    std::array<tnsr::i<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        right_eigenvectors{};
+    std::array<tnsr::I<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        left_eigenvectors{};
+    std::array<tnsr::i<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        right_eigenvectors_opposite{};
+    std::array<tnsr::I<DataVector, matrix_size, Frame::Inertial>, matrix_size>
+        left_eigenvectors_opposite{};
+
+    grmhd::ValenciaDivClean::eigenvectors_hydro<3>(
+        make_not_null(&right_eigenvectors), make_not_null(&left_eigenvectors),
+        spatial_velocity, rest_mass_density, specific_internal_energy,
+        specific_enthalpy, electron_fraction, lorentz_factor, unit_normal,
+        spatial_metric, *equation_of_state_3d);
+    grmhd::ValenciaDivClean::eigenvectors_hydro<3>(
+        make_not_null(&right_eigenvectors_opposite),
+        make_not_null(&left_eigenvectors_opposite), spatial_velocity,
+        rest_mass_density, specific_internal_energy, specific_enthalpy,
+        electron_fraction, lorentz_factor, unit_normal_opposite, spatial_metric,
+        *equation_of_state_3d);
+
+    auto check_swap = [&](const auto& vec_plus, const auto& vec_minus) {
+      double max_error = 0.0;
+      for (size_t component = 0; component < matrix_size; ++component) {
+        const DataVector diff =
+            vec_plus.get(component) - vec_minus.get(component);
+        const DataVector sum =
+            vec_plus.get(component) + vec_minus.get(component);
+        for (size_t point = 0; point < used_for_size.size(); ++point) {
+          const double point_error =
+              std::min(std::abs(diff[point]), std::abs(sum[point]));
+          max_error = std::max(max_error, point_error);
+        }
+      }
+      CHECK(max_error < tolerance);
+    };
+
+    check_swap(gsl::at(right_eigenvectors, HydroVectorR::Rplus),
+               gsl::at(right_eigenvectors_opposite, HydroVectorR::Rminus));
+    check_swap(gsl::at(right_eigenvectors, HydroVectorR::Rminus),
+               gsl::at(right_eigenvectors_opposite, HydroVectorR::Rplus));
+    check_swap(gsl::at(left_eigenvectors, HydroVectorL::Lplus),
+               gsl::at(left_eigenvectors_opposite, HydroVectorL::Lminus));
+    check_swap(gsl::at(left_eigenvectors, HydroVectorL::Lminus),
+               gsl::at(left_eigenvectors_opposite, HydroVectorL::Lplus));
+  }
+}
+
 void test_hydro_numerical_eigensystem(const DataVector& used_for_size) {
   // Initialize number generator
   MAKE_GENERATOR(generator);
@@ -412,14 +528,12 @@ void test_hydro_numerical_eigensystem(const DataVector& used_for_size) {
         const Scalar<DataVector>& eigenvalue = gsl::at(all_eigenvalues, i);
         const double diff_with_normal_velocity =
             std::abs(get(eigenvalue)[point] - get(normal_velocity)[point]);
-        const double diff_with_lambda_plus = std::abs(
-            get(eigenvalue)[point] -
-            analytic_speeds[grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus]
-                           [point]);
-        const double diff_with_lambda_minus = std::abs(
-            get(eigenvalue)[point] -
-            analytic_speeds[grmhd::ValenciaDivClean::HydroSpeed::LambdaMinus]
-                           [point]);
+        const double diff_with_lambda_plus =
+            std::abs(get(eigenvalue)[point] -
+                     analytic_speeds[HydroSpeed::LambdaPlus][point]);
+        const double diff_with_lambda_minus =
+            std::abs(get(eigenvalue)[point] -
+                     analytic_speeds[HydroSpeed::LambdaMinus][point]);
         if (diff_with_normal_velocity < eigenvalue_tolerance) {
           number_of_degenerate_eigenvalues += 1;
         } else if (diff_with_lambda_plus < eigenvalue_tolerance) {
@@ -497,6 +611,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   // with vector components being 0.
   test_with_normal_along_coordinate_axes(dv);
   test_hydro_characteristic_speed(dv);
+  test_hydro_characteristics_symmetry(dv);
   test_hydro_numerical_eigensystem(dv);
   test_hydro_analytic_eigenvectors(dv);
 
