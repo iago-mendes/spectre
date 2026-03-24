@@ -93,6 +93,12 @@ double Marquina::dg_package_data(
   get(specific_enthalpy) = 1.0 + get(specific_internal_energy) +
                            get(pressure) / get(rest_mass_density);
 
+  tnsr::i<DataVector, 3, Frame::Inertial> unit_normal_covector{num_points};
+  for (size_t i = 0; i < 3; ++i) {
+    unit_normal_covector.get(i) =
+        normal_covector.get(i) / get(normal_covector_mag);
+  }
+
   // Compute characteristic decomposition
   // TO-DO: update functions to stop using std::array
   std::array<DataVector, 3> tmp_char_speeds = {DataVector(num_points, 0.0),
@@ -105,12 +111,12 @@ double Marquina::dg_package_data(
   characteristic_speeds_hydro(
       make_not_null(&tmp_char_speeds), spatial_velocity, rest_mass_density,
       specific_internal_energy, specific_enthalpy, electron_fraction,
-      lorentz_factor, normal_covector, spatial_metric, equation_of_state);
+      lorentz_factor, unit_normal_covector, spatial_metric, equation_of_state);
   eigenvectors_hydro(make_not_null(&tmp_right_eigenvectors),
                      make_not_null(&tmp_left_eigenvectors), spatial_velocity,
                      rest_mass_density, specific_internal_energy,
                      specific_enthalpy, electron_fraction, lorentz_factor,
-                     normal_covector, spatial_metric, equation_of_state);
+                     unit_normal_covector, spatial_metric, equation_of_state);
   // Copy from std::array to tnsr
   for (size_t i = 0; i < 3; ++i) {
     packaged_characteristic_speeds->get(i) = tmp_char_speeds[i];
@@ -131,17 +137,17 @@ double Marquina::dg_package_data(
   *packaged_tilde_phi = tilde_phi;
 
   // Package conservative fluxes dotted with normal
-  normal_dot_flux(packaged_normal_dot_flux_tilde_d, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_d, unit_normal_covector,
                   flux_tilde_d);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_ye, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_ye, unit_normal_covector,
                   flux_tilde_ye);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_tau, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_tau, unit_normal_covector,
                   flux_tilde_tau);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_s, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_s, unit_normal_covector,
                   flux_tilde_s);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_b, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_b, unit_normal_covector,
                   flux_tilde_b);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_phi, normal_covector,
+  normal_dot_flux(packaged_normal_dot_flux_tilde_phi, unit_normal_covector,
                   flux_tilde_phi);
 
   // Return the maximum absolute characteristic speed so that time step doesn't
