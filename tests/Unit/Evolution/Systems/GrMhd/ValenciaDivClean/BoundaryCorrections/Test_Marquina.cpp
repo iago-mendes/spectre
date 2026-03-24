@@ -31,11 +31,12 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
   const tuples::TaggedTuple<hydro::Tags::GrmhdEquationOfState> volume_data{
       EquationsOfState::PolytropicFluid<true>{100.0, 2.0}.promote_to_3d_eos()};
 
-  TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
-      make_not_null(&gen),
-      grmhd::ValenciaDivClean::BoundaryCorrections::Marquina{},
-      Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-      volume_data, {});
+  for (int i = 0; i < 1000; ++i)
+    TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+        make_not_null(&gen),
+        grmhd::ValenciaDivClean::BoundaryCorrections::Marquina{},
+        Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+        volume_data, ranges);
 
   const auto marquina = TestHelpers::test_factory_creation<
       evolution::BoundaryCorrection,
