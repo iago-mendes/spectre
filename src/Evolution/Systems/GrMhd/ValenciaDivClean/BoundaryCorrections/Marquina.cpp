@@ -12,6 +12,7 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
+#include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
@@ -185,9 +186,8 @@ void Marquina::dg_boundary_terms(
     const Scalar<DataVector>& normal_dot_flux_tilde_ye_int,
     const Scalar<DataVector>& normal_dot_flux_tilde_tau_int,
     const tnsr::i<DataVector, 3, Frame::Inertial>& normal_dot_flux_tilde_s_int,
-    const tnsr::I<DataVector, 3,
-                  Frame::Inertial>& /*normal_dot_flux_tilde_b_int*/,
-    const Scalar<DataVector>& /*normal_dot_flux_tilde_phi_int*/,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& normal_dot_flux_tilde_b_int,
+    const Scalar<DataVector>& normal_dot_flux_tilde_phi_int,
     const tnsr::i<DataVector, 3, Frame::NoFrame>& characteristic_speeds_int,
     const tnsr::iJ<DataVector, 6, Frame::NoFrame>&
         left_characteristic_fields_int,
@@ -397,6 +397,10 @@ void Marquina::dg_boundary_terms(
     get<2>(*boundary_correction_tilde_s) -= get<2>(normal_dot_flux_tilde_s_int);
     get(*boundary_correction_tilde_tau) -= get(normal_dot_flux_tilde_tau_int);
     get(*boundary_correction_tilde_ye) -= get(normal_dot_flux_tilde_ye_int);
+    get<0>(*boundary_correction_tilde_b) -= get<0>(normal_dot_flux_tilde_b_int);
+    get<1>(*boundary_correction_tilde_b) -= get<1>(normal_dot_flux_tilde_b_int);
+    get<2>(*boundary_correction_tilde_b) -= get<2>(normal_dot_flux_tilde_b_int);
+    get(*boundary_correction_tilde_phi) -= get(normal_dot_flux_tilde_phi_int);
   }
 }
 
