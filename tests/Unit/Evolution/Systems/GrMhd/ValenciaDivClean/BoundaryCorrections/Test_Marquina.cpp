@@ -12,11 +12,12 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Helpers/Evolution/DiscontinuousGalerkin/BoundaryCorrections.hpp"
+#include "Helpers/PointwiseFunctions/GeneralRelativity/TestHelpers.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
-#include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/TMPL.hpp"
 #include "Utilities/TaggedTuple.hpp"
@@ -27,9 +28,23 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
   MAKE_GENERATOR(gen);
 
   using system = grmhd::ValenciaDivClean::System;
+  namespace helpers = TestHelpers::evolution::dg;
 
   const tuples::TaggedTuple<hydro::Tags::GrmhdEquationOfState> volume_data{
-      EquationsOfState::PolytropicFluid<true>{100.0, 2.0}.promote_to_3d_eos()};
+      EquationsOfState::IdealFluid<true>{1.5, 0.0}.promote_to_3d_eos()};
+
+  const tuples::TaggedTuple<
+      helpers::Tags::Range<hydro::Tags::RestMassDensity<DataVector>>,
+      helpers::Tags::Range<hydro::Tags::SpecificInternalEnergy<DataVector>>,
+      helpers::Tags::Range<
+          hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
+      helpers::Tags::Range<gr::Tags::Lapse<DataVector>>,
+      helpers::Tags::Range<gr::Tags::Shift<DataVector, 3, Frame::Inertial>>>
+      ranges(std::array<double, 2>{{0.1, 1.0}},    // Density
+             std::array<double, 2>{{0.1, 1.0}},    // Internal Energy
+             std::array<double, 2>{{0.0, 0.5}},    // Velocity
+             std::array<double, 2>{{0.5, 1.0}},    // Lapse
+             std::array<double, 2>{{-0.1, 0.1}});  // Shift
 
   for (int i = 0; i < 1000; ++i)
     TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
