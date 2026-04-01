@@ -262,8 +262,10 @@ void characteristic_speeds_hydro(
   Variables<tmpl::list<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
                        hydro::Tags::SpatialVelocitySquared<DataVector>,
                        hydro::Tags::SoundSpeedSquared<DataVector>,
+                       hydro::Tags::Temperature<DataVector>,
                        ::Tags::TempScalar<0>, ::Tags::TempScalar<1>,
-                       ::Tags::TempScalar<2>, ::Tags::TempScalar<3>>>
+                       ::Tags::TempScalar<2>, ::Tags::TempScalar<3>,
+                       ::Tags::TempScalar<4>, ::Tags::TempScalar<5>>>
       temp_tensors{num_grid_points};
 
   Scalar<DataVector>& normal_velocity =
@@ -301,9 +303,10 @@ void characteristic_speeds_hydro(
                     rest_mass_density, specific_internal_energy));
     get(sound_speed_squared) /= get(specific_enthalpy);
   } else if constexpr (ThermodynamicDim == 3) {
-    const auto temperature =
-        equation_of_state.temperature_from_density_and_energy(
-            rest_mass_density, specific_internal_energy, electron_fraction);
+    auto& temperature = get<hydro::Tags::Temperature<DataVector>>(temp_tensors);
+    get(temperature) =
+        get(equation_of_state.temperature_from_density_and_energy(
+            rest_mass_density, specific_internal_energy, electron_fraction));
     get(sound_speed_squared) =
         get(equation_of_state.sound_speed_squared_from_density_and_temperature(
             rest_mass_density, temperature, electron_fraction));
@@ -312,17 +315,22 @@ void characteristic_speeds_hydro(
   // Calculate the characteristic speed for non-degenerate ones
   Scalar<DataVector>& denom = get<::Tags::TempScalar<1>>(temp_tensors);
   get(denom) = 1.0 - get(spatial_velocity_squared) * get(sound_speed_squared);
+  Scalar<DataVector>& inv_denom = get<::Tags::TempScalar<4>>(temp_tensors);
+  get(inv_denom) = 1.0 / get(denom);
+  Scalar<DataVector>& one_minus_sound_speed_squared =
+      get<::Tags::TempScalar<5>>(temp_tensors);
+  get(one_minus_sound_speed_squared) = 1.0 - get(sound_speed_squared);
 
   Scalar<DataVector>& first_term = get<::Tags::TempScalar<2>>(temp_tensors);
-  get(first_term) =
-      (1.0 - get(sound_speed_squared)) * get(normal_velocity) / get(denom);
+  get(first_term) = get(one_minus_sound_speed_squared) * get(normal_velocity) *
+                    get(inv_denom);
 
   Scalar<DataVector>& second_term = get<::Tags::TempScalar<3>>(temp_tensors);
   get(second_term) =
       sqrt(get(sound_speed_squared)) *
       sqrt(get(denom) - get(normal_velocity) * get(normal_velocity) *
-                            (1 - get(sound_speed_squared))) /
-      (get(lorentz_factor) * get(denom));
+                            get(one_minus_sound_speed_squared)) *
+      get(inv_denom) / get(lorentz_factor);
 
   // Degenerate eigenvalue (normal dot velocity)
   (*char_speeds)[HydroSpeed::NormalDotVelocity] = get(normal_velocity);
@@ -386,58 +394,85 @@ void eigenvectors_hydro(
   allocate_and_zero(*right_eigenvectors);
   allocate_and_zero(*left_eigenvectors);
 
-  Scalar<DataVector> det_spatial_metric{num_grid_points};
-  tnsr::II<DataVector, 3, Frame::Inertial> inv_spatial_metric{num_grid_points};
+  Variables<tmpl::list<
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
+      hydro::Tags::SpatialVelocitySquared<DataVector>,
+      hydro::Tags::SoundSpeedSquared<DataVector>,
+      hydro::Tags::Temperature<DataVector>, hydro::Tags::Pressure<DataVector>,
+      hydro::Tags::LorentzFactorSquared<DataVector>, ::Tags::TempScalar<0>,
+      ::Tags::TempII<0, 3>, ::Tags::Tempi<0, 3>, ::Tags::Tempi<1, 3>,
+      ::Tags::TempI<0, 3>, ::Tags::TempI<1, 3>, ::Tags::TempI<2, 3>,
+      ::Tags::TempScalar<1>, ::Tags::TempScalar<2>, ::Tags::TempScalar<3>,
+      ::Tags::TempScalar<4>, ::Tags::TempScalar<5>, ::Tags::TempScalar<6>,
+      ::Tags::TempScalar<7>, ::Tags::TempScalar<8>, ::Tags::TempScalar<9>,
+      ::Tags::TempScalar<10>, ::Tags::TempScalar<11>, ::Tags::TempScalar<12>,
+      ::Tags::TempScalar<13>, ::Tags::TempScalar<14>, ::Tags::TempScalar<15>,
+      ::Tags::TempScalar<16>, ::Tags::TempScalar<17>, ::Tags::TempScalar<18>,
+      ::Tags::TempScalar<19>, ::Tags::TempScalar<20>, ::Tags::TempScalar<21>,
+      ::Tags::TempScalar<22>, ::Tags::TempScalar<23>, ::Tags::TempScalar<24>,
+      ::Tags::TempScalar<25>, ::Tags::TempScalar<26>, ::Tags::TempScalar<27>,
+      ::Tags::TempScalar<28>, ::Tags::TempScalar<29>>>
+      temp_tensors{num_grid_points};
+
+  Scalar<DataVector>& det_spatial_metric =
+      get<::Tags::TempScalar<0>>(temp_tensors);
+  auto& inv_spatial_metric = get<::Tags::TempII<0, 3>>(temp_tensors);
   determinant_and_inverse(make_not_null(&det_spatial_metric),
                           make_not_null(&inv_spatial_metric), spatial_metric);
 
-  tnsr::i<DataVector, 3, Frame::Inertial> tangent_one_form_1{num_grid_points};
+  auto& tangent_one_form_1 = get<::Tags::Tempi<0, 3>>(temp_tensors);
   orthonormal_oneform(make_not_null(&tangent_one_form_1), unit_normal,
                       inv_spatial_metric);
 
-  tnsr::i<DataVector, 3, Frame::Inertial> tangent_one_form_2{num_grid_points};
+  auto& tangent_one_form_2 = get<::Tags::Tempi<1, 3>>(temp_tensors);
   orthonormal_oneform(make_not_null(&tangent_one_form_2), unit_normal,
                       tangent_one_form_1, spatial_metric, det_spatial_metric);
 
-  tnsr::I<DataVector, 3, Frame::Inertial> unit_normal_vector{num_grid_points};
+  auto& unit_normal_vector = get<::Tags::TempI<0, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&unit_normal_vector), unit_normal,
                        inv_spatial_metric);
 
-  tnsr::I<DataVector, 3, Frame::Inertial> tangent_vector_1{num_grid_points};
+  auto& tangent_vector_1 = get<::Tags::TempI<1, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&tangent_vector_1), tangent_one_form_1,
                        inv_spatial_metric);
 
-  tnsr::I<DataVector, 3, Frame::Inertial> tangent_vector_2{num_grid_points};
+  auto& tangent_vector_2 = get<::Tags::TempI<2, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&tangent_vector_2), tangent_one_form_2,
                        inv_spatial_metric);
 
-  Scalar<DataVector> v_dot_tangent_1{num_grid_points};
+  Scalar<DataVector>& v_dot_tangent_1 =
+      get<::Tags::TempScalar<1>>(temp_tensors);
   dot_product(make_not_null(&v_dot_tangent_1), tangent_one_form_1,
               spatial_velocity);
 
-  Scalar<DataVector> v_dot_tangent_2{num_grid_points};
+  Scalar<DataVector>& v_dot_tangent_2 =
+      get<::Tags::TempScalar<2>>(temp_tensors);
   dot_product(make_not_null(&v_dot_tangent_2), tangent_one_form_2,
               spatial_velocity);
 
-  Scalar<DataVector> normal_velocity{num_grid_points};
+  Scalar<DataVector>& normal_velocity =
+      get<::Tags::TempScalar<3>>(temp_tensors);
   dot_product(make_not_null(&normal_velocity), unit_normal, spatial_velocity);
 
-  const DataVector one_minus_normal_velocity_squared =
-      1.0 - get(normal_velocity) * get(normal_velocity);
+  Scalar<DataVector>& one_minus_normal_velocity_squared =
+      get<::Tags::TempScalar<4>>(temp_tensors);
+  get(one_minus_normal_velocity_squared) = 1.0 - square(get(normal_velocity));
 
-  tnsr::i<DataVector, 3, Frame::Inertial> spatial_velocity_one_form{
-      num_grid_points};
+  auto& spatial_velocity_one_form =
+      get<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&spatial_velocity_one_form),
                        spatial_velocity, spatial_metric);
 
-  Scalar<DataVector> spatial_velocity_squared{num_grid_points};
+  auto& spatial_velocity_squared =
+      get<hydro::Tags::SpatialVelocitySquared<DataVector>>(temp_tensors);
   dot_product(make_not_null(&spatial_velocity_squared), spatial_velocity,
               spatial_velocity_one_form);
 
-  Scalar<DataVector> sound_speed_squared{num_grid_points};
-  Scalar<DataVector> kappa{num_grid_points};
-  Scalar<DataVector> zeta{num_grid_points};
-  Scalar<DataVector> pressure{num_grid_points};
+  auto& sound_speed_squared =
+      get<hydro::Tags::SoundSpeedSquared<DataVector>>(temp_tensors);
+  Scalar<DataVector>& kappa = get<::Tags::TempScalar<5>>(temp_tensors);
+  Scalar<DataVector>& zeta = get<::Tags::TempScalar<6>>(temp_tensors);
+  auto& pressure = get<hydro::Tags::Pressure<DataVector>>(temp_tensors);
 
   if constexpr (ThermodynamicDim == 1) {
     get(sound_speed_squared) =
@@ -457,19 +492,22 @@ void eigenvectors_hydro(
                  .kappa_times_p_over_rho_squared_from_density_and_energy(
                      rest_mass_density, specific_internal_energy))) /
         get(specific_enthalpy);
-    const Scalar<DataVector> kappa_times_p_over_rho_squared =
-        equation_of_state
-            .kappa_times_p_over_rho_squared_from_density_and_energy(
-                rest_mass_density, specific_internal_energy);
+    Scalar<DataVector>& kappa_times_p_over_rho_squared =
+        get<::Tags::TempScalar<8>>(temp_tensors);
+    get(kappa_times_p_over_rho_squared) =
+        get(equation_of_state
+                .kappa_times_p_over_rho_squared_from_density_and_energy(
+                    rest_mass_density, specific_internal_energy));
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy));
     get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
                  square(get(rest_mass_density));
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
-    const auto temperature =
-        equation_of_state.temperature_from_density_and_energy(
-            rest_mass_density, specific_internal_energy, electron_fraction);
+    auto& temperature = get<hydro::Tags::Temperature<DataVector>>(temp_tensors);
+    get(temperature) =
+        get(equation_of_state.temperature_from_density_and_energy(
+            rest_mass_density, specific_internal_energy, electron_fraction));
     get(sound_speed_squared) =
         get(equation_of_state.sound_speed_squared_from_density_and_temperature(
             rest_mass_density, temperature, electron_fraction));
@@ -479,15 +517,19 @@ void eigenvectors_hydro(
     // kappa, assuming the same adiabatic index as used in the tests. This
     // approach will need to be improved during the code review process..
     const double adiabatic_index = 1.5;
-    const Scalar<DataVector> chi =
-        tenex::evaluate(specific_internal_energy() * (adiabatic_index - 1.0));
-    const Scalar<DataVector> kappa_times_p_over_rho_squared = tenex::evaluate(
-        square(adiabatic_index - 1.0) * specific_internal_energy());
-    const DataVector sound_speed_squared_ideal_fluid =
+    Scalar<DataVector>& chi = get<::Tags::TempScalar<7>>(temp_tensors);
+    Scalar<DataVector>& kappa_times_p_over_rho_squared =
+        get<::Tags::TempScalar<8>>(temp_tensors);
+    Scalar<DataVector>& sound_speed_squared_ideal_fluid =
+        get<::Tags::TempScalar<9>>(temp_tensors);
+    get(chi) = get(specific_internal_energy) * (adiabatic_index - 1.0);
+    get(kappa_times_p_over_rho_squared) =
+        square(adiabatic_index - 1.0) * get(specific_internal_energy);
+    get(sound_speed_squared_ideal_fluid) =
         (get(chi) + get(kappa_times_p_over_rho_squared)) /
         get(specific_enthalpy);
     ASSERT(max(abs(get(sound_speed_squared) -
-                   sound_speed_squared_ideal_fluid)) < 1e-10,
+                   get(sound_speed_squared_ideal_fluid))) < 1e-10,
            "The ideal fluid approximation for kappa is not valid.");
     get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
                  square(get(rest_mass_density));
@@ -497,8 +539,11 @@ void eigenvectors_hydro(
   // This is for the case for zeta = 0.
   const double zeta_max_abs = max(abs(get(zeta)));
 
-  const DataVector sound_speed = sqrt(get(sound_speed_squared));
-  const DataVector W_squared = square(get(lorentz_factor));
+  Scalar<DataVector>& sound_speed = get<::Tags::TempScalar<10>>(temp_tensors);
+  get(sound_speed) = sqrt(get(sound_speed_squared));
+  auto& W_squared =
+      get<hydro::Tags::LorentzFactorSquared<DataVector>>(temp_tensors);
+  get(W_squared) = square(get(lorentz_factor));
 
   // Variables in the ordering (D, S_i, tau, DYe)
   // RIGHT eigenvectors
@@ -506,14 +551,14 @@ void eigenvectors_hydro(
   // R1 and R2
   for (size_t i = 0; i < 3; ++i) {
     (*right_eigenvectors)[R1].get(i + 1) =
-        get(specific_enthalpy) *
-        (tangent_one_form_1.get(i) + 2.0 * W_squared * get(v_dot_tangent_1) *
-                                         spatial_velocity_one_form.get(i));
+        get(specific_enthalpy) * (tangent_one_form_1.get(i) +
+                                  2.0 * get(W_squared) * get(v_dot_tangent_1) *
+                                      spatial_velocity_one_form.get(i));
 
     (*right_eigenvectors)[R2].get(i + 1) =
-        get(specific_enthalpy) *
-        (tangent_one_form_2.get(i) + 2.0 * W_squared * get(v_dot_tangent_2) *
-                                         spatial_velocity_one_form.get(i));
+        get(specific_enthalpy) * (tangent_one_form_2.get(i) +
+                                  2.0 * get(W_squared) * get(v_dot_tangent_2) *
+                                      spatial_velocity_one_form.get(i));
   }
 
   (*right_eigenvectors)[R1].get(0) = get(lorentz_factor) * get(v_dot_tangent_1);
@@ -535,15 +580,16 @@ void eigenvectors_hydro(
       get(electron_fraction) * (*right_eigenvectors)[R2].get(0);
 
   // R3
-  const DataVector common_R3 =
+  Scalar<DataVector>& common_R3 = get<::Tags::TempScalar<11>>(temp_tensors);
+  get(common_R3) =
       get(specific_enthalpy) * get(lorentz_factor) *
       (get(kappa) - get(rest_mass_density) * get(sound_speed_squared));
   for (size_t i = 0; i < 3; ++i) {
     (*right_eigenvectors)[R3].get(i + 1) =
-        common_R3 * spatial_velocity_one_form.get(i);
+        get(common_R3) * spatial_velocity_one_form.get(i);
   }
   (*right_eigenvectors)[R3].get(0) = get(kappa);
-  (*right_eigenvectors)[R3].get(4) = common_R3 - get(kappa);
+  (*right_eigenvectors)[R3].get(4) = get(common_R3) - get(kappa);
   (*right_eigenvectors)[R3].get(5) =
       get(electron_fraction) * (*right_eigenvectors)[R3].get(0);
 
@@ -560,24 +606,33 @@ void eigenvectors_hydro(
   }
 
   // R±
-  const DataVector denom =
+  Scalar<DataVector>& denom = get<::Tags::TempScalar<12>>(temp_tensors);
+  get(denom) =
       get(lorentz_factor) *
       sqrt(1.0 - get(spatial_velocity_squared) * get(sound_speed_squared) -
            get(normal_velocity) * get(normal_velocity) *
                (1.0 - get(sound_speed_squared)));
 
-  const DataVector sound_speed_over_denom = sound_speed / denom;
+  Scalar<DataVector>& sound_speed_over_denom =
+      get<::Tags::TempScalar<13>>(temp_tensors);
+  Scalar<DataVector>& inv_denom = get<::Tags::TempScalar<28>>(temp_tensors);
+  get(inv_denom) = 1.0 / get(denom);
+  get(sound_speed_over_denom) = get(sound_speed) * get(inv_denom);
+  Scalar<DataVector>& sound_speed_normal_velocity_over_denom =
+      get<::Tags::TempScalar<29>>(temp_tensors);
+  get(sound_speed_normal_velocity_over_denom) =
+      get(sound_speed) * get(normal_velocity) * get(inv_denom);
 
   for (size_t i = 0; i < 3; ++i) {
     (*right_eigenvectors)[Rplus].get(i + 1) =
         get(specific_enthalpy) * get(lorentz_factor) *
         (spatial_velocity_one_form.get(i) +
-         sound_speed_over_denom * unit_normal.get(i));
+         get(sound_speed_over_denom) * unit_normal.get(i));
 
     (*right_eigenvectors)[Rminus].get(i + 1) =
         get(specific_enthalpy) * get(lorentz_factor) *
         (spatial_velocity_one_form.get(i) -
-         sound_speed_over_denom * unit_normal.get(i));
+         get(sound_speed_over_denom) * unit_normal.get(i));
   }
 
   (*right_eigenvectors)[Rplus].get(0) = 1.0;
@@ -585,69 +640,72 @@ void eigenvectors_hydro(
 
   (*right_eigenvectors)[Rplus].get(4) =
       get(specific_enthalpy) * get(lorentz_factor) *
-          (1.0 + sound_speed * get(normal_velocity) / denom) -
+          (1.0 + get(sound_speed_normal_velocity_over_denom)) -
       1.0;
 
   (*right_eigenvectors)[Rminus].get(4) =
       get(specific_enthalpy) * get(lorentz_factor) *
-          (1.0 - sound_speed * get(normal_velocity) / denom) -
+          (1.0 - get(sound_speed_normal_velocity_over_denom)) -
       1.0;
 
   (*right_eigenvectors)[Rplus].get(5) = get(electron_fraction);
   (*right_eigenvectors)[Rminus].get(5) = get(electron_fraction);
 
   // LEFT eigenvectors
-  const DataVector prefactor_L12 =
-      1.0 / (get(specific_enthalpy) * one_minus_normal_velocity_squared);
+  Scalar<DataVector>& prefactor_L12 = get<::Tags::TempScalar<14>>(temp_tensors);
+  get(prefactor_L12) =
+      1.0 / (get(specific_enthalpy) * get(one_minus_normal_velocity_squared));
 
   // L1
-  (*left_eigenvectors)[L1].get(0) = -get(v_dot_tangent_1) * prefactor_L12;
-  (*left_eigenvectors)[L1].get(4) = -get(v_dot_tangent_1) * prefactor_L12;
+  (*left_eigenvectors)[L1].get(0) = -get(v_dot_tangent_1) * get(prefactor_L12);
+  (*left_eigenvectors)[L1].get(4) = -get(v_dot_tangent_1) * get(prefactor_L12);
   for (size_t i = 0; i < 3; ++i) {
     (*left_eigenvectors)[L1].get(i + 1) =
         (get(v_dot_tangent_1) * get(normal_velocity) *
              unit_normal_vector.get(i) +
-         one_minus_normal_velocity_squared * tangent_vector_1.get(i)) *
-        prefactor_L12;
+         get(one_minus_normal_velocity_squared) * tangent_vector_1.get(i)) *
+        get(prefactor_L12);
   }
 
   // L2
-  (*left_eigenvectors)[L2].get(0) = -get(v_dot_tangent_2) * prefactor_L12;
-  (*left_eigenvectors)[L2].get(4) = -get(v_dot_tangent_2) * prefactor_L12;
+  (*left_eigenvectors)[L2].get(0) = -get(v_dot_tangent_2) * get(prefactor_L12);
+  (*left_eigenvectors)[L2].get(4) = -get(v_dot_tangent_2) * get(prefactor_L12);
   for (size_t i = 0; i < 3; ++i) {
     (*left_eigenvectors)[L2].get(i + 1) =
         (get(v_dot_tangent_2) * get(normal_velocity) *
              unit_normal_vector.get(i) +
-         one_minus_normal_velocity_squared * tangent_vector_2.get(i)) *
-        prefactor_L12;
+         get(one_minus_normal_velocity_squared) * tangent_vector_2.get(i)) *
+        get(prefactor_L12);
   }
 
   // L3
   {
-    const DataVector prefactor_L3 =
-        1.0 / (get(rest_mass_density) * get(specific_enthalpy) *
-               get(sound_speed_squared));
-
-    const DataVector h_minus_one =
+    Scalar<DataVector>& prefactor_L3 =
+        get<::Tags::TempScalar<15>>(temp_tensors);
+    get(prefactor_L3) = 1.0 / (get(rest_mass_density) * get(specific_enthalpy) *
+                               get(sound_speed_squared));
+    Scalar<DataVector>& h_minus_one = get<::Tags::TempScalar<16>>(temp_tensors);
+    get(h_minus_one) =
         get(specific_internal_energy) + get(pressure) / get(rest_mass_density);
-
-    const DataVector W_minus_one = get(spatial_velocity_squared) *
-                                   square(get(lorentz_factor)) /
-                                   (get(lorentz_factor) + 1.0);
-
-    const DataVector h_minus_W = h_minus_one - W_minus_one;
+    Scalar<DataVector>& W_minus_one = get<::Tags::TempScalar<17>>(temp_tensors);
+    get(W_minus_one) = get(spatial_velocity_squared) * get(W_squared) /
+                       (get(lorentz_factor) + 1.0);
+    Scalar<DataVector>& h_minus_W = get<::Tags::TempScalar<18>>(temp_tensors);
+    get(h_minus_W) = get(h_minus_one) - get(W_minus_one);
 
     (*left_eigenvectors)[L3].get(0) =
-        (h_minus_W + get(zeta) * get(electron_fraction) / get(kappa)) *
-        prefactor_L3;
+        (get(h_minus_W) + get(zeta) * get(electron_fraction) / get(kappa)) *
+        get(prefactor_L3);
 
     for (size_t i = 0; i < 3; ++i) {
       (*left_eigenvectors)[L3].get(i + 1) =
-          (get(lorentz_factor) * spatial_velocity.get(i)) * prefactor_L3;
+          (get(lorentz_factor) * spatial_velocity.get(i)) * get(prefactor_L3);
     }
 
-    (*left_eigenvectors)[L3].get(4) = (-get(lorentz_factor)) * prefactor_L3;
-    (*left_eigenvectors)[L3].get(5) = (-get(zeta) / get(kappa)) * prefactor_L3;
+    (*left_eigenvectors)[L3].get(4) =
+        (-get(lorentz_factor)) * get(prefactor_L3);
+    (*left_eigenvectors)[L3].get(5) =
+        (-get(zeta) / get(kappa)) * get(prefactor_L3);
   }
 
   // L4
@@ -656,75 +714,86 @@ void eigenvectors_hydro(
       (*left_eigenvectors)[L4].get(0) = -get(electron_fraction);
       (*left_eigenvectors)[L4].get(5) = 1.0;
     } else {
-      const DataVector prefactor_L4 =
-          get(zeta) * get(lorentz_factor) / get(kappa);
-      (*left_eigenvectors)[L4].get(0) = prefactor_L4 * get(electron_fraction);
-      (*left_eigenvectors)[L4].get(5) = -prefactor_L4;
+      Scalar<DataVector>& prefactor_L4 =
+          get<::Tags::TempScalar<19>>(temp_tensors);
+      get(prefactor_L4) = get(zeta) * get(lorentz_factor) / get(kappa);
+      (*left_eigenvectors)[L4].get(0) =
+          get(prefactor_L4) * get(electron_fraction);
+      (*left_eigenvectors)[L4].get(5) = -get(prefactor_L4);
     }
   }
 
   // L±
   {
-    const DataVector a =
-        square(get(lorentz_factor)) * one_minus_normal_velocity_squared *
-        (get(kappa) + get(rest_mass_density) * get(sound_speed_squared));
-
-    const DataVector c_plus = get(rest_mass_density) * sound_speed *
-                              (sound_speed + get(normal_velocity) * denom);
-    const DataVector c_minus = get(rest_mass_density) * sound_speed *
-                               (sound_speed - get(normal_velocity) * denom);
-
-    const DataVector b_plus = a - c_plus;
-    const DataVector b_minus = a - c_minus;
-
-    const DataVector k_term =
-        get(kappa) - get(rest_mass_density) * get(sound_speed_squared) +
-        get(zeta) * get(electron_fraction) / get(specific_enthalpy);
-
-    const DataVector prefactor_Lpm =
+    Scalar<DataVector>& a = get<::Tags::TempScalar<20>>(temp_tensors);
+    get(a) = get(W_squared) * get(one_minus_normal_velocity_squared) *
+             (get(kappa) + get(rest_mass_density) * get(sound_speed_squared));
+    Scalar<DataVector>& c_plus = get<::Tags::TempScalar<21>>(temp_tensors);
+    get(c_plus) = get(rest_mass_density) * get(sound_speed) *
+                  (get(sound_speed) + get(normal_velocity) * get(denom));
+    Scalar<DataVector>& c_minus = get<::Tags::TempScalar<22>>(temp_tensors);
+    get(c_minus) = get(rest_mass_density) * get(sound_speed) *
+                   (get(sound_speed) - get(normal_velocity) * get(denom));
+    Scalar<DataVector>& b_plus = get<::Tags::TempScalar<23>>(temp_tensors);
+    get(b_plus) = get(a) - get(c_plus);
+    Scalar<DataVector>& b_minus = get<::Tags::TempScalar<24>>(temp_tensors);
+    get(b_minus) = get(a) - get(c_minus);
+    Scalar<DataVector>& k_term = get<::Tags::TempScalar<25>>(temp_tensors);
+    get(k_term) = get(kappa) -
+                  get(rest_mass_density) * get(sound_speed_squared) +
+                  get(zeta) * get(electron_fraction) / get(specific_enthalpy);
+    Scalar<DataVector>& prefactor_Lpm =
+        get<::Tags::TempScalar<26>>(temp_tensors);
+    get(prefactor_Lpm) =
         1.0 / (2.0 * get(rest_mass_density) * get(specific_enthalpy) *
                get(lorentz_factor) * get(sound_speed_squared) *
-               one_minus_normal_velocity_squared);
+               get(one_minus_normal_velocity_squared));
 
     // S_i
     for (size_t i = 0; i < 3; ++i) {
       (*left_eigenvectors)[Lplus].get(i + 1) =
-          (-a * spatial_velocity.get(i) +
-           get(rest_mass_density) * sound_speed *
-               (sound_speed * get(normal_velocity) + denom) *
+          (-get(a) * spatial_velocity.get(i) +
+           get(rest_mass_density) * get(sound_speed) *
+               (get(sound_speed) * get(normal_velocity) + get(denom)) *
                unit_normal_vector.get(i)) *
-          prefactor_Lpm;
+          get(prefactor_Lpm);
 
       (*left_eigenvectors)[Lminus].get(i + 1) =
-          (-a * spatial_velocity.get(i) +
-           get(rest_mass_density) * sound_speed *
-               (sound_speed * get(normal_velocity) - denom) *
+          (-get(a) * spatial_velocity.get(i) +
+           get(rest_mass_density) * get(sound_speed) *
+               (get(sound_speed) * get(normal_velocity) - get(denom)) *
                unit_normal_vector.get(i)) *
-          prefactor_Lpm;
+          get(prefactor_Lpm);
     }
+
+    Scalar<DataVector>& hW_k_term_one_minus_normal_velocity_squared =
+        get<::Tags::TempScalar<27>>(temp_tensors);
+    get(hW_k_term_one_minus_normal_velocity_squared) =
+        get(specific_enthalpy) * get(lorentz_factor) * get(k_term) *
+        get(one_minus_normal_velocity_squared);
 
     // D
     (*left_eigenvectors)[Lplus].get(0) =
-        (b_plus - get(specific_enthalpy) * get(lorentz_factor) * k_term *
-                      one_minus_normal_velocity_squared) *
-        prefactor_Lpm;
+        (get(b_plus) - get(hW_k_term_one_minus_normal_velocity_squared)) *
+        get(prefactor_Lpm);
 
     (*left_eigenvectors)[Lminus].get(0) =
-        (b_minus - get(specific_enthalpy) * get(lorentz_factor) * k_term *
-                       one_minus_normal_velocity_squared) *
-        prefactor_Lpm;
+        (get(b_minus) - get(hW_k_term_one_minus_normal_velocity_squared)) *
+        get(prefactor_Lpm);
 
     // tau
-    (*left_eigenvectors)[Lplus].get(4) = b_plus * prefactor_Lpm;
-    (*left_eigenvectors)[Lminus].get(4) = b_minus * prefactor_Lpm;
+    (*left_eigenvectors)[Lplus].get(4) = get(b_plus) * get(prefactor_Lpm);
+    (*left_eigenvectors)[Lminus].get(4) = get(b_minus) * get(prefactor_Lpm);
 
     // DYe
     (*left_eigenvectors)[Lplus].get(5) =
-        (get(zeta) * get(lorentz_factor) * one_minus_normal_velocity_squared) *
-        prefactor_Lpm;
+        (get(zeta) * get(lorentz_factor) *
+         get(one_minus_normal_velocity_squared)) *
+        get(prefactor_Lpm);
     (*left_eigenvectors)[Lminus].get(5) =
-        (get(zeta) * get(lorentz_factor) * one_minus_normal_velocity_squared) *
-        prefactor_Lpm;
+        (get(zeta) * get(lorentz_factor) *
+         get(one_minus_normal_velocity_squared)) *
+        get(prefactor_Lpm);
   }
 }
 
@@ -746,18 +815,81 @@ void flux_jacobian_hydro(
     const tnsr::i<DataVector, 3>& unit_normal,
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
         equation_of_state) {
-  Variables<tmpl::list<hydro::Tags::SoundSpeedSquared<DataVector>,
-                       ::Tags::TempScalar<0>, ::Tags::TempScalar<1>>>
+  Variables<tmpl::list<
+      hydro::Tags::SoundSpeedSquared<DataVector>,
+      hydro::Tags::Temperature<DataVector>, hydro::Tags::Pressure<DataVector>,
+      hydro::Tags::LorentzFactorSquared<DataVector>,
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
+      hydro::Tags::SpatialVelocitySquared<DataVector>, ::Tags::TempI<0, 3>,
+      ::Tags::TempI<1, 3>, ::Tags::TempIj<0, 3>, ::Tags::TempScalar<0>,
+      ::Tags::TempScalar<1>, ::Tags::TempScalar<2>, ::Tags::TempScalar<3>,
+      ::Tags::TempScalar<4>, ::Tags::TempScalar<5>, ::Tags::TempScalar<6>,
+      ::Tags::TempScalar<7>, ::Tags::TempScalar<8>, ::Tags::TempScalar<9>,
+      ::Tags::TempScalar<10>, ::Tags::TempScalar<11>, ::Tags::TempScalar<12>,
+      ::Tags::TempScalar<13>, ::Tags::TempScalar<14>, ::Tags::TempScalar<15>,
+      ::Tags::TempScalar<16>, ::Tags::TempScalar<17>, ::Tags::TempScalar<18>,
+      ::Tags::TempScalar<19>, ::Tags::TempScalar<20>, ::Tags::TempScalar<21>,
+      ::Tags::TempScalar<22>, ::Tags::TempScalar<23>, ::Tags::TempScalar<24>,
+      ::Tags::TempScalar<25>, ::Tags::TempScalar<26>, ::Tags::TempScalar<27>>>
       temp_tensors{get<0, 0>(spatial_metric).size()};
 
   Scalar<DataVector>& sound_speed_squared =
       get<hydro::Tags::SoundSpeedSquared<DataVector>>(temp_tensors);
+  auto& temperature = get<hydro::Tags::Temperature<DataVector>>(temp_tensors);
+  auto& pressure = get<hydro::Tags::Pressure<DataVector>>(temp_tensors);
+  auto& lorentz_factor_squared =
+      get<hydro::Tags::LorentzFactorSquared<DataVector>>(temp_tensors);
+  auto& spatial_velocity_one_form =
+      get<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>>(temp_tensors);
+  auto& spatial_velocity_squared =
+      get<hydro::Tags::SpatialVelocitySquared<DataVector>>(temp_tensors);
+  auto& unit_vector = get<::Tags::TempI<0, 3>>(temp_tensors);
+  auto& dzds = get<::Tags::TempI<1, 3>>(temp_tensors);
+  auto& mixed_spatial_metric = get<::Tags::TempIj<0, 3>>(temp_tensors);
   // We define kappa as the partial derivative of pressure with respect to
   // specific internal energy
   Scalar<DataVector>& kappa = get<::Tags::TempScalar<0>>(temp_tensors);
   // We define zeta as the partial derivative of pressure with respect to
   // electron fraction
   Scalar<DataVector>& zeta = get<::Tags::TempScalar<1>>(temp_tensors);
+  Scalar<DataVector>& kappa_times_p_over_rho_squared =
+      get<::Tags::TempScalar<2>>(temp_tensors);
+  Scalar<DataVector>& chi = get<::Tags::TempScalar<3>>(temp_tensors);
+  Scalar<DataVector>& sound_speed_squared_ideal_fluid =
+      get<::Tags::TempScalar<4>>(temp_tensors);
+  Scalar<DataVector>& Z = get<::Tags::TempScalar<5>>(temp_tensors);
+  Scalar<DataVector>& D = get<::Tags::TempScalar<6>>(temp_tensors);
+  Scalar<DataVector>& normal_velocity =
+      get<::Tags::TempScalar<7>>(temp_tensors);
+  Scalar<DataVector>& dzdD = get<::Tags::TempScalar<8>>(temp_tensors);
+  Scalar<DataVector>& dzdtau = get<::Tags::TempScalar<9>>(temp_tensors);
+  Scalar<DataVector>& dzdye = get<::Tags::TempScalar<10>>(temp_tensors);
+  Scalar<DataVector>& inv_Z = get<::Tags::TempScalar<11>>(temp_tensors);
+  Scalar<DataVector>& normal_velocity_over_Z =
+      get<::Tags::TempScalar<12>>(temp_tensors);
+  Scalar<DataVector>& D_over_Z = get<::Tags::TempScalar<13>>(temp_tensors);
+  Scalar<DataVector>& D_normal_velocity_over_Z =
+      get<::Tags::TempScalar<14>>(temp_tensors);
+  Scalar<DataVector>& Z_minus_D_over_Z =
+      get<::Tags::TempScalar<15>>(temp_tensors);
+  Scalar<DataVector>& one_minus_dzdD =
+      get<::Tags::TempScalar<16>>(temp_tensors);
+  Scalar<DataVector>& one_minus_dzdtau =
+      get<::Tags::TempScalar<17>>(temp_tensors);
+  Scalar<DataVector>& DYe = get<::Tags::TempScalar<18>>(temp_tensors);
+  Scalar<DataVector>& DYe_over_Z = get<::Tags::TempScalar<19>>(temp_tensors);
+  Scalar<DataVector>& DYe_normal_velocity_over_Z =
+      get<::Tags::TempScalar<20>>(temp_tensors);
+  Scalar<DataVector>& unit_minus_dzds_nv =
+      get<::Tags::TempScalar<21>>(temp_tensors);
+  Scalar<DataVector>& unit_normal_minus_nv_vc =
+      get<::Tags::TempScalar<22>>(temp_tensors);
+  Scalar<DataVector>& denom_common = get<::Tags::TempScalar<23>>(temp_tensors);
+  Scalar<DataVector>& denom_common_inv =
+      get<::Tags::TempScalar<24>>(temp_tensors);
+  Scalar<DataVector>& h_minus_one = get<::Tags::TempScalar<25>>(temp_tensors);
+  Scalar<DataVector>& W_minus_one = get<::Tags::TempScalar<26>>(temp_tensors);
+  Scalar<DataVector>& W_minus_h = get<::Tags::TempScalar<27>>(temp_tensors);
   if constexpr (ThermodynamicDim == 1) {
     get(sound_speed_squared) =
         get(equation_of_state.chi_from_density(rest_mass_density)) +
@@ -774,41 +906,39 @@ void flux_jacobian_hydro(
                  .kappa_times_p_over_rho_squared_from_density_and_energy(
                      rest_mass_density, specific_internal_energy))) /
         get(specific_enthalpy);
-    const Scalar<DataVector> kappa_times_p_over_rho_squared =
-        equation_of_state
-            .kappa_times_p_over_rho_squared_from_density_and_energy(
-                rest_mass_density, specific_internal_energy);
-    const Scalar<DataVector> pressure =
-        equation_of_state.pressure_from_density_and_energy(
-            rest_mass_density, specific_internal_energy);
+    get(kappa_times_p_over_rho_squared) =
+        get(equation_of_state
+                .kappa_times_p_over_rho_squared_from_density_and_energy(
+                    rest_mass_density, specific_internal_energy));
+    get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
+        rest_mass_density, specific_internal_energy));
     get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
                  square(get(rest_mass_density));
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
     // The following computation works for a general 3D EoS, but it doesn't
     // allow getting kappa.
-    const auto temperature =
-        equation_of_state.temperature_from_density_and_energy(
-            rest_mass_density, specific_internal_energy, electron_fraction);
+    get(temperature) =
+        get(equation_of_state.temperature_from_density_and_energy(
+            rest_mass_density, specific_internal_energy, electron_fraction));
     get(sound_speed_squared) =
         get(equation_of_state.sound_speed_squared_from_density_and_temperature(
             rest_mass_density, temperature, electron_fraction));
+    get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
+        rest_mass_density, specific_internal_energy, electron_fraction));
     // So, we're currently using the equations from an ideal fluid EoS to set
     // kappa, assuming the same adiabatic index as used in the tests. This
     // approach will need to be improved during the code review process..
     const double adiabatic_index = 1.5;
-    const Scalar<DataVector> chi =
-        tenex::evaluate(specific_internal_energy() * (adiabatic_index - 1.0));
-    const Scalar<DataVector> kappa_times_p_over_rho_squared = tenex::evaluate(
-        square(adiabatic_index - 1.0) * specific_internal_energy());
-    const DataVector sound_speed_squared_ideal_fluid =
+    get(chi) = get(specific_internal_energy) * (adiabatic_index - 1.0);
+    get(kappa_times_p_over_rho_squared) =
+        square(adiabatic_index - 1.0) * get(specific_internal_energy);
+    get(sound_speed_squared_ideal_fluid) =
         (get(chi) + get(kappa_times_p_over_rho_squared)) /
         get(specific_enthalpy);
     ASSERT(max(abs(get(sound_speed_squared) -
-                   sound_speed_squared_ideal_fluid)) < 1e-10,
+                   get(sound_speed_squared_ideal_fluid))) < 1e-10,
            "The ideal fluid approximation for kappa is not valid.");
-    const auto pressure = equation_of_state.pressure_from_density_and_energy(
-        rest_mass_density, specific_internal_energy, electron_fraction);
     get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
                  square(get(rest_mass_density));
     // For now, we assume that we are at compositional equilibrium, so we set
@@ -817,104 +947,122 @@ void flux_jacobian_hydro(
   }
 
   // Intermediate variables
-  const auto Z = tenex::evaluate(rest_mass_density() * specific_enthalpy() *
-                                 square(lorentz_factor()));
-  const auto D = tenex::evaluate(rest_mass_density() * lorentz_factor());
-  const auto normal_velocity =
-      tenex::evaluate(spatial_velocity(ti::I) * unit_normal(ti::i));
-  const auto unit_vector = tenex::evaluate<ti::I>(
-      inv_spatial_metric(ti::I, ti::J) * unit_normal(ti::j));
-  const auto spatial_velocity_one_form = tenex::evaluate<ti::i>(
-      spatial_metric(ti::i, ti::j) * spatial_velocity(ti::J));
-  const auto mixed_spatial_metric = tenex::evaluate<ti::I, ti::j>(
-      inv_spatial_metric(ti::I, ti::K) * spatial_metric(ti::k, ti::j));
+  get(lorentz_factor_squared) = square(get(lorentz_factor));
+  get(Z) = get(rest_mass_density) * get(specific_enthalpy) *
+           get(lorentz_factor_squared);
+  get(D) = get(rest_mass_density) * get(lorentz_factor);
+  dot_product(make_not_null(&normal_velocity), spatial_velocity, unit_normal);
+  raise_or_lower_index(make_not_null(&unit_vector), unit_normal,
+                       inv_spatial_metric);
+  raise_or_lower_index(make_not_null(&spatial_velocity_one_form),
+                       spatial_velocity, spatial_metric);
+  dot_product(make_not_null(&spatial_velocity_squared), spatial_velocity,
+              spatial_velocity_one_form);
+  for (size_t B = 0; B < 3; ++B) {
+    for (size_t c = 0; c < 3; ++c) {
+      mixed_spatial_metric.get(B, c) = 0.0;
+      for (size_t K = 0; K < 3; ++K) {
+        mixed_spatial_metric.get(B, c) +=
+            inv_spatial_metric.get(B, K) * spatial_metric.get(K, c);
+      }
+    }
+  }
 
   // Derivatives of Z
-  const auto dzdD = tenex::evaluate(
-      -((lorentz_factor() *
-         (kappa() * (-specific_enthalpy() + lorentz_factor()) -
-          zeta() * electron_fraction() +
-          (sound_speed_squared() * specific_enthalpy() + lorentz_factor()) *
-              rest_mass_density())) /
-        ((-square(lorentz_factor()) +
-          sound_speed_squared() * (-1. + square(lorentz_factor()))) *
-         rest_mass_density())));
-  const auto dzds = tenex::evaluate<ti::I>(
-      (spatial_velocity(ti::I) * square(lorentz_factor()) *
-       (kappa() + sound_speed_squared() * rest_mass_density())) /
-      ((-square(lorentz_factor()) +
-        sound_speed_squared() * (-1. + square(lorentz_factor()))) *
-       rest_mass_density()));
-  const auto dzdtau = tenex::evaluate(
-      -((square(lorentz_factor()) * (kappa() + rest_mass_density())) /
-        ((-square(lorentz_factor()) +
-          sound_speed_squared() * (-1. + square(lorentz_factor()))) *
-         rest_mass_density())));
-  const auto dzdye = tenex::evaluate(
-      (zeta() * lorentz_factor()) /
-      ((square(lorentz_factor()) -
-        sound_speed_squared() * (-1. + square(lorentz_factor()))) *
-       rest_mass_density()));
+  get(h_minus_one) =
+      get(specific_internal_energy) + get(pressure) / get(rest_mass_density);
+  get(W_minus_one) = get(spatial_velocity_squared) *
+                     get(lorentz_factor_squared) / (get(lorentz_factor) + 1.0);
+  get(W_minus_h) = get(W_minus_one) - get(h_minus_one);
+  get(denom_common) =
+      (-get(lorentz_factor_squared) +
+       get(sound_speed_squared) * (-1.0 + get(lorentz_factor_squared))) *
+      get(rest_mass_density);
+  get(denom_common_inv) = 1.0 / get(denom_common);
+
+  get(dzdD) =
+      -(get(lorentz_factor) *
+        (get(kappa) * get(W_minus_h) - get(zeta) * get(electron_fraction) +
+         (get(sound_speed_squared) * get(specific_enthalpy) +
+          get(lorentz_factor)) *
+             get(rest_mass_density))) *
+      get(denom_common_inv);
+  for (size_t i = 0; i < 3; ++i) {
+    dzds.get(i) =
+        spatial_velocity.get(i) * get(lorentz_factor_squared) *
+        (get(kappa) + get(sound_speed_squared) * get(rest_mass_density)) *
+        get(denom_common_inv);
+  }
+  get(dzdtau) =
+      -(get(lorentz_factor_squared) * (get(kappa) + get(rest_mass_density))) *
+      get(denom_common_inv);
+  get(dzdye) = -(get(zeta) * get(lorentz_factor)) * get(denom_common_inv);
+
+  get(inv_Z) = 1.0 / get(Z);
+  get(normal_velocity_over_Z) = get(normal_velocity) * get(inv_Z);
+  get(D_over_Z) = get(D) * get(inv_Z);
+  get(D_normal_velocity_over_Z) = get(D) * get(normal_velocity_over_Z);
+  get(Z_minus_D_over_Z) = (get(Z) - get(D)) * get(inv_Z);
+  get(one_minus_dzdD) = -1.0 + get(dzdD);
+  get(one_minus_dzdtau) = -1.0 + get(dzdtau);
+  get(DYe) = get(D) * get(electron_fraction);
+  get(DYe_over_Z) = get(DYe) * get(inv_Z);
+  get(DYe_normal_velocity_over_Z) = get(DYe) * get(normal_velocity_over_Z);
 
   // Put analytic expressions into characteristic matrix
   characteristic_matrix->get(0, 0) =
-      ((get(Z) - get(D) * get(dzdD)) * get(normal_velocity)) / get(Z);
+      (get(Z) - get(D) * get(dzdD)) * get(normal_velocity_over_Z);
   for (size_t B = 0; B < 3; ++B) {
+    get(unit_minus_dzds_nv) =
+        unit_vector.get(B) - dzds.get(B) * get(normal_velocity);
     characteristic_matrix->get(0, B + 1) =
-        (get(D) * (unit_vector.get(B) - dzds.get(B) * get(normal_velocity))) /
-        get(Z);
+        get(D_over_Z) * get(unit_minus_dzds_nv);
   }
   characteristic_matrix->get(0, 4) =
-      -((get(D) * get(dzdtau) * get(normal_velocity)) / get(Z));
+      -get(dzdtau) * get(D_normal_velocity_over_Z);
   characteristic_matrix->get(0, 5) =
-      -((get(D) * get(dzdye) * get(normal_velocity)) / get(Z));
+      -get(dzdye) * get(D_normal_velocity_over_Z);
   for (size_t c = 0; c < 3; ++c) {
+    get(unit_normal_minus_nv_vc) =
+        unit_normal.get(c) -
+        get(normal_velocity) * spatial_velocity_one_form.get(c);
     characteristic_matrix->get(c + 1, 0) =
-        (-1.0 + get(dzdD)) * unit_normal.get(c) -
+        get(one_minus_dzdD) * unit_normal.get(c) -
         get(dzdD) * get(normal_velocity) * spatial_velocity_one_form.get(c);
     for (size_t B = 0; B < 3; ++B) {
       characteristic_matrix->get(c + 1, B + 1) =
           mixed_spatial_metric.get(B, c) * get(normal_velocity) +
           unit_vector.get(B) * spatial_velocity_one_form.get(c) +
-          dzds.get(B) *
-              (unit_normal.get(c) -
-               get(normal_velocity) * spatial_velocity_one_form.get(c));
+          dzds.get(B) * get(unit_normal_minus_nv_vc);
     }
     characteristic_matrix->get(c + 1, 4) =
-        (-1.0 + get(dzdtau)) * unit_normal.get(c) -
+        get(one_minus_dzdtau) * unit_normal.get(c) -
         get(dzdtau) * get(normal_velocity) * spatial_velocity_one_form.get(c);
     characteristic_matrix->get(c + 1, 5) =
-        get(dzdye) * (unit_normal.get(c) -
-                      get(normal_velocity) * spatial_velocity_one_form.get(c));
+        get(dzdye) * get(unit_normal_minus_nv_vc);
   }
   characteristic_matrix->get(4, 0) =
-      -(((get(Z) - get(D) * get(dzdD)) * get(normal_velocity)) / get(Z));
+      -((get(Z) - get(D) * get(dzdD)) * get(normal_velocity_over_Z));
   for (size_t B = 0; B < 3; ++B) {
     characteristic_matrix->get(4, B + 1) =
-        ((get(Z) - get(D)) * unit_vector.get(B) +
-         get(D) * dzds.get(B) * get(normal_velocity)) /
-        get(Z);
+        get(Z_minus_D_over_Z) * unit_vector.get(B) +
+        dzds.get(B) * get(D_normal_velocity_over_Z);
   }
   characteristic_matrix->get(4, 4) =
-      (get(D) * get(dzdtau) * get(normal_velocity)) / get(Z);
-  characteristic_matrix->get(4, 5) =
-      (get(D) * get(dzdye) * get(normal_velocity)) / get(Z);
+      get(dzdtau) * get(D_normal_velocity_over_Z);
+  characteristic_matrix->get(4, 5) = get(dzdye) * get(D_normal_velocity_over_Z);
   characteristic_matrix->get(5, 0) =
-      -((get(D) * get(electron_fraction) * get(dzdD) * get(normal_velocity)) /
-        get(Z));
+      -get(dzdD) * get(DYe_normal_velocity_over_Z);
   for (size_t B = 0; B < 3; ++B) {
+    get(unit_minus_dzds_nv) =
+        unit_vector.get(B) - dzds.get(B) * get(normal_velocity);
     characteristic_matrix->get(5, B + 1) =
-        (get(D) * get(electron_fraction) *
-         (unit_vector.get(B) - dzds.get(B) * get(normal_velocity))) /
-        get(Z);
+        get(DYe_over_Z) * get(unit_minus_dzds_nv);
   }
   characteristic_matrix->get(5, 4) =
-      -((get(D) * get(electron_fraction) * get(dzdtau) * get(normal_velocity)) /
-        get(Z));
+      -get(dzdtau) * get(DYe_normal_velocity_over_Z);
   characteristic_matrix->get(5, 5) =
-      ((get(Z) - get(D) * get(electron_fraction) * get(dzdye)) *
-       get(normal_velocity)) /
-      get(Z);
+      (get(Z) - get(DYe) * get(dzdye)) * get(normal_velocity_over_Z);
 }
 }  // namespace detail
 
