@@ -80,8 +80,7 @@ class Marquina final : public evolution::BoundaryCorrection {
 
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>,
-      gr::Tags::SpatialMetric<DataVector, 3, Frame::Inertial>>;
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
   using dg_package_data_primitive_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
@@ -91,7 +90,8 @@ class Marquina final : public evolution::BoundaryCorrection {
                  hydro::Tags::Pressure<DataVector>,
                  hydro::Tags::LorentzFactor<DataVector>>;
   using dg_package_data_volume_tags =
-      tmpl::list<hydro::Tags::GrmhdEquationOfState>;
+      tmpl::list<gr::Tags::SpatialMetric<DataVector, 3, Frame::Inertial>,
+                 hydro::Tags::GrmhdEquationOfState>;
   using dg_boundary_terms_volume_tags = tmpl::list<>;
 
   static double dg_package_data(
@@ -133,7 +133,6 @@ class Marquina final : public evolution::BoundaryCorrection {
       const tnsr::I<DataVector, 3, Frame::Inertial>& /*shift*/,
       const tnsr::i<DataVector, 3,
                     Frame::Inertial>& /*spatial_velocity_one_form*/,
-      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
       const Scalar<DataVector>& rest_mass_density,
       const Scalar<DataVector>& electron_fraction,
@@ -148,6 +147,7 @@ class Marquina final : public evolution::BoundaryCorrection {
       const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
       /*mesh_velocity*/,
       const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
 
   static void dg_boundary_terms(

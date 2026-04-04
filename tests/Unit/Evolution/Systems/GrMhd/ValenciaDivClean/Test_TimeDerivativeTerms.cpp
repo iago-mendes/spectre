@@ -109,7 +109,6 @@ void forward_to_time_deriv(
 
       make_not_null(&get<gr::Tags::Lapse<DataVector>>(temp)),
       make_not_null(&get<gr::Tags::Shift<DataVector, 3>>(temp)),
-      make_not_null(&get<gr::Tags::SpatialMetric<DataVector, 3>>(temp)),
       make_not_null(&get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(temp)),
 
       tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse, shift,
@@ -122,7 +121,6 @@ void forward_to_time_deriv(
 
   CHECK(get<gr::Tags::Lapse<DataVector>>(temp) == lapse);
   CHECK(get<gr::Tags::Shift<DataVector, 3>>(temp) == shift);
-  CHECK(get<gr::Tags::SpatialMetric<DataVector, 3>>(temp) == spatial_metric);
   CHECK(get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(temp) ==
         inv_spatial_metric);
 }

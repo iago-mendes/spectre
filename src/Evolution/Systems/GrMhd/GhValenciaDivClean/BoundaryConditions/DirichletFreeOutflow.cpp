@@ -127,6 +127,9 @@ std::optional<std::string> DirichletFreeOutflow<System>::dg_ghost(
     const gsl::not_null<Scalar<DataVector>*> temperature,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         spatial_velocity,
+    const gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+    const gsl::not_null<Scalar<DataVector>*> pressure,
+    const gsl::not_null<Scalar<DataVector>*> lorentz_factor,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         inv_spatial_metric,
 
@@ -199,6 +202,7 @@ std::optional<std::string> DirichletFreeOutflow<System>::dg_ghost(
 
                lapse, shift, spatial_velocity_one_form, rest_mass_density,
                electron_fraction, temperature, spatial_velocity,
+               specific_internal_energy, pressure, lorentz_factor,
                inv_spatial_metric,
 
                face_mesh_velocity, normal_covector, normal_vector,

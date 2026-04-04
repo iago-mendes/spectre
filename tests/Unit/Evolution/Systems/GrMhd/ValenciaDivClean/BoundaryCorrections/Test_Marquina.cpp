@@ -30,8 +30,22 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
   using system = grmhd::ValenciaDivClean::System;
   namespace helpers = TestHelpers::evolution::dg;
 
-  const tuples::TaggedTuple<hydro::Tags::GrmhdEquationOfState> volume_data{
-      EquationsOfState::IdealFluid<true>{1.5, 0.0}.promote_to_3d_eos()};
+  const Mesh<2> mesh{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss};
+  const size_t num_points = mesh.number_of_grid_points();
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points};
+  for (size_t i = 0; i < 3; ++i) {
+    spatial_metric.get(i, i) = 1.0;
+    for (size_t j = 0; j < 3; ++j) {
+      if (i != j) {
+        spatial_metric.get(i, j) = 0.0;
+      }
+    }
+  }
+  const tuples::TaggedTuple<gr::Tags::SpatialMetric<DataVector, 3>,
+                            hydro::Tags::GrmhdEquationOfState>
+      volume_data{
+          spatial_metric,
+          EquationsOfState::IdealFluid<true>{1.5, 0.0}.promote_to_3d_eos()};
 
   const tuples::TaggedTuple<
       helpers::Tags::Range<hydro::Tags::RestMassDensity<DataVector>>,
@@ -49,8 +63,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
   for (int i = 0; i < 1000; ++i)
     TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
         make_not_null(&gen),
-        grmhd::ValenciaDivClean::BoundaryCorrections::Marquina{},
-        Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+        grmhd::ValenciaDivClean::BoundaryCorrections::Marquina{}, mesh,
         volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
 
   const auto marquina = TestHelpers::test_factory_creation<

@@ -65,8 +65,6 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         spatial_velocity_one_form,
-    const gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
-        spatial_metric,
     const gsl::not_null<Scalar<DataVector>*> rest_mass_density,
     const gsl::not_null<Scalar<DataVector>*> electron_fraction,
     const gsl::not_null<Scalar<DataVector>*> temperature,
@@ -138,7 +136,6 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
     (*shift).get(i) = interior_shift.get(i);
     for (size_t j = 0; j < 3; ++j) {
       (*inv_spatial_metric).get(i, j) = interior_inv_spatial_metric.get(i, j);
-      (*spatial_metric).get(i, j) = interior_spatial_metric.get(i, j);
     }
   }
 

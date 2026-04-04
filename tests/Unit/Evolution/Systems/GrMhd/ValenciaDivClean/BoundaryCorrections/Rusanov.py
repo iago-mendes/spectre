@@ -20,7 +20,6 @@ def dg_package_data(
     lapse,
     shift,
     spatial_velocity_one_form,
-    spatial_metric,
     rest_mass_density,
     electron_fraction,
     temperature,

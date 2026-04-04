@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
@@ -72,7 +73,6 @@ double Marquina::dg_package_data(
     const tnsr::I<DataVector, 3, Frame::Inertial>& /*shift*/,
     const tnsr::i<DataVector, 3,
                   Frame::Inertial>& /*spatial_velocity_one_form*/,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
     const Scalar<DataVector>& rest_mass_density,
     const Scalar<DataVector>& electron_fraction,
@@ -87,6 +87,7 @@ double Marquina::dg_package_data(
     const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
     /*mesh_velocity*/,
     const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
   const size_t num_points = get(tilde_d).size();
   const Scalar<DataVector> consistent_pressure =
@@ -95,7 +96,7 @@ double Marquina::dg_package_data(
   Scalar<DataVector> specific_enthalpy{num_points};
   get(specific_enthalpy) = 1.0 + get(specific_internal_energy) +
                            get(consistent_pressure) / get(rest_mass_density);
-  const auto& inv_spatial_metric =
+  const auto inv_spatial_metric =
       determinant_and_inverse(spatial_metric).second;
   const auto normal_covector_mag =
       magnitude(normal_covector, inv_spatial_metric);
