@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
@@ -288,7 +289,7 @@ struct TimeDerivativeTermsImpl {
     grmhd::ValenciaDivClean::TimeDerivativeTerms::apply(
         get<ValenciaDtTags>(dt_vars_ptr)...,
         get<ValenciaFluxTags>(fluxes_ptr)...,
-        get<ValenciaTempTags>(temps_ptr)...,
+        get_valencia_temp<ValenciaTempTags>(temps_ptr, arguments)...,
 
         get<tmpl::conditional_t<
             tmpl::list_contains_v<extra_tags_list,
@@ -311,6 +312,26 @@ struct TimeDerivativeTermsImpl {
         get<grmhd::GhValenciaDivClean::Tags::TraceReversedStressEnergy>(
             *temps_ptr),
         get<gr::Tags::Lapse<DataVector>>(*temps_ptr));
+  }
+
+  template <typename ValenciaTempTag, typename TemporaryTagsList,
+            typename... ExtraTags>
+  static auto get_valencia_temp(
+      const gsl::not_null<Variables<TemporaryTagsList>*> temps_ptr,
+      const tuples::TaggedTuple<ExtraTags...>& arguments) {
+    if constexpr (std::is_same_v<ValenciaTempTag,
+                                 gr::Tags::SpatialMetric<DataVector, 3>>) {
+      using spatial_metric_ref =
+          Tags::detail::TemporaryReference<ValenciaTempTag>;
+      static_assert(
+          tmpl::list_contains_v<tmpl::list<ExtraTags...>, spatial_metric_ref>,
+          "Expected spatial metric temporary reference in GH-Valencia "
+          "coupling arguments.");
+      return make_not_null(&const_cast<typename ValenciaTempTag::type&>(
+          get<spatial_metric_ref>(arguments)));
+    } else {
+      return get<ValenciaTempTag>(temps_ptr);
+    }
   }
 };  // namespace detail
 }  // namespace detail
@@ -378,11 +399,9 @@ struct TimeDerivativeTerms : evolution::PassVariables {
                  Tags::ComovingMagneticFieldOneForm>;
   using extra_temp_tags = tmpl::list<gr::Tags::SpatialMetric<DataVector, 3>>;
 
-  using temporary_tags = tmpl::remove<
-      tmpl::remove_duplicates<tmpl::append<
-          gh_temp_tags, valencia_temp_tags, valencia_extra_temp_tags,
-          trace_reversed_stress_result_tags, extra_temp_tags>>,
-      gr::Tags::SpatialMetric<DataVector, 3>>;
+  using temporary_tags = tmpl::remove_duplicates<
+      tmpl::append<gh_temp_tags, valencia_temp_tags, valencia_extra_temp_tags,
+                   trace_reversed_stress_result_tags, extra_temp_tags>>;
   using argument_tags = tmpl::remove<
       tmpl::remove<tmpl::append<gh_arg_tags,
 
@@ -436,6 +455,18 @@ struct TimeDerivativeTerms : evolution::PassVariables {
                   .get(i, j + 1, k + 1),
               0, number_of_points);
         }
+      }
+    }
+    auto& temp_spatial_metric =
+        get<gr::Tags::SpatialMetric<DataVector, 3>>(*temps_ptr);
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = i; j < 3; ++j) {
+        make_const_view(
+            make_not_null(&std::as_const(temp_spatial_metric).get(i, j)),
+            get<Tags::detail::TemporaryReference<
+                gr::Tags::SpacetimeMetric<DataVector, 3>>>(arguments)
+                .get(i + 1, j + 1),
+            0, number_of_points);
       }
     }
 

@@ -113,6 +113,8 @@ class DirichletFreeOutflow final : public BoundaryCondition {
                  hydro::Tags::Pressure<DataVector>,
                  hydro::Tags::Temperature<DataVector>>;
   using dg_gridless_tags = tmpl::list<::Tags::Time>;
+  // Overload for boundary corrections that do not request spatial_metric in
+  // the ghost tags.
   std::optional<std::string> dg_ghost(
       gsl::not_null<tnsr::aa<DataVector, 3, Frame::Inertial>*> spacetime_metric,
       gsl::not_null<tnsr::aa<DataVector, 3, Frame::Inertial>*> pi,
@@ -137,6 +139,59 @@ class DirichletFreeOutflow final : public BoundaryCondition {
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
       gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
           spatial_velocity_one_form,
+      gsl::not_null<Scalar<DataVector>*> rest_mass_density,
+      gsl::not_null<Scalar<DataVector>*> electron_fraction,
+      gsl::not_null<Scalar<DataVector>*> temperature,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> spatial_velocity,
+      gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+      gsl::not_null<Scalar<DataVector>*> pressure,
+      gsl::not_null<Scalar<DataVector>*> lorentz_factor,
+      gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
+          inv_spatial_metric,
+
+      const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
+          face_mesh_velocity,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
+
+      const Scalar<DataVector>& interior_rest_mass_density,
+      const Scalar<DataVector>& interior_electron_fraction,
+      const Scalar<DataVector>& interior_specific_internal_energy,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& interior_spatial_velocity,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& interior_magnetic_field,
+      const Scalar<DataVector>& interior_lorentz_factor,
+      const Scalar<DataVector>& interior_pressure,
+      const Scalar<DataVector>& interior_temperature,
+
+      const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
+      const Scalar<DataVector>& interior_gamma1,
+      const Scalar<DataVector>& interior_gamma2, double time) const;
+
+  std::optional<std::string> dg_ghost(
+      gsl::not_null<tnsr::aa<DataVector, 3, Frame::Inertial>*> spacetime_metric,
+      gsl::not_null<tnsr::aa<DataVector, 3, Frame::Inertial>*> pi,
+      gsl::not_null<tnsr::iaa<DataVector, 3, Frame::Inertial>*> phi,
+      gsl::not_null<Scalar<DataVector>*> tilde_d,
+      gsl::not_null<Scalar<DataVector>*> tilde_ye,
+      gsl::not_null<Scalar<DataVector>*> tilde_tau,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> tilde_s,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_b,
+      gsl::not_null<Scalar<DataVector>*> tilde_phi,
+
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_d_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_ye_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_tau_flux,
+      gsl::not_null<tnsr::Ij<DataVector, 3, Frame::Inertial>*> tilde_s_flux,
+      gsl::not_null<tnsr::IJ<DataVector, 3, Frame::Inertial>*> tilde_b_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_phi_flux,
+
+      gsl::not_null<Scalar<DataVector>*> gamma1,
+      gsl::not_null<Scalar<DataVector>*> gamma2,
+      gsl::not_null<Scalar<DataVector>*> lapse,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          spatial_velocity_one_form,
+      gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*> spatial_metric,
       gsl::not_null<Scalar<DataVector>*> rest_mass_density,
       gsl::not_null<Scalar<DataVector>*> electron_fraction,
       gsl::not_null<Scalar<DataVector>*> temperature,

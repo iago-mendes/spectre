@@ -73,6 +73,7 @@ double Marquina::dg_package_data(
     const tnsr::I<DataVector, 3, Frame::Inertial>& /*shift*/,
     const tnsr::i<DataVector, 3,
                   Frame::Inertial>& /*spatial_velocity_one_form*/,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
     const Scalar<DataVector>& rest_mass_density,
     const Scalar<DataVector>& electron_fraction,
@@ -87,7 +88,6 @@ double Marquina::dg_package_data(
     const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
     /*mesh_velocity*/,
     const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
   const size_t num_points = get(tilde_d).size();
   const Scalar<DataVector> consistent_pressure =

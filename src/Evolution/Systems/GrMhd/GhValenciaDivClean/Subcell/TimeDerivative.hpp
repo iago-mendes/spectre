@@ -285,6 +285,18 @@ struct ComputeTimeDerivImpl<
       }
     }  // End scope for computing metric terms in GRMHD source terms.
 
+    const auto& spatial_metric =
+        get<gr::Tags::SpatialMetric<DataVector, 3>>(temp_tags);
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = i; j < 3; ++j) {
+        make_const_view(
+            make_not_null(&spatial_metric.get(i, j)),
+            get<gr::Tags::SpacetimeMetric<DataVector, 3>>(evolved_vars)
+                .get(i + 1, j + 1),
+            0, number_of_points);
+      }
+    }
+
     grmhd::ValenciaDivClean::ComputeSources::apply(
         get<::Tags::dt<GrmhdSourceTags>>(dt_vars_ptr)...,
         get<GrmhdArgumentSourceTags>(temp_tags, primitive_vars, evolved_vars,
@@ -324,17 +336,6 @@ struct ComputeTimeDerivImpl<
               dt_var[i] -= div_mesh_velocity_subcell * evolved_var[i];
             }
           });
-    }
-
-    const tnsr::ii<DataVector, 3> spatial_metric{};
-    for (size_t i = 0; i < 3; ++i) {
-      for (size_t j = i; j < 3; ++j) {
-        make_const_view(
-            make_not_null(&spatial_metric.get(i, j)),
-            get<gr::Tags::SpacetimeMetric<DataVector, 3>>(evolved_vars)
-                .get(i + 1, j + 1),
-            0, number_of_points);
-      }
     }
 
     tenex::evaluate<ti::i>(get<hydro::Tags::SpatialVelocityOneForm<
