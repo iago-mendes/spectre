@@ -24,6 +24,7 @@ std::optional<tnsr::I<double, Dim, ::Frame::BlockLogical>>
 block_logical_coordinates_single_point(
     const tnsr::I<double, Dim, Fr>& input_point, const Block<Dim>& block,
     const double time, const domain::FunctionsOfTimeMap& functions_of_time) {
+  const double local_eps = std::numeric_limits<double>::epsilon() * 100.0 * 1e5;
   std::optional<tnsr::I<double, Dim, ::Frame::BlockLogical>> logical_point{};
   if (block.is_time_dependent()) {
     if constexpr (std::is_same_v<Fr, ::Frame::Inertial>) {
@@ -112,6 +113,12 @@ block_logical_coordinates_single_point(
   }
 
   for (size_t d = 0; d < Dim; ++d) {
+    if (not std::isfinite(logical_point->get(d))) {
+      return std::nullopt;
+    }
+  }
+
+  for (size_t d = 0; d < Dim; ++d) {
     const auto topology = gsl::at(block.topologies(), d);
     if (topology == domain::Topology::I1 or
         topology == domain::Topology::B2Radial or
@@ -123,15 +130,15 @@ block_logical_coordinates_single_point(
       // report logical coordinates outside [-1, 1] by roundoff error would
       // not be assigned to any block at all, even though they lie in the
       // domain.
-      if (equal_within_roundoff(logical_point->get(d), 1.0)) {
+      if (equal_within_roundoff(logical_point->get(d), 1.0, local_eps)) {
         logical_point->get(d) = 1.0;
         continue;
       }
-      if (equal_within_roundoff(logical_point->get(d), -1.0)) {
+      if (equal_within_roundoff(logical_point->get(d), -1.0, local_eps)) {
         logical_point->get(d) = -1.0;
         continue;
       }
-      if (abs(logical_point->get(d)) > 1.0) {
+      if (abs(logical_point->get(d)) > 1.0 + local_eps) {
         return std::nullopt;
       }
       // Also snap the center of the block to exactly 0.0 in case it is slightly
