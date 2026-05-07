@@ -485,6 +485,46 @@ def control_id(
         if delay_asymptotic_control:
             Delta_u[delayed_indices] = 0.0
 
+        # Limit relative step size for masses to avoid instabilities
+        max_rel_step = 0.2
+        for mass_key in ["MassA", "MassB"]:
+            if mass_key not in control_params:
+                continue
+            idx = param_index_map[mass_key]
+            max_delta = max_rel_step * abs(u[idx])
+            if abs(Delta_u[idx]) > max_delta:
+                old_delta = Delta_u[idx]
+                Delta_u[idx] = np.sign(Delta_u[idx]) * max_delta
+                logger.warning(
+                    f"Relative update for {mass_key} exceeded"
+                    f" {max_rel_step}. Delta was {old_delta} and was"
+                    f" limited to {Delta_u[idx]}."
+                )
+
+        # Constrain position of large black hole to xA > 0
+        if "CenterOfMass" in control_params:
+            previous_x_A = (
+                Newtonian_x_A + u[param_index_map["center_of_mass_offset"]]
+            )
+            current_x_A = (
+                previous_x_A
+                + Delta_u[param_index_map["center_of_mass_offset"]]
+            )
+            epsilon = 1.0e-10
+            if current_x_A < epsilon:
+                Delta_u[param_index_map["center_of_mass_offset"]] = (
+                    epsilon - previous_x_A
+                )
+                new_x_A = (
+                    previous_x_A
+                    + Delta_u[param_index_map["center_of_mass_offset"]]
+                )
+                logger.warning(
+                    "New x position of large black hole was negative"
+                    f" ({current_x_A}). Update was changed so that the new"
+                    f" position is {new_x_A}."
+                )
+
         u += Delta_u
 
         # Compute residual and check stopping condition
