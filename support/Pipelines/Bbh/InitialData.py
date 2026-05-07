@@ -323,21 +323,35 @@ def generate_id(
             target_params["Eccentricity"] is not None
         ), "For eccentricity control the target eccentricity must be set."
 
-    # This is an empirical factor based on an equal-mass non-spinning case, in
-    # which ~0.41 conformal masses result in ~0.5 horizon masses.
-    # mass_initial_guess_factor = 1.0
-    mass_initial_guess_factor = 0.82
+    # Conformal mass guesses from a BBH ID survey (q=1..1e6, neg-exp BC).
+    # Small-BH factor_b interpolates to an isolated-BH plateau for q >> 1.
+    log10q = np.log10(max(target_params["MassA"] / target_params["MassB"], 1.0))
     if conformal_mass_a is None:
-        conformal_mass_a = mass_initial_guess_factor * target_params["MassA"]
+        chi_a_sq = np.dot(
+            np.asarray(target_params["DimensionlessSpinA"]),
+            np.asarray(target_params["DimensionlessSpinA"]),
+        )
+        conformal_mass_a = (
+            0.80 + 0.016 * log10q + 0.022 * chi_a_sq
+        ) * target_params["MassA"]
     if conformal_mass_b is None:
-        conformal_mass_b = mass_initial_guess_factor * target_params["MassB"]
+        chi_b_sq = np.dot(
+            np.asarray(target_params["DimensionlessSpinB"]),
+            np.asarray(target_params["DimensionlessSpinB"]),
+        )
+        weight = min(1.0, log10q / 3.0)
+        conformal_mass_b = (
+            (1.0 - weight) * (0.80 + 0.022 * chi_b_sq)
+            + weight * (0.957 + 0.013 * chi_b_sq)
+        ) * target_params["MassB"]
 
-    # The 0.9 is an empirical factor that avoids an ill-posed elliptic problem
-    # for very high spins.
+    # Rotation factors: A scales with log10q for chi>0.95; B stays ~0.9.
     if horizon_rotation_a is None:
         chi_a = np.asarray(target_params["DimensionlessSpinA"])
         rotation_initial_guess_factor = (
-            0.9 if np.linalg.norm(chi_a) > 0.99 else 1.0
+            1.0
+            if np.linalg.norm(chi_a) <= 0.95
+            else min(1.0, 0.83 + 0.017 * log10q)
         )
         horizon_rotation_a = (
             -rotation_initial_guess_factor
@@ -348,7 +362,7 @@ def generate_id(
     if horizon_rotation_b is None:
         chi_b = np.asarray(target_params["DimensionlessSpinB"])
         rotation_initial_guess_factor = (
-            0.9 if np.linalg.norm(chi_b) > 0.99 else 1.0
+            1.0 if np.linalg.norm(chi_b) <= 0.95 else 0.9
         )
         horizon_rotation_b = (
             -rotation_initial_guess_factor
