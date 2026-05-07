@@ -426,8 +426,8 @@ def control_id(
         dat_file = output_file.try_insert_dat("Jacobian", jacobian_legend, 0)
         dat_file.append(J.flatten())
 
-    # Indices of parameters for which the control is delayed in the first
-    # iterations to avoid going off-bounds
+    # Indices of parameters for which the control is delayed until the horizon
+    # parameters have converged, to avoid going off-bounds
     #
     # Note: We have experimented with other modifications to Broyden's
     # method, including damping the initial updates of the free data / Jacobian
@@ -435,6 +435,7 @@ def control_id(
     # delay approach used here. When doing a more complete study in parameter
     # space, we should try to find a more robust approach that works for
     # multiple configurations.
+    delay_asymptotic_control = True
     delayed_indices = np.array([], dtype=bool)
     delayed_params = [
         "CenterOfMass",
@@ -455,9 +456,33 @@ def control_id(
     while iteration < max_iterations:
         iteration += 1
 
+        max_horizon_residual = np.max(
+            np.abs(
+                np.array(
+                    [
+                        F[param_index_map["MassA"]],
+                        F[param_index_map["MassB"]],
+                        F[param_index_map["DimensionlessSpinA"] + 0],
+                        F[param_index_map["DimensionlessSpinA"] + 1],
+                        F[param_index_map["DimensionlessSpinA"] + 2],
+                        F[param_index_map["DimensionlessSpinB"] + 0],
+                        F[param_index_map["DimensionlessSpinB"] + 1],
+                        F[param_index_map["DimensionlessSpinB"] + 2],
+                    ]
+                )
+            )
+        )
+        if max_horizon_residual < 5.0e-3:
+            delay_asymptotic_control = False
+        logger.info(
+            f"Max residual of horizon parameters = {max_horizon_residual:e}."
+            f" {'Delaying' if delay_asymptotic_control else 'Not delaying'}"
+            " control of asymptotic parameters."
+        )
+
         # Update the free parameters using a quasi-Newton-Raphson method
         Delta_u = -np.dot(np.linalg.inv(J), F)
-        if iteration < control_delay:
+        if delay_asymptotic_control:
             Delta_u[delayed_indices] = 0.0
 
         u += Delta_u
@@ -466,8 +491,6 @@ def control_id(
         F = Residual(u)
         if np.max(np.abs(F)) < residual_tolerance:
             break
-        if iteration < control_delay:
-            F[delayed_indices] = 0.0
 
         # Update the Jacobian using Broyden's method
         J += np.outer(F, Delta_u) / np.dot(Delta_u, Delta_u)
