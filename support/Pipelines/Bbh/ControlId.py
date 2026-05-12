@@ -485,45 +485,133 @@ def control_id(
         if delay_asymptotic_control:
             Delta_u[delayed_indices] = 0.0
 
-        # Limit relative step size for masses to avoid instabilities
+        # Compute the largest uniform scale factor alpha in (0,1] such that
+        # all constraints are satisfied, then apply it to the full step. This
+        # preserves the Broyden-learned coupling direction; only the magnitude
+        # is reduced. Each constraint provides an independent analytical alpha;
+        # the minimum is taken.
+        alpha = 1.0
+        limiting_constraints = []
+
+        # Constraint 1: mass step <= max_rel_step * current_mass (linear)
         max_rel_step = 0.2
         for mass_key in ["MassA", "MassB"]:
             if mass_key not in control_params:
                 continue
             idx = param_index_map[mass_key]
-            max_delta = max_rel_step * abs(u[idx])
-            if abs(Delta_u[idx]) > max_delta:
-                old_delta = Delta_u[idx]
-                Delta_u[idx] = np.sign(Delta_u[idx]) * max_delta
-                logger.warning(
-                    f"Relative update for {mass_key} exceeded"
-                    f" {max_rel_step}. Delta was {old_delta} and was"
-                    f" limited to {Delta_u[idx]}."
-                )
+            if abs(Delta_u[idx]) > max_rel_step * abs(u[idx]):
+                alpha_mass = max_rel_step * abs(u[idx]) / abs(Delta_u[idx])
+                if alpha_mass < alpha:
+                    alpha = alpha_mass
+                    limiting_constraints = [mass_key]
+                elif alpha_mass == alpha:
+                    limiting_constraints.append(mass_key)
 
-        # Constrain position of large black hole to xA > 0
+        # Constraint 2: xA = Newtonian_x_A + center_of_mass_offset > 0 (linear)
         if "CenterOfMass" in control_params:
-            previous_x_A = (
+            prev_xA = (
                 Newtonian_x_A + u[param_index_map["center_of_mass_offset"]]
             )
-            current_x_A = (
-                previous_x_A
-                + Delta_u[param_index_map["center_of_mass_offset"]]
+            delta_xA = Delta_u[param_index_map["center_of_mass_offset"]]
+            eps_xa = 1.0e-10
+            if prev_xA + delta_xA < eps_xa:
+                alpha_xa = (eps_xa - prev_xA) / delta_xA
+                if alpha_xa < alpha:
+                    alpha = alpha_xa
+                    limiting_constraints = ["CenterOfMass"]
+                elif alpha_xa == alpha:
+                    limiting_constraints.append("CenterOfMass")
+
+        # Constraint 3: effective spin < 1 (quadratic, per BH)
+        # ||eff_spin|| = 2 * S * M * ||omega|| where S = 1 + sqrt(1 - chi^2).
+        # With the mass scaled by the alpha already computed above, solve for
+        # the largest alpha_rot on the rotation such that the product stays
+        # below 1 - eps_spin. This is a quadratic in alpha_rot.
+        eps_spin = 1.0e-4
+        for mass_key, spin_key in zip(
+            ["MassA", "MassB"],
+            ["DimensionlessSpinA", "DimensionlessSpinB"],
+        ):
+            if mass_key not in control_params or spin_key not in control_params:
+                continue
+            proposed_mass = (
+                u[param_index_map[mass_key]]
+                + alpha * Delta_u[param_index_map[mass_key]]
             )
-            epsilon = 1.0e-10
-            if current_x_A < epsilon:
-                Delta_u[param_index_map["center_of_mass_offset"]] = (
-                    epsilon - previous_x_A
-                )
-                new_x_A = (
-                    previous_x_A
-                    + Delta_u[param_index_map["center_of_mass_offset"]]
-                )
+            conformal_spin = target_params[spin_key]
+            spin_term = 1.0 + np.sqrt(
+                1.0 - np.dot(conformal_spin, conformal_spin)
+            )
+            omega_old = u[
+                param_index_map[spin_key] : param_index_map[spin_key] + 3
+            ]
+            d_omega = Delta_u[
+                param_index_map[spin_key] : param_index_map[spin_key] + 3
+            ]
+            limit = (1.0 - eps_spin) / (2.0 * spin_term * proposed_mass)
+            eff_spin_proposed = np.linalg.norm(omega_old + d_omega)
+            if eff_spin_proposed <= limit:
+                continue
+            # Solve a*x^2 + b*x + c = 0 for the critical rotation scale
+            a = np.dot(d_omega, d_omega)
+            b = 2.0 * np.dot(omega_old, d_omega)
+            c = np.dot(omega_old, omega_old) - limit**2
+            discriminant = b**2 - 4.0 * a * c
+            if discriminant < 0:
                 logger.warning(
-                    "New x position of large black hole was negative"
-                    f" ({current_x_A}). Update was changed so that the new"
-                    f" position is {new_x_A}."
+                    f"Effective spin for {spin_key} exceeds 1 and no valid"
+                    " rotation update exists. Setting rotation step to zero."
                 )
+                alpha_spin = 0.0
+            else:
+                # Numerically stable root selection (avoid cancellation)
+                if b < 0:
+                    alpha_spin = (-b + np.sqrt(discriminant)) / (2.0 * a)
+                else:
+                    alpha_spin = (2.0 * c) / (-b - np.sqrt(discriminant))
+            alpha_spin = max(0.0, min(alpha_spin, 1.0))
+            if alpha_spin < alpha:
+                alpha = alpha_spin
+                limiting_constraints = [spin_key]
+            elif alpha_spin == alpha:
+                limiting_constraints.append(spin_key)
+
+        if alpha < 1.0:
+            eff_spin_after = {
+                sk: (
+                    2.0
+                    * (
+                        1.0
+                        + np.sqrt(
+                            1.0 - np.dot(target_params[sk], target_params[sk])
+                        )
+                    )
+                    * (
+                        u[param_index_map[mk]]
+                        + alpha * Delta_u[param_index_map[mk]]
+                    )
+                    * np.linalg.norm(
+                        u[param_index_map[sk] : param_index_map[sk] + 3]
+                        + alpha
+                        * Delta_u[param_index_map[sk] : param_index_map[sk] + 3]
+                    )
+                )
+                for mk, sk in zip(
+                    ["MassA", "MassB"],
+                    ["DimensionlessSpinA", "DimensionlessSpinB"],
+                )
+                if mk in control_params and sk in control_params
+            }
+            logger.warning(
+                f"Backtracking alpha = {alpha:.6f} (limited by"
+                f" {limiting_constraints}). Preserving Broyden direction."
+                + (
+                    f" Effective spins after scaling: {eff_spin_after}."
+                    if eff_spin_after
+                    else ""
+                )
+            )
+            Delta_u = alpha * Delta_u
 
         u += Delta_u
 
