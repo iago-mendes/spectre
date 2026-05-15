@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_RESIDUAL_TOLERANCE = 1.0e-4
 DEFAULT_MAX_ITERATIONS = 30
 DEFAULT_CONTROL_DELAY = 2
+DEFAULT_CONVERGENCE_TEST_TOLERANCE = 1.0e-5
+P_MAX_CONVERGENCE = 10
 
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
@@ -50,6 +52,352 @@ ScalarQuantities = [
 ]
 
 
+def _measured_params(
+    run_dir: Union[str, Path],
+    control_params: List[TargetParams],
+) -> np.ndarray:
+    """Measured physical parameters from a completed ID run as a flat array.
+
+    Reads Horizons.h5 and BbhReductions.h5 from run_dir and returns the
+    measured values assembled in a flat array ordered by control_params,
+    consistent with the u / residual vector ordering used in control_id.
+    """
+    # Initialize dictionary to hold the measured physical parameters
+    measured_params: Dict[TargetParams, Union[float, Sequence[float]]] = {}
+
+    # Get black hole physical parameters
+    with spectre_h5.H5File(f"{run_dir}/Horizons.h5", "r") as horizons_file:
+        AhA_quantities = to_dataframe(horizons_file.get_dat("AhA.dat")).iloc[-1]
+
+        if "MassA" in control_params:
+            measured_params["MassA"] = AhA_quantities["ChristodoulouMass"]
+        if "DimensionlessSpinA" in control_params:
+            measured_params["DimensionlessSpinA"] = np.array(
+                [
+                    AhA_quantities["DimensionlessSpinVector_x"],
+                    AhA_quantities["DimensionlessSpinVector_y"],
+                    AhA_quantities["DimensionlessSpinVector_z"],
+                ]
+            )
+
+        horizons_file.close_current_object()
+        AhB_quantities = to_dataframe(horizons_file.get_dat("AhB.dat")).iloc[-1]
+
+        if "MassB" in control_params:
+            measured_params["MassB"] = AhB_quantities["ChristodoulouMass"]
+        if "DimensionlessSpinB" in control_params:
+            measured_params["DimensionlessSpinB"] = np.array(
+                [
+                    AhB_quantities["DimensionlessSpinVector_x"],
+                    AhB_quantities["DimensionlessSpinVector_y"],
+                    AhB_quantities["DimensionlessSpinVector_z"],
+                ]
+            )
+
+    # Get ADM integrals
+    with spectre_h5.H5File(
+        f"{run_dir}/BbhReductions.h5", "r"
+    ) as reductions_file:
+        adm_integrals = to_dataframe(
+            reductions_file.get_dat("AdmIntegrals.dat")
+        ).iloc[-1]
+
+        if "CenterOfMass" in control_params:
+            measured_params["CenterOfMass"] = np.array(
+                [
+                    adm_integrals["CenterOfMass_x"],
+                    adm_integrals["CenterOfMass_y"],
+                    adm_integrals["CenterOfMass_z"],
+                ]
+            )
+        if "AdmLinearMomentum" in control_params:
+            measured_params["AdmLinearMomentum"] = np.array(
+                [
+                    adm_integrals["AdmLinearMomentum_x"],
+                    adm_integrals["AdmLinearMomentum_y"],
+                    adm_integrals["AdmLinearMomentum_z"],
+                ]
+            )
+        if "AdmMass" in control_params:
+            measured_params["AdmMass"] = adm_integrals["AdmMass"]
+        if "AdmAngularMomentumZ" in control_params:
+            measured_params["AdmAngularMomentumZ"] = adm_integrals[
+                "AdmAngularMomentum_z"
+            ]
+
+    # Assemble flat array in control_params order
+    result = np.array([])
+    for key in control_params:
+        if key in ScalarQuantities:
+            result = np.append(result, [measured_params[key]])
+        else:
+            result = np.append(result, measured_params[key])
+    return result
+
+
+def _solve_at_polynomial_order(
+    conv_dir: Path,
+    polynomial_order: int,
+    target_params: Dict,
+    free_data: Dict,
+    separation: float,
+    refinement_level: int,
+    negative_expansion_bc: bool,
+    control_params: List[TargetParams],
+) -> Optional[np.ndarray]:
+    """Run ID at the given polynomial order inside conv_dir/P{order:02d}.
+
+    Returns the measured physical parameters as a flat array (in the order of
+    control_params), or None if the solve or post-processing failed.
+    """
+    P_run_dir = conv_dir / f"P{polynomial_order:02d}"
+    P_run_dir.mkdir(exist_ok=True)
+    try:
+        generate_id(
+            target_params,
+            **free_data,
+            separation=separation,
+            run_dir=str(P_run_dir),
+            control=False,
+            evolve=False,
+            scheduler=None,
+            refinement_level=refinement_level,
+            polynomial_order=polynomial_order,
+            negative_expansion_bc=negative_expansion_bc,
+        )
+        return _measured_params(str(P_run_dir), control_params)
+    except Exception as e:
+        logger.warning(
+            f"Convergence test solve at P={polynomial_order} failed: {e}"
+        )
+        return None
+
+
+def _convergence_errors(
+    measured_params_by_order: Dict[int, np.ndarray],
+) -> Dict[int, float]:
+    """Convergence error at each polynomial order P, defined as
+
+        error(P) = max | measured_params(P) - measured_params(P_ref) |
+
+    where P_ref is the highest order in measured_params_by_order. The
+    reference order itself trivially has zero error.
+    """
+    P_ref = max(measured_params_by_order.keys())
+    ref_params = measured_params_by_order[P_ref]
+    return {
+        p: float(np.max(np.abs(params - ref_params)))
+        for p, params in measured_params_by_order.items()
+    }
+
+
+def _find_optimal_polynomial_order(
+    errors: Dict[int, float], tolerance: float
+) -> Optional[int]:
+    """Smallest P below the reference order with convergence error under
+    `tolerance`, or None if no such P exists (which also covers the case
+    of fewer than two measurements).
+    """
+    if len(errors) < 2:
+        return None
+    P_ref = max(errors.keys())
+    for p in sorted(errors.keys()):
+        if p < P_ref and errors[p] < tolerance:
+            return p
+    return None
+
+
+def _write_convergence_errors(conv_dir: Path, errors: Dict[int, float]) -> None:
+    """Append (PolynomialOrder, ConvergenceError) rows to
+    ConvergenceTest/ConvergenceError.h5."""
+    output_filename = str(conv_dir / "ConvergenceError.h5")
+    with spectre_h5.H5File(output_filename, "a") as output_file:
+        dat_file = output_file.try_insert_dat(
+            "ConvergenceError",
+            ["PolynomialOrder", "ConvergenceError"],
+            0,
+        )
+        for p in sorted(errors.keys()):
+            dat_file.append([float(p), errors[p]])
+
+
+def _convergence_test(
+    run_dir: Union[str, Path],
+    polynomial_order: int,
+    target_params: Dict,
+    free_data: Dict,
+    separation: float,
+    refinement_level: int,
+    negative_expansion_bc: bool,
+    control_params: List[TargetParams],
+    tolerance: float,
+    mode: Literal["initial", "final"],
+    max_polynomial_order: int = P_MAX_CONVERGENCE,
+) -> Optional[int]:
+    """Run a polynomial-order convergence test.
+
+    Convergence error at order P is defined as
+
+        error(P) = max | measured_params(P) - measured_params(P_ref) |
+
+    where P_ref is the highest order evaluated. The optimal P is the smallest
+    P < P_ref whose error is below `tolerance`. Errors at every evaluated P
+    are appended to ConvergenceTest/ConvergenceError.h5.
+
+    Modes:
+
+    - "initial": Pre-control test that selects the polynomial order to use
+      in the control loop. Reads baseline params from run_dir (assumed to
+      contain an iter-0 solve at `polynomial_order`), probes one P below,
+      and climbs upward one P at a time until an optimal P is found or
+      `max_polynomial_order` is reached. Returns the selected P.
+
+    - "final": Post-control test that validates the polynomial order used
+      by the control loop. Sweeps P from 4 to max(8, polynomial_order+2),
+      reusing the supplied free data. Logs whether `polynomial_order` was
+      optimal; results are informational only. Returns the optimal P if
+      found, else None.
+    """
+    conv_dir = Path(run_dir) / "ConvergenceTest"
+    conv_dir.mkdir(exist_ok=True)
+    P_baseline_dir = conv_dir / f"P{polynomial_order:02d}"
+    if not P_baseline_dir.exists():
+        P_baseline_dir.symlink_to("..")
+
+    label = "Iter-0" if mode == "initial" else "Post-control"
+
+    # Mode-specific setup: log a header and choose the initial set of
+    # additional P values to evaluate (beyond `polynomial_order` itself).
+    if mode == "initial":
+        logger.info(
+            f"{label} convergence test: baseline P={polynomial_order},"
+            f" P_max={max_polynomial_order}, tolerance={tolerance:.2e}"
+        )
+        if polynomial_order > max_polynomial_order:
+            logger.warning(
+                f"{label} convergence test:"
+                f" polynomial_order={polynomial_order}"
+                f" exceeds max_polynomial_order={max_polynomial_order}."
+                f" Skipping test, returning P={polynomial_order}."
+            )
+            return polynomial_order
+        initial_P_values = (
+            [polynomial_order - 1] if polynomial_order >= 2 else []
+        )
+    else:
+        P_min, P_max_sweep = 4, max(8, polynomial_order + 2)
+        logger.info(
+            f"{label} convergence test: P_control={polynomial_order},"
+            f" sweep P={P_min}..{P_max_sweep}, tolerance={tolerance:.2e}"
+        )
+        initial_P_values = [
+            p for p in range(P_min, P_max_sweep + 1) if p != polynomial_order
+        ]
+
+    # Read baseline measured params at `polynomial_order` from the existing
+    # solve in run_dir.
+    try:
+        measured_params_by_order = {
+            polynomial_order: _measured_params(run_dir, control_params)
+        }
+    except Exception as e:
+        logger.warning(
+            f"{label} convergence test: could not read baseline params at"
+            f" P={polynomial_order}: {e}."
+        )
+        return polynomial_order if mode == "initial" else None
+
+    # Evaluate the initial batch of additional P values.
+    for p in initial_P_values:
+        params = _solve_at_polynomial_order(
+            conv_dir,
+            p,
+            target_params,
+            free_data,
+            separation,
+            refinement_level,
+            negative_expansion_bc,
+            control_params,
+        )
+        if params is not None:
+            measured_params_by_order[p] = params
+
+    # In "initial" mode, climb upward one P at a time until either an
+    # optimal P emerges or we hit `max_polynomial_order`. We check the
+    # convergence state at the top of each iteration so that the very last
+    # measurement (when P_high reaches max) is also considered.
+    if mode == "initial":
+        P_high = polynomial_order
+        while True:
+            errors = _convergence_errors(measured_params_by_order)
+            P_optimal = _find_optimal_polynomial_order(errors, tolerance)
+            if P_optimal is not None or P_high >= max_polynomial_order:
+                break
+            P_high += 1
+            params = _solve_at_polynomial_order(
+                conv_dir,
+                P_high,
+                target_params,
+                free_data,
+                separation,
+                refinement_level,
+                negative_expansion_bc,
+                control_params,
+            )
+            if params is not None:
+                measured_params_by_order[P_high] = params
+    else:
+        errors = _convergence_errors(measured_params_by_order)
+        P_optimal = _find_optimal_polynomial_order(errors, tolerance)
+
+    # Persist convergence errors for inspection (only meaningful with at
+    # least two measurements; otherwise the only "error" is the trivial
+    # zero against the singleton reference).
+    if len(measured_params_by_order) >= 2:
+        _write_convergence_errors(conv_dir, errors)
+
+    measured_orders = sorted(measured_params_by_order.keys())
+
+    if mode == "initial":
+        if P_optimal is not None:
+            logger.info(
+                f"{label} convergence test: selected P={P_optimal}"
+                f" (measurements at {measured_orders},"
+                f" error={errors[P_optimal]:.2e})."
+            )
+            return P_optimal
+        logger.warning(
+            f"{label} convergence test: reached P_max={max_polynomial_order}"
+            f" without finding P meeting tolerance={tolerance:.2e}."
+            f" Using P_max={max_polynomial_order}."
+        )
+        return max_polynomial_order
+
+    # mode == "final"
+    if len(measured_params_by_order) < 2:
+        logger.warning(
+            f"{label} convergence test: not enough solves succeeded."
+        )
+        return None
+    if P_optimal is None:
+        logger.warning(
+            f"{label} convergence test: no P in {measured_orders}"
+            f" meets tolerance={tolerance:.2e}."
+        )
+    elif P_optimal == polynomial_order:
+        logger.info(
+            f"{label} convergence test: P={polynomial_order}"
+            f" confirmed optimal (error={errors[P_optimal]:.2e})."
+        )
+    else:
+        logger.warning(
+            f"{label} convergence test: control ran at"
+            f" P={polynomial_order}, optimal would have been P={P_optimal}"
+            f" (error={errors[P_optimal]:.2e})."
+        )
+    return P_optimal
+
+
 def control_id(
     id_input_file_path: Union[str, Path],
     control_params: List[TargetParams],
@@ -60,6 +408,8 @@ def control_id(
     refinement_level: int = 1,
     polynomial_order: int = 6,
     negative_expansion_bc: bool = True,
+    run_convergence_tests: bool = False,
+    convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
 ):
     """Control BBH physical parameters.
 
@@ -120,6 +470,12 @@ def control_id(
       refinement_level: h-refinement used in control loop.
       polynomial_order: p-refinement used in control loop.
       negative_expansion_bc: Place the excisions inside of apparent horizons.
+      run_convergence_tests: Run resolution convergence tests. An iter-0 test
+        selects the polynomial order for the control loop, and a post-control
+        test checks that the selected resolution was appropriate. (Default:
+        False)
+      convergence_test_tolerance: Tolerance for convergence tests. (Default:
+        1e-5)
     """
 
     assert (
@@ -232,76 +588,8 @@ def control_id(
                 negative_expansion_bc=negative_expansion_bc,
             )
 
-        # Initialize dictionary to hold the measured physical parameters
-        measured_params: Dict[TargetParams, Union[float, Sequence[float]]] = {}
-
-        # Get black hole physical parameters
-        with spectre_h5.H5File(
-            f"{control_run_dir}/Horizons.h5", "r"
-        ) as horizons_file:
-            AhA_quantities = to_dataframe(
-                horizons_file.get_dat("AhA.dat")
-            ).iloc[-1]
-
-            if "MassA" in control_params:
-                measured_params["MassA"] = AhA_quantities["ChristodoulouMass"]
-            if "DimensionlessSpinA" in control_params:
-                measured_params["DimensionlessSpinA"] = np.array(
-                    [
-                        AhA_quantities["DimensionlessSpinVector_x"],
-                        AhA_quantities["DimensionlessSpinVector_y"],
-                        AhA_quantities["DimensionlessSpinVector_z"],
-                    ]
-                )
-
-            horizons_file.close_current_object()
-            AhB_quantities = to_dataframe(
-                horizons_file.get_dat("AhB.dat")
-            ).iloc[-1]
-
-            if "MassB" in control_params:
-                measured_params["MassB"] = AhB_quantities["ChristodoulouMass"]
-            if "DimensionlessSpinB" in control_params:
-                measured_params["DimensionlessSpinB"] = np.array(
-                    [
-                        AhB_quantities["DimensionlessSpinVector_x"],
-                        AhB_quantities["DimensionlessSpinVector_y"],
-                        AhB_quantities["DimensionlessSpinVector_z"],
-                    ]
-                )
-
-        # Get ADM integrals
-        with spectre_h5.H5File(
-            f"{control_run_dir}/BbhReductions.h5", "r"
-        ) as reductions_file:
-            adm_integrals = to_dataframe(
-                reductions_file.get_dat("AdmIntegrals.dat")
-            ).iloc[-1]
-
-            if "CenterOfMass" in control_params:
-                measured_params["CenterOfMass"] = np.array(
-                    [
-                        adm_integrals["CenterOfMass_x"],
-                        adm_integrals["CenterOfMass_y"],
-                        adm_integrals["CenterOfMass_z"],
-                    ]
-                )
-            if "AdmLinearMomentum" in control_params:
-                measured_params["AdmLinearMomentum"] = np.array(
-                    [
-                        adm_integrals["AdmLinearMomentum_x"],
-                        adm_integrals["AdmLinearMomentum_y"],
-                        adm_integrals["AdmLinearMomentum_z"],
-                    ]
-                )
-            if "AdmMass" in control_params:
-                measured_params["AdmMass"] = adm_integrals["AdmMass"]
-            if "AdmAngularMomentumZ" in control_params:
-                measured_params["AdmAngularMomentumZ"] = adm_integrals[
-                    "AdmAngularMomentum_z"
-                ]
-
-        # Compute residual of physical parameters
+        # Get measured physical parameters and compute residual
+        measured_params = _measured_params(control_run_dir, control_params)
         residual = np.array([])
         for key in control_params:
             target = target_params[key]
@@ -310,9 +598,14 @@ def control_id(
                 " is provided."
             )
             if key in ScalarQuantities:
-                residual = np.append(residual, [measured_params[key] - target])
+                residual = np.append(
+                    residual, [measured_params[len(residual)] - target]
+                )
             else:
-                residual = np.append(residual, measured_params[key] - target)
+                n = len(residual)
+                residual = np.append(
+                    residual, measured_params[n : n + 3] - target
+                )
         logger.info(f"Control Residual = {np.max(np.abs(residual)):e}")
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
@@ -332,6 +625,23 @@ def control_id(
 
     # Initial residual
     F = Residual(u)
+    best_residual = np.max(np.abs(F))
+    best_iteration = 0
+
+    # Select polynomial order via iter-0 convergence test
+    if run_convergence_tests:
+        polynomial_order = _convergence_test(
+            run_dir=control_run_dir,
+            polynomial_order=polynomial_order,
+            target_params=target_params,
+            free_data=initial_free_data.copy(),
+            separation=separation,
+            refinement_level=refinement_level,
+            negative_expansion_bc=negative_expansion_bc,
+            control_params=control_params,
+            tolerance=convergence_test_tolerance,
+            mode="initial",
+        )
 
     # Initialize Jacobian as an identity matrix
     J = np.identity(len(u))
@@ -617,7 +927,11 @@ def control_id(
 
         # Compute residual and check stopping condition
         F = Residual(u)
-        if np.max(np.abs(F)) < residual_tolerance:
+        current_residual = np.max(np.abs(F))
+        if current_residual < best_residual:
+            best_residual = current_residual
+            best_iteration = iteration
+        if current_residual < residual_tolerance:
             break
 
         # Update the Jacobian using Broyden's method
@@ -627,5 +941,34 @@ def control_id(
                 "Jacobian", jacobian_legend, 0
             )
             dat_file.append(J.flatten())
+
+    converged = np.max(np.abs(F)) < residual_tolerance
+    if not converged:
+        logger.error(
+            f"Control loop failed to converge after {max_iterations}"
+            f" iterations. Best residual: {best_residual:.2e} at"
+            f" iteration {best_iteration}."
+        )
+    if run_convergence_tests:
+        # Reconstruct free data from final u for the post-control test
+        final_free_data = initial_free_data.copy()
+        u_iterator = iter(u)
+        for key in [FreeDataFromParams[param] for param in control_params]:
+            if key in ScalarQuantities:
+                final_free_data[key] = next(u_iterator)
+            else:
+                final_free_data[key] = [next(u_iterator) for _ in range(3)]
+        _convergence_test(
+            run_dir=control_run_dir,
+            polynomial_order=polynomial_order,
+            target_params=target_params,
+            free_data=final_free_data,
+            separation=separation,
+            refinement_level=refinement_level,
+            negative_expansion_bc=negative_expansion_bc,
+            control_params=control_params,
+            tolerance=convergence_test_tolerance,
+            mode="final",
+        )
 
     return control_run_dir

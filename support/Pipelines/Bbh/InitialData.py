@@ -207,6 +207,7 @@ def generate_id(
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
+    run_convergence_tests: bool = False,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
     segments_dir: Optional[Union[str, Path]] = None,
@@ -257,6 +258,10 @@ def generate_id(
         be inside of the apparent horizons. This helps to find horizons and
         start an evolution from the initial data without extrapolation.
         (default: True)
+      run_convergence_tests: If set to True, run resolution convergence tests
+        during the control loop. An iter-0 test selects the polynomial order,
+        and a post-control test checks that the selection was appropriate.
+        (default: False)
       pipeline_dir: Directory where steps in the pipeline are created. Required
         when 'evolve' is set to True. The initial data will be created in a
         subdirectory '001_InitialData'.
@@ -403,6 +408,7 @@ def generate_id(
         evolve=evolve,
         eccentricity_control=eccentricity_control,
         negative_expansion_bc=negative_expansion_bc,
+        run_convergence_tests=run_convergence_tests,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
         segments_dir=segments_dir,
@@ -573,6 +579,15 @@ def generate_id(
         "boundaries are inside of the apparent horizons. This helps to find"
         "horizons and start an evolution from the initial data without"
         "extrapolation."
+    ),
+)
+@click.option(
+    "--run-convergence-tests",
+    is_flag=True,
+    help=(
+        "Run resolution convergence tests during the control loop. An iter-0"
+        " test selects the polynomial order, and a post-control test checks"
+        " whether the selection was appropriate."
     ),
 )
 @click.option(

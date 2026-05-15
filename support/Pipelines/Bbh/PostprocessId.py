@@ -12,6 +12,7 @@ import yaml
 from spectre.IO.H5 import open_volfiles, select_observation
 from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_CONTROL_DELAY,
+    DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RESIDUAL_TOLERANCE,
     TargetParams,
@@ -45,6 +46,8 @@ def postprocess_id(
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
     pipeline_dir: Optional[Union[str, Path]] = None,
+    run_convergence_tests: bool = False,
+    convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -90,6 +93,12 @@ def postprocess_id(
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory where steps in the pipeline are created.
         Required if 'evolve' is set to True.
+      run_convergence_tests: Run resolution convergence tests. An iter-0
+        test selects the polynomial order for the control loop, and a
+        post-control test checks the resolution was appropriate.
+        (Default: False)
+      convergence_test_tolerance: Tolerance for convergence tests.
+        (Default: 1e-5)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -168,6 +177,8 @@ def postprocess_id(
             refinement_level=control_refinement_level,
             polynomial_order=control_polynomial_order,
             negative_expansion_bc=negative_expansion_bc,
+            run_convergence_tests=run_convergence_tests,
+            convergence_test_tolerance=convergence_test_tolerance,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
@@ -254,6 +265,15 @@ def postprocess_id(
         "boundaries are inside of the apparent horizons. This helps to find "
         "horizons and start an evolution from the initial data without "
         "extrapolation."
+    ),
+)
+@click.option(
+    "--run-convergence-tests",
+    is_flag=True,
+    help=(
+        "Run resolution convergence tests. An iter-0 test selects the"
+        " polynomial order for the control loop, and a post-control test"
+        " checks whether the selected resolution was appropriate."
     ),
 )
 @scheduler_options
