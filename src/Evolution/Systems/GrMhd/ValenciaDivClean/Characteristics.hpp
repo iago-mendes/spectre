@@ -207,6 +207,125 @@ tnsr::i<DataVector, 3> characteristic_speeds_hydro(
 /// @}
 
 /// @{
+/*!
+ * \brief Labels for the characteristic speeds of the relativistic
+ * magnetohydrodynamics system.
+ *
+ * We order the speeds as follows:
+ * \begin{equation}
+ *   \lambda_\text{scalar}^-
+ *   \leq \lambda_\text{fastB}^-
+ *   \leq \lambda_\text{Alfven}^-
+ *   \leq \lambda_\text{slowB}^-
+ *   \leq \lambda_\text{entropy}
+ *   \leq \lambda_\text{slowB}^+
+ *   \leq \lambda_\text{Alfven}^+
+ *   \leq \lambda_\text{fastB}^+
+ *   \leq \lambda_\text{scalar}^+
+ * \end{equation}
+ *
+ * \see `grmhd::ValenciaDivClean::characteristic_speeds_mhd`
+ */
+enum MhdSpeed : uint32_t {
+  ScalarMinus = 0,
+  FastMagnetosonicMinus = 1,
+  AlfvenMinus = 2,
+  SlowMagnetosonicMinus = 3,
+  Entropy = 4,
+  SlowMagnetosonicPlus = 5,
+  AlfvenPlus = 6,
+  FastMagnetosonicPlus = 7,
+  ScalarPlus = 8
+};
+/// @}
+
+/*!
+ * \brief Choice of algorithm for the slow magnetosonic speeds.
+ */
+enum class SlowMagnetosonicSpeedMethod {
+  Toms748,
+  ReducedQuadratic,
+  ReducedQuadraticThenNewton
+};
+
+/// @{
+/*!
+ * \brief Coefficients of the quartic polynomial whose roots give the
+ * magnetosonic characteristic speeds.
+ *
+ * These coefficients are calculated by expanding Eq. (2.30) in
+ * arXiv:2511.13837v1 in the Eulerian frame and diving by the coefficient of the
+ * quartic term.
+ *
+ * We order the coefficients as follows:
+ * \begin{equation}
+ *   x^4 + c_3 x^3 + c_2 x^2 + c_1 x + c_0 = 0,
+ * \end{equation}
+ * where $c_i$ is given by `quartic_coefficients.get(i)`.
+ *
+ * \see `grmhd::ValenciaDivClean::characteristic_speeds_mhd`
+ */
+void magnetosonic_quartic_coefficients(
+    gsl::not_null<tnsr::i<DataVector, 4>*> quartic_coefficients,
+    const Scalar<DataVector>& sound_speed_squared,
+    const Scalar<DataVector>& normal_velocity,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& normal_magnetic_field,
+    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataVector>& magnetic_field_squared,
+    const Scalar<DataVector>& comoving_magnetic_field_squared);
+/// @}
+
+/// @{
+/*!
+ * \brief Find a magnetosonic speed by Newton-Raphson rootfinding.
+ *
+ * \note `magnetosonic_speed` should be initialized to a initial guess close to
+ * the desired root. For example, +1.0 for the fast magnetosonic speed in the
+ * positive direction and -1.0 for the fast magnetosonic speed in the negative
+ * direction.
+ *
+ * \see `grmhd::ValenciaDivClean::magnetosonic_quartic_coefficients` for how to
+ * specify the quartic coefficients.
+ */
+void find_magnetosonic_speed_from_quartic(
+    gsl::not_null<DataVector*> magnetosonic_speed,
+    const tnsr::i<DataVector, 4>& quartic_coefficients);
+/// @}
+
+/// @{
+/*!
+ * \brief Compute the characteristic speeds for the relativistic
+ * magnetohydrodynamics system in the Eulerian frame.
+ *
+ * TO-DO
+ *
+ * \see `grmhd::ValenciaDivClean::numerical_characteristics` for how these
+ * speeds are paired with characteristic modes and characteristic projectors.
+ */
+template <size_t ThermodynamicDim>
+void characteristic_speeds_mhd(
+    gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,
+
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state,
+    SlowMagnetosonicSpeedMethod slow_speed_method =
+        SlowMagnetosonicSpeedMethod::ReducedQuadratic);
+/// @}
+
+/// @{
+
 /**
  * \brief Compute the characteristic matrix for relativistic hydrodynamics +
  * composition ($Y_e$), in a given direction.

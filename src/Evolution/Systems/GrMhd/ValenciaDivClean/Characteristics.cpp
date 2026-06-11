@@ -5,21 +5,27 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <exception>
 #include <gsl/gsl_complex.h>
 #include <gsl/gsl_complex_math.h>
 #include <gsl/gsl_eigen.h>
 #include <gsl/gsl_math.h>
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_vector.h>
+#include <stdexcept>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Matrix.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
+#include "DataStructures/Tensor/EagerMath/OrthonormalOneform.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
+#include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ConstantExpressions.hpp"
@@ -359,6 +365,422 @@ tnsr::i<DataVector, 3> characteristic_speeds_hydro(
                               unit_normal, equation_of_state);
   return characteristic_speeds;
 }
+
+void magnetosonic_quartic_coefficients(
+    gsl::not_null<tnsr::i<DataVector, 4>*> quartic_coefficients,
+    const Scalar<DataVector>& sound_speed_squared,
+    const Scalar<DataVector>& normal_velocity,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& normal_magnetic_field,
+    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataVector>& magnetic_field_squared,
+    const Scalar<DataVector>& comoving_magnetic_field_squared) {
+  // The expressions in this function have been optimized by Codex. See
+  // unoptimized::magnetosonic_quartic_coefficients in Test_Characteristics.cpp
+  // for the original expressions, which were directly compared against the
+  // results from a Mathematica notebook.
+
+  const DataVector& cs2 = get(sound_speed_squared);
+  const DataVector& b2scaled = get(comoving_magnetic_field_squared);
+  const DataVector& Bvscaled = get(magnetic_field_dot_spatial_velocity);
+  const DataVector& Bsscaled = get(normal_magnetic_field);
+  const DataVector& vn = get(normal_velocity);
+  const DataVector& W = get(lorentz_factor);
+  (void)magnetic_field_squared;
+
+  Variables<tmpl::list<::Tags::TempScalar<0>>> temp_tensors{cs2.size()};
+  DataVector& inv_denom = get(get<::Tags::TempScalar<0>>(temp_tensors));
+  inv_denom = 1.0 / (square(W) * (b2scaled + square(W) * (1.0 - cs2) +
+                                  cs2 * (1.0 - square(Bvscaled))));
+
+  get<1>(*quartic_coefficients) =
+      -(2.0 * Bsscaled * Bvscaled * cs2 +
+        2.0 * vn * square(W) *
+            (-b2scaled + (-1.0 + square(Bvscaled)) * cs2 -
+             2.0 * (-1.0 + cs2) * square(vn) * square(W))) *
+      inv_denom;
+  get<3>(*quartic_coefficients) =
+      -(-2.0 * Bsscaled * Bvscaled * cs2 +
+        2.0 * vn * square(W) *
+            (b2scaled + 2.0 * square(W) * (1.0 - cs2) +
+             cs2 * (1.0 - square(Bvscaled)))) *
+      inv_denom;
+
+  inv_denom /= square(W);
+  get<0>(*quartic_coefficients) =
+      -(-square(Bsscaled) * cs2 -
+        2.0 * Bsscaled * Bvscaled * cs2 * vn * square(W) +
+        square(vn) * square(square(W)) *
+            (b2scaled - (-1.0 + square(Bvscaled)) * cs2 +
+             (-1.0 + cs2) * square(vn) * square(W))) *
+      inv_denom;
+  get<2>(*quartic_coefficients) =
+      -(square(Bsscaled) * cs2 +
+        2.0 * Bsscaled * Bvscaled * cs2 * vn * square(W) -
+        (b2scaled - (-1.0 + square(Bvscaled)) * cs2) * (-1.0 + square(vn)) *
+            square(square(W)) +
+        6.0 * (-1.0 + cs2) * square(vn) * square(square(W)) * square(W)) *
+      inv_denom;
+}
+
+void find_magnetosonic_speed_from_quartic(
+    gsl::not_null<DataVector*> magnetosonic_speed,
+    const tnsr::i<DataVector, 4>& quartic_coefficients) {
+  // This function has been optimized by Codex to minimize memory allocation and
+  // speed it up. See unoptimized::find_magnetosonic_speed_from_quartic in
+  // Test_Characteristics.cpp for an easier-to-read implementation.
+
+  Variables<tmpl::list<::Tags::TempScalar<0>, ::Tags::TempScalar<1>>>
+      temp_tensors{magnetosonic_speed->size()};
+
+  constexpr size_t max_iters = 100;
+  constexpr double tolerance = 1.0e-14;
+
+  // We define the coefficients so that the quartic polynomial is
+  // F(x) = x^4 + c3 x^3 + c2 x^2 + c1 x + c0
+  DataVector& x = *magnetosonic_speed;
+  const DataVector& c0 = get<0>(quartic_coefficients);
+  const DataVector& c1 = get<1>(quartic_coefficients);
+  const DataVector& c2 = get<2>(quartic_coefficients);
+  const DataVector& c3 = get<3>(quartic_coefficients);
+
+  // Find the root using Newton-Rapshon
+  DataVector& F = get(get<::Tags::TempScalar<0>>(temp_tensors));
+  DataVector& dF = get(get<::Tags::TempScalar<1>>(temp_tensors));
+  for (size_t iter = 0; iter < max_iters; ++iter) {
+    // Horner form minimizes intermediate temporary vectors in the hot loop.
+    // F(x) = x^4 + c3 x^3 + c2 x^2 + c1 x + c0
+    F = (((x + c3) * x + c2) * x + c1) * x + c0;
+
+    if (max(abs(F)) < tolerance) {
+      return;
+    }
+
+    // F'(x) = 4 x^3 + 3 c3 x^2 + 2 c2 x + c1
+    dF = ((4.0 * x + 3.0 * c3) * x + 2.0 * c2) * x + c1;
+
+    // Avoid FPE from dividing by a small derivative
+    if (min(abs(dF)) < tolerance) {
+      // It's possible for some points to have converged and others not.
+      for (size_t point = 0; point < x.size(); ++point) {
+        if (abs(F[point]) < tolerance) {
+          // If a point has converged and has a small derivative, then just
+          // skip the Newton step.
+          F[point] = 0.0;
+          dF[point] = 1.0;
+        } else if (abs(F[point]) >= tolerance and abs(dF[point]) < tolerance) {
+          // If a point that hasn't converged has a small derivative, then the
+          // Newton step would be unreliable, so we error out.
+          CAPTURE_FOR_ERROR(x);
+          CAPTURE_FOR_ERROR(F);
+          CAPTURE_FOR_ERROR(dF);
+          ERROR(
+              "Failed to compute magnetosonic speed from quartic: derivative "
+              "is too small for a reliable Newton step. "
+              "x = "
+              << x[point] << ", F = " << F[point] << ", dF = " << dF[point]);
+          return;
+        }
+      }
+    }
+
+    // Newton step
+    x -= F / dF;
+  }
+
+  F = (((x + c3) * x + c2) * x + c1) * x + c0;
+  ERROR(
+      "Failed to compute magnetosonic speed from quartic: exceeded maximum "
+      "number of iterations. Max |F| = "
+      << max(abs(F)));
+}
+
+template <size_t ThermodynamicDim>
+void characteristic_speeds_mhd(
+    const gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,
+
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state,
+    const SlowMagnetosonicSpeedMethod slow_speed_method) {
+  const size_t num_points = get(lorentz_factor).size();
+  if (characteristic_speeds->get(0).size() != num_points) {
+    for (size_t i = 0; i < 9; ++i) {
+      characteristic_speeds->get(i) = DataVector(num_points, 0.0);
+    }
+  }
+
+  // Use Variables to reduce total number of allocations
+  Variables<tmpl::list<hydro::Tags::SoundSpeedSquared<DataVector>,
+                       hydro::Tags::MagneticFieldOneForm<DataVector, 3>,
+                       hydro::Tags::MagneticFieldSquared<DataVector>,
+                       hydro::Tags::ComovingMagneticFieldSquared<DataVector>,
+                       ::Tags::TempScalar<0>, ::Tags::TempScalar<1>,
+                       ::Tags::TempScalar<2>, ::Tags::TempScalar<3>,
+                       ::Tags::TempScalar<4>, ::Tags::Tempi<0, 4>>>
+      temp_tensors{num_points};
+
+  // Get sound speed from EoS
+  Scalar<DataVector>& sound_speed_squared =
+      get<hydro::Tags::SoundSpeedSquared<DataVector>>(temp_tensors);
+  if constexpr (ThermodynamicDim == 1) {
+    get(sound_speed_squared) =
+        get(equation_of_state.chi_from_density(rest_mass_density)) +
+        get(equation_of_state.kappa_times_p_over_rho_squared_from_density(
+            rest_mass_density));
+    get(sound_speed_squared) /= get(specific_enthalpy);
+  } else if constexpr (ThermodynamicDim == 2) {
+    get(sound_speed_squared) =
+        get(equation_of_state.chi_from_density_and_energy(
+            rest_mass_density, specific_internal_energy)) +
+        get(equation_of_state
+                .kappa_times_p_over_rho_squared_from_density_and_energy(
+                    rest_mass_density, specific_internal_energy));
+    get(sound_speed_squared) /= get(specific_enthalpy);
+  } else if constexpr (ThermodynamicDim == 3) {
+    ERROR(
+        "Characteristic speeds for MHD with a 3D equation of state are not "
+        "implemented yet.");
+  }
+
+  // Scalar speeds
+  get<MhdSpeed::ScalarPlus>(*characteristic_speeds) = +1.0;
+  get<MhdSpeed::ScalarMinus>(*characteristic_speeds) = -1.0;
+
+  // Entropy speed
+  /*
+    This is just the normal component of the fluid velocity. Since this quantity
+    will be used later on, we also define normal_velocity, which points to the
+    same DataVector as the entropy speed.
+  */
+  Scalar<DataVector>& normal_velocity =
+      get<::Tags::TempScalar<0>>(temp_tensors);
+  tenex::evaluate(make_not_null(&normal_velocity),
+                  spatial_velocity(ti::I) * unit_normal(ti::i));
+  get<MhdSpeed::Entropy>(*characteristic_speeds) = get(normal_velocity);
+
+  // Alfven speeds
+  // Intermediate magnetic variables
+  Scalar<DataVector>& normal_magnetic_field =
+      get<::Tags::TempScalar<1>>(temp_tensors);
+  tenex::evaluate(make_not_null(&normal_magnetic_field),
+                  magnetic_field(ti::I) * unit_normal(ti::i));
+  tnsr::i<DataVector, 3>& magnetic_field_one_form =
+      get<hydro::Tags::MagneticFieldOneForm<DataVector, 3>>(temp_tensors);
+  tenex::evaluate<ti::i>(make_not_null(&magnetic_field_one_form),
+                         spatial_metric(ti::i, ti::j) * magnetic_field(ti::J));
+  Scalar<DataVector>& magnetic_field_dot_spatial_velocity =
+      get<::Tags::TempScalar<2>>(temp_tensors);
+  tenex::evaluate(make_not_null(&magnetic_field_dot_spatial_velocity),
+                  magnetic_field_one_form(ti::i) * spatial_velocity(ti::I));
+  Scalar<DataVector>& magnetic_field_squared =
+      get<hydro::Tags::MagneticFieldSquared<DataVector>>(temp_tensors);
+  tenex::evaluate(make_not_null(&magnetic_field_squared),
+                  magnetic_field_one_form(ti::i) * magnetic_field(ti::I));
+  Scalar<DataVector>& comoving_magnetic_field_squared =
+      get<hydro::Tags::ComovingMagneticFieldSquared<DataVector>>(temp_tensors);
+  get(comoving_magnetic_field_squared) =
+      get(magnetic_field_squared) / square(get(lorentz_factor)) +
+      square(get(magnetic_field_dot_spatial_velocity));
+  Scalar<DataVector>& rho_h_star = get<::Tags::TempScalar<3>>(temp_tensors);
+  get(rho_h_star) = get(rest_mass_density) * get(specific_enthalpy) +
+                    get(comoving_magnetic_field_squared);
+  // Compute both speeds with both signs and then assign max/min to be alfven
+  // plus/minus to ensure correct ordering.
+  Scalar<DataVector>& alfven_1 = get<::Tags::TempScalar<4>>(temp_tensors);
+  DataVector& alfven_plus_speed =
+      get<MhdSpeed::AlfvenPlus>(*characteristic_speeds);
+  DataVector& alfven_minus_speed =
+      get<MhdSpeed::AlfvenMinus>(*characteristic_speeds);
+  get(alfven_1) =
+      get(normal_velocity) +
+      get(normal_magnetic_field) / square(get(lorentz_factor)) /
+          (get(magnetic_field_dot_spatial_velocity) + sqrt(get(rho_h_star)));
+  alfven_minus_speed =
+      get(normal_velocity) +
+      get(normal_magnetic_field) / square(get(lorentz_factor)) /
+          (get(magnetic_field_dot_spatial_velocity) - sqrt(get(rho_h_star)));
+  alfven_plus_speed = max(get(alfven_1), alfven_minus_speed);
+  alfven_minus_speed = min(get(alfven_1), alfven_minus_speed);
+
+  // Polynomial coefficients for magnetosonic speeds
+  // Re-scale magnetic intermediate variables so that they are dimensionless
+  // Note: TempScalar<3> and TempScalar<4> are available to be used again here
+  Scalar<DataVector>& inv_rho_h = get<::Tags::TempScalar<3>>(temp_tensors);
+  Scalar<DataVector>& inv_sqrt_rho_h = get<::Tags::TempScalar<4>>(temp_tensors);
+  get(inv_rho_h) = 1.0 / (get(rest_mass_density) * get(specific_enthalpy));
+  get(inv_sqrt_rho_h) = sqrt(get(inv_rho_h));
+  get(normal_magnetic_field) *= get(inv_sqrt_rho_h);
+  get(magnetic_field_dot_spatial_velocity) *= get(inv_sqrt_rho_h);
+  get(magnetic_field_squared) *= get(inv_rho_h);
+  get(comoving_magnetic_field_squared) *= get(inv_rho_h);
+  tnsr::i<DataVector, 4>& quartic_coefficients =
+      get<::Tags::Tempi<0, 4>>(temp_tensors);
+  magnetosonic_quartic_coefficients(
+      make_not_null(&quartic_coefficients), sound_speed_squared,
+      normal_velocity, lorentz_factor, normal_magnetic_field,
+      magnetic_field_dot_spatial_velocity, magnetic_field_squared,
+      comoving_magnetic_field_squared);
+
+  // Fast magnetosonic speeds
+  /*
+    Find fast magnetosonic speeds via rootfinding of a quartic polynomial with
+    initial guess of +1 (for positive speed) or -1 (for negative speed).
+  */
+
+  get<MhdSpeed::FastMagnetosonicPlus>(*characteristic_speeds) = 1.0;
+  find_magnetosonic_speed_from_quartic(
+      make_not_null(
+          &get<MhdSpeed::FastMagnetosonicPlus>(*characteristic_speeds)),
+      quartic_coefficients);
+  get<MhdSpeed::FastMagnetosonicMinus>(*characteristic_speeds) = -1.0;
+  find_magnetosonic_speed_from_quartic(
+      make_not_null(
+          &get<MhdSpeed::FastMagnetosonicMinus>(*characteristic_speeds)),
+      quartic_coefficients);
+
+  // Slow magnetosonic speeds
+  constexpr double tolerance = 1.0e-14;
+  constexpr double eps = 1.0e-12;
+  constexpr double discriminant_tolerance = 1.0e-3;
+  DataVector& slow_minus =
+      get<MhdSpeed::SlowMagnetosonicMinus>(*characteristic_speeds);
+  DataVector& slow_plus =
+      get<MhdSpeed::SlowMagnetosonicPlus>(*characteristic_speeds);
+  const DataVector& vn = get(normal_velocity);
+  const DataVector& alfven_minus =
+      get<MhdSpeed::AlfvenMinus>(*characteristic_speeds);
+  const DataVector& alfven_plus =
+      get<MhdSpeed::AlfvenPlus>(*characteristic_speeds);
+  const DataVector& fast_minus =
+      get<MhdSpeed::FastMagnetosonicMinus>(*characteristic_speeds);
+  const DataVector& fast_plus =
+      get<MhdSpeed::FastMagnetosonicPlus>(*characteristic_speeds);
+  const DataVector& c0 = get<0>(quartic_coefficients);
+  const DataVector& c1 = get<1>(quartic_coefficients);
+  const DataVector& c2 = get<2>(quartic_coefficients);
+  const DataVector& c3 = get<3>(quartic_coefficients);
+
+  const auto evaluate_quartic = [&c0, &c1, &c2, &c3](const double y,
+                                                     const size_t point) {
+    return (((y + c3[point]) * y + c2[point]) * y + c1[point]) * y + c0[point];
+  };
+
+  for (size_t point = 0; point < num_points; ++point) {
+    const double vn_i = vn[point];
+    const double alfven_minus_i = alfven_minus[point];
+    const double alfven_minus_eps_i = alfven_minus_i + eps;
+    const double alfven_plus_i = alfven_plus[point];
+    const double alfven_plus_eps_i = alfven_plus_i + eps;
+
+    const double N_vn = evaluate_quartic(vn_i, point);
+    const double N_alfven_minus = evaluate_quartic(alfven_minus_i, point);
+    const double N_alfven_minus_eps =
+        evaluate_quartic(alfven_minus_eps_i, point);
+    const double N_alfven_plus = evaluate_quartic(alfven_plus_i, point);
+    const double N_alfven_plus_eps = evaluate_quartic(alfven_plus_eps_i, point);
+    // Check if we have one of the possible degeneracies and use it to avoid
+    // rootfinding / reduced-quadratic solve for the slow roots
+    if (std::abs(N_vn) < tolerance) {
+      // Type I: alfven- = slow- = entropy = slow+ = alfven+
+      slow_minus[point] = vn_i;
+      slow_plus[point] = vn_i;
+    } else if (std::abs(N_alfven_minus) < tolerance and
+               N_alfven_minus_eps > 0.0) {
+      // Type II on the minus side: alfven- = slow-
+      slow_minus[point] = alfven_minus_i;
+      slow_plus[point] =
+          -c3[point] - slow_minus[point] - fast_minus[point] - fast_plus[point];
+    } else if (std::abs(N_alfven_plus) < tolerance and
+               N_alfven_plus_eps < 0.0) {
+      // Type II on the plus side: slow+ = alfven+
+      slow_plus[point] = alfven_plus_i;
+      slow_minus[point] =
+          -c3[point] - fast_minus[point] - fast_plus[point] - slow_plus[point];
+    } else {
+      if (slow_speed_method == SlowMagnetosonicSpeedMethod::ReducedQuadratic or
+          slow_speed_method ==
+              SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton) {
+        const double b_i = c3[point] + fast_minus[point] + fast_plus[point];
+        const double c_i = c2[point] +
+                           b_i * (fast_minus[point] + fast_plus[point]) -
+                           fast_minus[point] * fast_plus[point];
+        double discriminant_i = square(b_i) - 4.0 * c_i;
+        ASSERT(discriminant_i >= -discriminant_tolerance,
+               "Failed to compute slow magnetosonic speeds: reduced quadratic "
+               "has negative discriminant below tolerance. discriminant = "
+                   << discriminant_i << ", tolerance = "
+                   << discriminant_tolerance << ", point = " << point);
+        // Clamp discriminant to zero if it's slightly negative due to
+        // numerical error.
+        discriminant_i = std::max(discriminant_i, 0.0);
+
+        // The cancellation-safe root of y^2 + b y + c = 0.
+        const double q_i =
+            -0.5 * (b_i + (b_i >= 0.0 ? 1.0 : -1.0) * sqrt(discriminant_i));
+
+        slow_plus[point] = q_i;
+        slow_minus[point] = -c3[point] - fast_minus[point] - fast_plus[point] -
+                            slow_plus[point];
+        if (slow_speed_method ==
+            SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton) {
+          // Refine slow roots with one-variable Newton solves initialized at
+          // reduced-quadratic estimates.
+          DataVector seed_minus{1, slow_minus[point]};
+          DataVector seed_plus{1, slow_plus[point]};
+          find_magnetosonic_speed_from_quartic(make_not_null(&seed_minus),
+                                               quartic_coefficients);
+          find_magnetosonic_speed_from_quartic(make_not_null(&seed_plus),
+                                               quartic_coefficients);
+          slow_minus[point] = seed_minus[0];
+          slow_plus[point] = seed_plus[0];
+        }
+        if (slow_minus[point] > slow_plus[point]) {
+          std::swap(slow_minus[point], slow_plus[point]);
+        }
+      } else {
+        CAPTURE_FOR_ERROR(alfven_minus_i);
+        CAPTURE_FOR_ERROR(alfven_minus_eps_i);
+        CAPTURE_FOR_ERROR(vn_i);
+        CAPTURE_FOR_ERROR(alfven_plus_i);
+        CAPTURE_FOR_ERROR(alfven_plus_eps_i);
+        CAPTURE_FOR_ERROR(N_alfven_minus);
+        CAPTURE_FOR_ERROR(N_alfven_minus_eps);
+        CAPTURE_FOR_ERROR(N_vn);
+        slow_minus[point] = RootFinder::toms748(
+            [&evaluate_quartic, point](const double y) {
+              return evaluate_quartic(y, point);
+            },
+            alfven_minus_eps_i, vn_i, N_alfven_minus_eps, N_vn,
+            0.05 * tolerance, 0.05 * tolerance, /* max_iterations */ 100);
+        slow_plus[point] = -c3[point] - slow_minus[point] - fast_minus[point] -
+                           fast_plus[point];
+      }
+    }
+
+    ASSERT(std::abs(evaluate_quartic(slow_minus[point], point)) <
+                   10.0 * tolerance and
+               std::abs(evaluate_quartic(slow_plus[point], point)) <
+                   10.0 * tolerance,
+           "Failed to find slow magnetosonic speeds: slow_minus = "
+               << slow_minus[point] << ", slow_plus = " << slow_plus[point]
+               << ", quartic(slow_minus) = "
+               << evaluate_quartic(slow_minus[point], point)
+               << ", quartic(slow_plus) = "
+               << evaluate_quartic(slow_plus[point], point));
+  }
+}
+
 
 template <size_t ThermodynamicDim>
 void flux_jacobian_hydro(
@@ -1023,6 +1445,19 @@ GENERATE_INSTANTIATIONS(FUNCTION_INSTANTIATION, (1, 2, 3))
       const tnsr::i<DataVector, 3>& unit_normal,                               \
       const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
           equation_of_state);                                                  \
+  template void characteristic_speeds_mhd<GET_DIM(data)>(                      \
+      const gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,      \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,           \
+      const Scalar<DataVector>& rest_mass_density,                             \
+      const Scalar<DataVector>& specific_internal_energy,                      \
+      const Scalar<DataVector>& lorentz_factor,                                \
+      const Scalar<DataVector>& specific_enthalpy,                             \
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
+      const tnsr::i<DataVector, 3>& unit_normal,                               \
+      const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
+          equation_of_state,                                                   \
+      SlowMagnetosonicSpeedMethod slow_speed_method);                          \
   template void flux_jacobian_hydro<GET_DIM(data)>(                            \
       const gsl::not_null<tnsr::iJ<DataVector, 6>*> characteristic_matrix,     \
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
