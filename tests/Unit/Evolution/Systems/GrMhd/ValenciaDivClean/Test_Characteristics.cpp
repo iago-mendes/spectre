@@ -1191,6 +1191,345 @@ void test_mhd_characteristics_errors(const bool output) {
   }
 }
 
+// Temporary: typical config error vs (W, vn/|v|).  Delete after analysis.
+void test_typical_vn_sweep() {
+  const ScopedFpeState disable_fpes(false);
+
+  constexpr size_t num_points = 1;
+  constexpr double adiabatic_index = 5.0 / 3.0;
+  const EquationsOfState::IdealFluid<true> eos_2d(adiabatic_index, 0.0);
+  const Scalar<DataVector> rest_mass_density{DataVector(num_points, 1.0)};
+  const Scalar<DataVector> pressure{DataVector(num_points, 1.0e-4)};
+  const Scalar<DataVector> specific_internal_energy =
+      eos_2d.specific_internal_energy_from_density_and_pressure(
+          rest_mass_density, pressure);
+  const Scalar<DataVector> specific_enthalpy =
+      hydro::relativistic_specific_enthalpy(rest_mass_density,
+                                            specific_internal_energy, pressure);
+  Scalar<DataVector> sound_speed_squared{DataVector(num_points, 0.0)};
+  get(sound_speed_squared) =
+      get(eos_2d.chi_from_density_and_energy(rest_mass_density,
+                                             specific_internal_energy)) +
+      get(eos_2d.kappa_times_p_over_rho_squared_from_density_and_energy(
+          rest_mass_density, specific_internal_energy));
+  get(sound_speed_squared) /= get(specific_enthalpy);
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  // Same as "typical" config except vn_fraction is swept
+  constexpr double bn_fraction = 0.4;
+  constexpr double phi = M_PI / 4.0;
+  constexpr double sigma = 0.1;
+
+  std::ofstream out("typical_vn_sweep.tsv", std::ios::out | std::ios::trunc);
+  out << std::setprecision(16);
+  out << "vn_fraction\tW\t"
+         "abs_err_fast_m\tabs_err_fast_p\tabs_err_slow_m\tabs_err_slow_p\t"
+         "abs_err_alf_m\tabs_err_alf_p\tabs_err_entropy\t"
+         "fast_m\tfast_p\tslow_m\tslow_p\talf_m\talf_p\tentropy\t"
+         "q_fast_m\tq_fast_p\tq_slow_m\tq_slow_p\tq_alf_m\tq_alf_p\t"
+         "q_entropy\n";
+
+  const std::array<double, 20> vn_fractions = {
+      {0.0, 0.05, 0.1,  0.2,  0.3,   0.4,   0.5,    0.6,    0.7,     0.8,
+       0.9, 0.95, 0.97, 0.99, 0.995, 0.999, 0.9995, 0.9999, 0.99999, 0.999999}};
+
+  constexpr size_t n_w = 40;
+  constexpr double w_max = 100.0;
+
+  for (const double vn_frac : vn_fractions) {
+    for (size_t iw = 0; iw < n_w; ++iw) {
+      const double tw = static_cast<double>(iw) / static_cast<double>(n_w - 1);
+      const double W = std::exp(tw * std::log(w_max));
+      const double vmag = std::sqrt(std::max(0.0, 1.0 - 1.0 / square(W)));
+      const double vn = vn_frac * vmag;
+      const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+
+      const double Bmag = std::sqrt(sigma * get(rest_mass_density)[0] *
+                                    get(specific_enthalpy)[0]);
+      const double bx = bn_fraction * Bmag;
+      const double bt = std::sqrt(std::max(0.0, square(Bmag) - square(bx)));
+      const double by = bt * std::cos(phi);
+      const double bz = bt * std::sin(phi);
+
+      Scalar<DataVector> lorentz_factor{DataVector(num_points, W)};
+      tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+      spatial_velocity.get(0) = vn;
+      spatial_velocity.get(1) = vt;
+      tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+      magnetic_field.get(0) = bx;
+      magnetic_field.get(1) = by;
+      magnetic_field.get(2) = bz;
+
+      tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+      grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+          make_not_null(&speeds), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, lorentz_factor,
+          specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+
+      std::array<quad_ref::Quad, 3> q_v{}, q_B{}, q_n{};
+      std::array<std::array<quad_ref::Quad, 3>, 3> q_g{};
+      for (size_t i = 0; i < 3; ++i) {
+        q_v[i] = spatial_velocity.get(i)[0];
+        q_B[i] = magnetic_field.get(i)[0];
+        q_n[i] = unit_normal.get(i)[0];
+        for (size_t j = 0; j < 3; ++j) {
+          q_g[i][j] = spatial_metric.get(i, j)[0];
+        }
+      }
+      const auto q_speeds = quad_ref::characteristic_speeds_mhd(
+          q_v, q_B, get(rest_mass_density)[0], get(specific_internal_energy)[0],
+          W, get(specific_enthalpy)[0], q_g, q_n);
+
+      const auto s = [&](const size_t m) { return speeds.get(m)[0]; };
+      const auto q = [&](const size_t m) {
+        return static_cast<double>(q_speeds[m]);
+      };
+      using M = grmhd::ValenciaDivClean::MhdSpeed;
+      out << vn_frac << '\t' << W;
+      for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                             M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                             M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+        out << '\t' << std::abs(s(m) - q(m));
+      }
+      for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                             M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                             M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+        out << '\t' << s(m);
+      }
+      for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                             M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                             M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+        out << '\t' << q(m);
+      }
+      out << '\n';
+    }
+  }
+}
+
+// Temporary: quartic shape at W=20 for each config.  Delete after analysis.
+// Outputs both double and quad quartic evaluations on a dense grid of lambda
+// values, plus the computed roots, for visualization.
+void test_quartic_shape() {
+  const ScopedFpeState disable_fpes(false);
+
+  constexpr size_t num_points = 1;
+  constexpr double adiabatic_index = 5.0 / 3.0;
+  const EquationsOfState::IdealFluid<true> eos_2d(adiabatic_index, 0.0);
+  const Scalar<DataVector> rest_mass_density{DataVector(num_points, 1.0)};
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  struct Config {
+    const char* name;
+    double bn_fraction;
+    double vn_fraction;
+    double phi;
+    double sigma;
+    double pressure_val;
+  };
+  const std::array<Config, 5> configs{{
+      {"typical", 0.4, 0.5, M_PI / 4.0, 0.1, 0.1},
+      {"low_magnetization", 0.3674661940736692, 0.999, 0.6283185307179586,
+       1.0e-4, 1.0e-4},
+      {"high_magnetization", 0.05, 0.995, 0.6 * M_PI, 5000.0, 1.0e-4},
+      {"near_type_I", 1.0e-6, 0.5, 0.0, 0.01, 1.0e-4},
+      {"near_type_II", 0.9999, 0.5, 0.0, 0.01, 1.0e-4},
+  }};
+
+  constexpr double W = 10.0;
+  const double vmag_at_W = std::sqrt(1.0 - 1.0 / square(W));
+
+  std::ofstream out("quartic_shape.tsv", std::ios::out | std::ios::trunc);
+  out << std::setprecision(17);
+  out << "config\tgrid\tlambda\tquartic_double\tquartic_quad\t"
+         "c0_dbl\tc1_dbl\tc2_dbl\tc3_dbl\tc0_quad\tc1_quad\tc2_quad\tc3_quad\t"
+         "fast_m\tfast_p\tslow_m\tslow_p\talf_m\talf_p\tentropy\t"
+         "q_fast_m\tq_fast_p\tq_slow_m\tq_slow_p\tq_alf_m\tq_alf_p\t"
+         "q_entropy\n";
+
+  for (const auto& config : configs) {
+    const Scalar<DataVector> pressure{
+        DataVector(num_points, config.pressure_val)};
+    const Scalar<DataVector> specific_internal_energy =
+        eos_2d.specific_internal_energy_from_density_and_pressure(
+            rest_mass_density, pressure);
+    const Scalar<DataVector> specific_enthalpy =
+        hydro::relativistic_specific_enthalpy(
+            rest_mass_density, specific_internal_energy, pressure);
+    Scalar<DataVector> sound_speed_squared{DataVector(num_points, 0.0)};
+    get(sound_speed_squared) =
+        get(eos_2d.chi_from_density_and_energy(rest_mass_density,
+                                               specific_internal_energy)) +
+        get(eos_2d.kappa_times_p_over_rho_squared_from_density_and_energy(
+            rest_mass_density, specific_internal_energy));
+    get(sound_speed_squared) /= get(specific_enthalpy);
+
+    const double vn = config.vn_fraction * vmag_at_W;
+    const double vt = std::sqrt(std::max(0.0, square(vmag_at_W) - square(vn)));
+
+    const double Bmag = std::sqrt(config.sigma * get(rest_mass_density)[0] *
+                                  get(specific_enthalpy)[0]);
+    const double bx = config.bn_fraction * Bmag;
+    const double bt = std::sqrt(std::max(0.0, square(Bmag) - square(bx)));
+    const double by = bt * std::cos(config.phi);
+    const double bz = bt * std::sin(config.phi);
+
+    Scalar<DataVector> lorentz_factor{DataVector(num_points, W)};
+    tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+    spatial_velocity.get(0) = vn;
+    spatial_velocity.get(1) = vt;
+    tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+    magnetic_field.get(0) = bx;
+    magnetic_field.get(1) = by;
+    magnetic_field.get(2) = bz;
+
+    // Compute characteristic speeds (double)
+    tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, lorentz_factor,
+        specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+
+    // Compute quartic coefficients (double)
+    const Scalar<DataVector> normal_velocity =
+        tenex::evaluate(spatial_velocity(ti::I) * unit_normal(ti::i));
+    const Scalar<DataVector> normal_magnetic_field =
+        tenex::evaluate(magnetic_field(ti::I) * unit_normal(ti::i));
+    const auto magnetic_field_squared =
+        dot_product(magnetic_field, magnetic_field, spatial_metric);
+    const auto magnetic_field_dot_spatial_velocity =
+        dot_product(magnetic_field, spatial_velocity, spatial_metric);
+    const Scalar<DataVector> comoving_magnetic_field_squared{
+        get(magnetic_field_squared) / square(get(lorentz_factor)) +
+        square(get(magnetic_field_dot_spatial_velocity))};
+    const Scalar<DataVector> inv_rho_h{
+        1.0 / (get(rest_mass_density) * get(specific_enthalpy))};
+    const Scalar<DataVector> inv_sqrt_rho_h{sqrt(get(inv_rho_h))};
+    const Scalar<DataVector> nB_scaled{get(normal_magnetic_field) *
+                                       get(inv_sqrt_rho_h)};
+    const Scalar<DataVector> Bv_scaled{
+        get(magnetic_field_dot_spatial_velocity) * get(inv_sqrt_rho_h)};
+    const Scalar<DataVector> B2_scaled{get(magnetic_field_squared) *
+                                       get(inv_rho_h)};
+    const Scalar<DataVector> b2_scaled{get(comoving_magnetic_field_squared) *
+                                       get(inv_rho_h)};
+    tnsr::i<DataVector, 4> qc{num_points};
+    grmhd::ValenciaDivClean::magnetosonic_quartic_coefficients(
+        make_not_null(&qc), sound_speed_squared, normal_velocity,
+        lorentz_factor, nB_scaled, Bv_scaled, B2_scaled, b2_scaled);
+    const double c0 = get<0>(qc)[0];
+    const double c1 = get<1>(qc)[0];
+    const double c2 = get<2>(qc)[0];
+    const double c3 = get<3>(qc)[0];
+
+    // Quad reference speeds
+    std::array<quad_ref::Quad, 3> q_v{}, q_B{}, q_n{};
+    std::array<std::array<quad_ref::Quad, 3>, 3> q_g{};
+    for (size_t i = 0; i < 3; ++i) {
+      q_v[i] = spatial_velocity.get(i)[0];
+      q_B[i] = magnetic_field.get(i)[0];
+      q_n[i] = unit_normal.get(i)[0];
+      for (size_t j = 0; j < 3; ++j) {
+        q_g[i][j] = spatial_metric.get(i, j)[0];
+      }
+    }
+    const auto q_speeds = quad_ref::characteristic_speeds_mhd(
+        q_v, q_B, get(rest_mass_density)[0], get(specific_internal_energy)[0],
+        W, get(specific_enthalpy)[0], q_g, q_n);
+
+    // Quad quartic coefficients
+    using Quad = quad_ref::Quad;
+    const auto q_qc = quad_ref::magnetosonic_quartic_coefficients(
+        Quad{get(sound_speed_squared)[0]}, Quad{get(normal_velocity)[0]},
+        Quad{W}, Quad{get(nB_scaled)[0]}, Quad{get(Bv_scaled)[0]},
+        Quad{get(B2_scaled)[0]}, Quad{get(b2_scaled)[0]});
+    const Quad qc0 = q_qc[0], qc1 = q_qc[1], qc2 = q_qc[2], qc3 = q_qc[3];
+
+    using M = grmhd::ValenciaDivClean::MhdSpeed;
+    const auto s = [&](const size_t m) { return speeds.get(m)[0]; };
+    const auto q = [&](const size_t m) {
+      return static_cast<double>(q_speeds[m]);
+    };
+
+    // Two sampling grids:
+    // "wide" — spans fast- to fast+ for overall quartic shape
+    // "zoom" — spans the inner root cluster (alf- to alf+) with high
+    //          resolution to resolve individual zero crossings
+    const double wide_min =
+        std::min({q(M::FastMagnetosonicMinus), q(M::SlowMagnetosonicMinus)}) -
+        0.01;
+    const double wide_max =
+        std::max({q(M::FastMagnetosonicPlus), q(M::SlowMagnetosonicPlus)}) +
+        0.01;
+
+    // Inner root cluster: from alfven- to alfven+ (or slow- to slow+ if
+    // tighter), padded by 5× the spread
+    const double inner_min = std::min(
+        {q(M::AlfvenMinus), q(M::SlowMagnetosonicMinus), q(M::Entropy)});
+    const double inner_max =
+        std::max({q(M::AlfvenPlus), q(M::SlowMagnetosonicPlus), q(M::Entropy)});
+    const double inner_spread = std::max(inner_max - inner_min, 1.0e-10);
+    const double zoom_min = inner_min - 3.0 * inner_spread;
+    const double zoom_max = inner_max + 3.0 * inner_spread;
+
+    auto write_row = [&](const char* grid_name, const double lam) {
+      const Quad qlam{lam};
+      const double qd = (((lam + c3) * lam + c2) * lam + c1) * lam + c0;
+      const double qq = static_cast<double>(
+          (((qlam + qc3) * qlam + qc2) * qlam + qc1) * qlam + qc0);
+
+      out << config.name << '\t' << grid_name << '\t' << lam << '\t' << qd
+          << '\t' << qq << '\t' << c0 << '\t' << c1 << '\t' << c2 << '\t' << c3
+          << '\t' << static_cast<double>(qc0) << '\t'
+          << static_cast<double>(qc1) << '\t' << static_cast<double>(qc2)
+          << '\t' << static_cast<double>(qc3);
+      for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                             M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                             M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+        out << '\t' << s(m);
+      }
+      for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                             M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                             M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+        out << '\t' << q(m);
+      }
+      out << '\n';
+    };
+
+    // Wide grid: 500 points
+    for (size_t i = 0; i <= 500; ++i) {
+      const double t = static_cast<double>(i) / 500.0;
+      write_row("wide", wide_min + t * (wide_max - wide_min));
+    }
+    // Zoom grid: 2000 points on inner cluster
+    for (size_t i = 0; i <= 2000; ++i) {
+      const double t = static_cast<double>(i) / 2000.0;
+      write_row("zoom", zoom_min + t * (zoom_max - zoom_min));
+    }
+    // Also evaluate at exact quad root locations for Step 2
+    for (const size_t m : {M::FastMagnetosonicMinus, M::FastMagnetosonicPlus,
+                           M::SlowMagnetosonicMinus, M::SlowMagnetosonicPlus,
+                           M::AlfvenMinus, M::AlfvenPlus, M::Entropy}) {
+      write_row("root", q(m));
+    }
+  }
+}
+
 void run_mhd_characteristic_benchmarks(const bool enable) {
   if (not enable) {
     return;
@@ -1345,6 +1684,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   // since they use moderate W.  test_mhd_characteristics_errors pushes to
   // W=100 at high sigma where the tighter production tolerance (1e-15)
   // can intermittently trigger ASSERTs.
+  test_typical_vn_sweep();
+  test_quartic_shape();
   test_mhd_characteristics_errors(true);
   test_mhd_characteristics(dv);
 
