@@ -781,6 +781,404 @@ void characteristic_speeds_mhd(
   }
 }
 
+template <size_t ThermodynamicDim>
+void characteristic_eigenvectors_mhd(
+    const gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,
+    const gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors,
+    const tnsr::i<DataVector, 9>& characteristic_speeds,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state) {
+  const size_t num_points = get(lorentz_factor).size();
+
+  Scalar<DataVector> sound_speed_squared{num_points};
+  Scalar<DataVector> kappa{num_points};
+  Scalar<DataVector> pressure{num_points};
+  if constexpr (ThermodynamicDim == 1) {
+    get(sound_speed_squared) =
+        get(equation_of_state.chi_from_density(rest_mass_density)) +
+        get(equation_of_state.kappa_times_p_over_rho_squared_from_density(
+            rest_mass_density));
+    get(sound_speed_squared) /= get(specific_enthalpy);
+    get(kappa) = 0.0;
+  } else if constexpr (ThermodynamicDim == 2) {
+    const Scalar<DataVector> kappa_times_p_over_rho_squared =
+        equation_of_state
+            .kappa_times_p_over_rho_squared_from_density_and_energy(
+                rest_mass_density, specific_internal_energy);
+    get(sound_speed_squared) =
+        (get(equation_of_state.chi_from_density_and_energy(
+             rest_mass_density, specific_internal_energy)) +
+         get(kappa_times_p_over_rho_squared)) /
+        get(specific_enthalpy);
+    pressure = equation_of_state.pressure_from_density_and_energy(
+        rest_mass_density, specific_internal_energy);
+    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
+                 square(get(rest_mass_density));
+  } else if constexpr (ThermodynamicDim == 3) {
+    if (not equation_of_state.is_equilibrium()) {
+      ERROR(
+          "characteristic_eigenvectors_mhd currently only supports 3D EoSs "
+          "in equilibrium.");
+    }
+    const Scalar<DataVector> kappa_times_p_over_rho_squared =
+        equation_of_state
+            .kappa_times_p_over_rho_squared_from_density_and_energy(
+                rest_mass_density, specific_internal_energy);
+    get(sound_speed_squared) =
+        (get(equation_of_state.chi_from_density_and_energy(
+             rest_mass_density, specific_internal_energy)) +
+         get(kappa_times_p_over_rho_squared)) /
+        get(specific_enthalpy);
+    const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.0)};
+    pressure = equation_of_state.pressure_from_density_and_energy(
+        rest_mass_density, specific_internal_energy, electron_fraction);
+    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
+                 square(get(rest_mass_density));
+  }
+
+  const auto det_and_inv_spatial_metric =
+      determinant_and_inverse(spatial_metric);
+  const auto& det_spatial_metric = det_and_inv_spatial_metric.first;
+  const auto& inv_spatial_metric = det_and_inv_spatial_metric.second;
+  const auto tangent_1 = orthonormal_oneform(unit_normal, inv_spatial_metric);
+  const auto tangent_2 = orthonormal_oneform(
+      unit_normal, tangent_1, spatial_metric, det_spatial_metric);
+  Variables<tmpl::list<
+      ::Tags::Tempi<0, 3>, ::Tags::Tempi<1, 3>, ::Tags::TempI<0, 3>,
+      ::Tags::TempScalar<0>, ::Tags::TempScalar<1>, ::Tags::TempScalar<2>,
+      ::Tags::TempScalar<3>, ::Tags::TempScalar<4>, ::Tags::TempScalar<5>,
+      ::Tags::TempScalar<6>, ::Tags::TempScalar<7>, ::Tags::TempScalar<8>,
+      ::Tags::TempScalar<9>, ::Tags::TempScalar<10>, ::Tags::TempScalar<11>,
+      ::Tags::TempScalar<12>, ::Tags::TempScalar<13>, ::Tags::TempScalar<14>,
+      ::Tags::TempScalar<15>, ::Tags::TempScalar<16>, ::Tags::TempScalar<17>,
+      ::Tags::TempScalar<18>, ::Tags::TempScalar<19>, ::Tags::TempScalar<20>,
+      ::Tags::TempScalar<21>, ::Tags::TempScalar<22>, ::Tags::TempScalar<23>,
+      ::Tags::TempScalar<24>, ::Tags::TempScalar<25>, ::Tags::TempScalar<26>,
+      ::Tags::TempScalar<27>, ::Tags::TempScalar<28>, ::Tags::TempScalar<29>,
+      ::Tags::TempScalar<30>, ::Tags::TempScalar<31>, ::Tags::TempScalar<32>,
+      ::Tags::TempScalar<33>, ::Tags::TempScalar<34>, ::Tags::TempScalar<35>,
+      ::Tags::TempScalar<36>, ::Tags::TempScalar<37>, ::Tags::TempScalar<38>,
+      ::Tags::TempScalar<39>>>
+      temp_tensors{num_points};
+
+  auto& v_cov = get<::Tags::Tempi<0, 3>>(temp_tensors);
+  auto& B_cov = get<::Tags::Tempi<1, 3>>(temp_tensors);
+  auto& s_vec = get<::Tags::TempI<0, 3>>(temp_tensors);
+  for (size_t i = 0; i < 3; ++i) {
+    v_cov.get(i) = 0.0;
+    B_cov.get(i) = 0.0;
+    s_vec.get(i) = 0.0;
+    for (size_t j = 0; j < 3; ++j) {
+      v_cov.get(i) += spatial_metric.get(i, j) * spatial_velocity.get(j);
+      B_cov.get(i) += spatial_metric.get(i, j) * magnetic_field.get(j);
+      s_vec.get(i) += inv_spatial_metric.get(i, j) * unit_normal.get(j);
+    }
+  }
+
+  auto& v_n = get<::Tags::TempScalar<0>>(temp_tensors);
+  auto& v_1 = get<::Tags::TempScalar<1>>(temp_tensors);
+  auto& v_2 = get<::Tags::TempScalar<2>>(temp_tensors);
+  auto& B_n = get<::Tags::TempScalar<3>>(temp_tensors);
+  auto& B_1 = get<::Tags::TempScalar<4>>(temp_tensors);
+  auto& B_2 = get<::Tags::TempScalar<5>>(temp_tensors);
+  get(v_n) = 0.0;
+  get(v_1) = 0.0;
+  get(v_2) = 0.0;
+  get(B_n) = 0.0;
+  get(B_1) = 0.0;
+  get(B_2) = 0.0;
+  for (size_t i = 0; i < 3; ++i) {
+    get(v_n) += spatial_velocity.get(i) * unit_normal.get(i);
+    get(v_1) += spatial_velocity.get(i) * tangent_1.get(i);
+    get(v_2) += spatial_velocity.get(i) * tangent_2.get(i);
+    get(B_n) += magnetic_field.get(i) * unit_normal.get(i);
+    get(B_1) += magnetic_field.get(i) * tangent_1.get(i);
+    get(B_2) += magnetic_field.get(i) * tangent_2.get(i);
+  }
+
+  auto& B_squared = get<::Tags::TempScalar<6>>(temp_tensors);
+  auto& B_dot_v = get<::Tags::TempScalar<7>>(temp_tensors);
+  get(B_squared) = 0.0;
+  get(B_dot_v) = 0.0;
+  for (size_t i = 0; i < 3; ++i) {
+    get(B_squared) += magnetic_field.get(i) * B_cov.get(i);
+    get(B_dot_v) += B_cov.get(i) * spatial_velocity.get(i);
+  }
+
+  const DataVector& rho = get(rest_mass_density);
+  const DataVector& h = get(specific_enthalpy);
+  const DataVector& W = get(lorentz_factor);
+  const DataVector& cs2 = get(sound_speed_squared);
+  const DataVector& kappa_i = get(kappa);
+
+  auto& b_squared = get<::Tags::TempScalar<8>>(temp_tensors);
+  auto& rho_h_star = get<::Tags::TempScalar<9>>(temp_tensors);
+  auto& h_star = get<::Tags::TempScalar<10>>(temp_tensors);
+  auto& sqrt_rho_h_star = get<::Tags::TempScalar<11>>(temp_tensors);
+  auto& r_1 = get<::Tags::TempScalar<12>>(temp_tensors);
+  auto& r_2 = get<::Tags::TempScalar<13>>(temp_tensors);
+  auto& r_4 = get<::Tags::TempScalar<14>>(temp_tensors);
+  auto& B_21 = get<::Tags::TempScalar<15>>(temp_tensors);
+  auto& B_31 = get<::Tags::TempScalar<16>>(temp_tensors);
+  auto& B_32 = get<::Tags::TempScalar<17>>(temp_tensors);
+  get(b_squared) = get(B_squared) / square(W) + square(get(B_dot_v));
+  get(rho_h_star) = rho * h + get(b_squared);
+  get(h_star) = h + get(b_squared) / rho;
+  get(sqrt_rho_h_star) = sqrt(get(rho_h_star));
+  get(r_1) = get(B_dot_v) + get(sqrt_rho_h_star);
+  get(r_2) = get(B_n) * get(v_n) - get(r_1);
+  get(r_4) = get(B_squared) + get(r_1) * get(B_dot_v) * square(W);
+  get(B_21) = get(B_2) * get(v_1) - get(B_1) * get(v_2);
+  get(B_31) = get(B_n) * get(v_1) - get(B_1) * get(v_n);
+  get(B_32) = get(B_n) * get(v_2) - get(B_2) * get(v_n);
+
+  auto& a = get<::Tags::TempScalar<20>>(temp_tensors);
+  auto& B = get<::Tags::TempScalar<21>>(temp_tensors);
+  auto& G = get<::Tags::TempScalar<22>>(temp_tensors);
+  auto& script_G = get<::Tags::TempScalar<23>>(temp_tensors);
+  auto& script_G_rho = get<::Tags::TempScalar<24>>(temp_tensors);
+  auto& kappa_rho = get<::Tags::TempScalar<25>>(temp_tensors);
+  auto& Z = get<::Tags::TempScalar<26>>(temp_tensors);
+  auto& K = get<::Tags::TempScalar<27>>(temp_tensors);
+  auto& kappa_B = get<::Tags::TempScalar<28>>(temp_tensors);
+  auto& kappa_Bv = get<::Tags::TempScalar<29>>(temp_tensors);
+  auto& m_1s = get<::Tags::TempScalar<30>>(temp_tensors);
+  auto& m_1v = get<::Tags::TempScalar<31>>(temp_tensors);
+  auto& m_1B = get<::Tags::TempScalar<32>>(temp_tensors);
+  auto& m_4 = get<::Tags::TempScalar<33>>(temp_tensors);
+  auto& f_1v = get<::Tags::TempScalar<34>>(temp_tensors);
+  auto& g_1B = get<::Tags::TempScalar<35>>(temp_tensors);
+  auto& g_1v = get<::Tags::TempScalar<36>>(temp_tensors);
+  auto& h_1 = get<::Tags::TempScalar<37>>(temp_tensors);
+  auto& G_entropy = get<::Tags::TempScalar<38>>(temp_tensors);
+
+  for (size_t wave = 0; wave < 9; ++wave) {
+    const DataVector& y = characteristic_speeds.get(wave);
+    get(a) = W * (get(v_n) - y);
+    get(B) = get(B_n) / W + get(B_dot_v) * W * (get(v_n) - y);
+    get(G) = 1.0 - square(y);
+    get(script_G) = rho * h * square(get(a)) - get(G) * get(b_squared);
+    get(script_G_rho) = get(script_G) / (rho * h * cs2);
+    get(kappa_rho) = kappa_i + rho * cs2;
+    get(Z) = rho * h * square(W);
+    get(K) = -W * (1.0 - get(v_n) * y);
+    get(kappa_B) = get(kappa_rho) * square(get(B)) +
+                   (1.0 - cs2) * square(rho * get(a)) * h;
+    get(kappa_Bv) = get(kappa_B) * get(B_dot_v) -
+                    get(kappa_rho) * rho * get(a) * get(B) * get(h_star);
+    const DataVector a_denom = get(a) + 1.0e-14;
+    const DataVector G_denom = get(G) + 1.0e-14;
+    const DataVector cs2_denom = cs2 + 1.0e-14;
+
+    if (wave == MhdSpeed::Entropy) {
+      for (size_t i = 0; i < 3; ++i) {
+        characteristic_modes->get(wave, i) =
+            h * W * (kappa_i - rho * cs2) * spatial_velocity.get(i);
+        characteristic_modes->get(wave, 3 + i) = 0.0;
+      }
+      characteristic_modes->get(wave, 6) = kappa_i;
+      characteristic_modes->get(wave, 7) =
+          kappa_i * (h * W - 1.0) - rho * h * W * cs2;
+      characteristic_modes->get(wave, 8) = 0.0;
+
+      get(G_entropy) = 1.0 - square(get(v_n));
+      const DataVector entropy_norm = 1.0 / (rho * h * cs2);
+      for (size_t i = 0; i < 3; ++i) {
+        // S_b components
+        characteristic_projectors->get(wave, i) =
+            entropy_norm * W * v_cov.get(i);
+        // B_b components: gamma_{ba}b^a - (B_n / GW) s_b
+        const DataVector b_cov_i =
+            B_cov.get(i) / W + W * v_cov.get(i) * get(B_dot_v);
+        characteristic_projectors->get(wave, 3 + i) =
+            entropy_norm *
+            (b_cov_i - (get(B_n) / (get(G_entropy) * W)) * unit_normal.get(i));
+      }
+      // D component
+      characteristic_projectors->get(wave, 6) = entropy_norm * (h - W);
+      // tau component
+      characteristic_projectors->get(wave, 7) = entropy_norm * (-W);
+      // phi component: W B^a v_a - B_n v_n / GW
+      characteristic_projectors->get(wave, 8) =
+          entropy_norm *
+          (W * get(B_dot_v) - (get(B_n) * get(v_n)) / (get(G_entropy) * W));
+    } else if (wave == MhdSpeed::AlfvenMinus or wave == MhdSpeed::AlfvenPlus) {
+      // Explicit S_b components (Rows 1, 2, 3 of the paper's array)
+      characteristic_modes->get(wave, 0) =
+          -2.0 * get(sqrt_rho_h_star) * get(B_21) *
+          (get(B_n) + get(r_1) * get(v_n) * square(W));
+      characteristic_modes->get(wave, 1) =
+          -get(sqrt_rho_h_star) *
+          (get(B_n) * get(B_32) + get(B_1) * get(B_21) +
+           get(r_1) * square(W) *
+               (get(B_2) + get(v_1) * get(B_21) + get(v_n) * get(B_32)));
+      characteristic_modes->get(wave, 2) =
+          get(sqrt_rho_h_star) *
+          (get(B_n) * get(B_31) - get(B_2) * get(B_21) +
+           get(r_1) * square(W) *
+               (get(B_1) - get(v_2) * get(B_21) + get(v_n) * get(B_31)));
+
+      // Explicit B_b components (Rows 4, 5, 6 of the paper's array)
+      characteristic_modes->get(wave, 3) = 0.0;
+      characteristic_modes->get(wave, 4) =
+          get(sqrt_rho_h_star) * get(B_2) + get(v_2) * get(r_4);
+      characteristic_modes->get(wave, 5) =
+          -get(sqrt_rho_h_star) * get(B_1) - get(v_1) * get(r_4);
+
+      // Explicit Scalar components D and tau (Rows 7, 8 of the paper's array)
+      characteristic_modes->get(wave, 6) = -rho * W * get(B_21);
+      characteristic_modes->get(wave, 7) =
+          -get(B_21) * W * (2.0 * W * get(sqrt_rho_h_star) * get(r_1) - rho);
+
+      // Appended 9th component for the Divergence Cleaning scalar phi
+      characteristic_modes->get(wave, 8) = 0.0;
+
+      const DataVector& y_Alf = y;
+      const DataVector alf_norm = 1.0 / get(sqrt_rho_h_star);
+
+      // Explicit S_b components (Rows 1, 2, 3 of the paper's array)
+      characteristic_projectors->get(wave, 0) = alf_norm * (get(B_21) * y_Alf);
+      characteristic_projectors->get(wave, 1) =
+          alf_norm * (get(B_2) + get(B_32) * y_Alf);
+      characteristic_projectors->get(wave, 2) =
+          alf_norm * (-get(B_1) - get(B_31) * y_Alf);
+
+      // Explicit B_b components (Rows 4, 5, 6 of the paper's array)
+      characteristic_projectors->get(wave, 3) =
+          -get(B_21) * y_Alf * get(sqrt_rho_h_star);
+      characteristic_projectors->get(wave, 4) = -(get(B_2) + get(B_32) * y_Alf);
+      characteristic_projectors->get(wave, 5) = (get(B_1) + get(B_31) * y_Alf);
+
+      // Explicit Scalar components D and tau (Rows 7, 8 of the paper's array)
+      characteristic_projectors->get(wave, 6) = alf_norm * (-get(B_21));
+      characteristic_projectors->get(wave, 7) = alf_norm * (-get(B_21));
+
+      // Appended 9th component for the Divergence Cleaning scalar phi
+      characteristic_projectors->get(wave, 8) = -get(B_21);
+    } else if (wave == MhdSpeed::ScalarMinus or wave == MhdSpeed::ScalarPlus) {
+      for (size_t i = 0; i < 3; ++i) {
+        characteristic_modes->get(wave, i) =
+            -((y * get(kappa_B) +
+               2.0 * get(kappa_rho) * get(a) * get(B) * get(B_n)) *
+                  magnetic_field.get(i) +
+              square(W) * get(B) * get(kappa_B) *
+                  (s_vec.get(i) + y * spatial_velocity.get(i)) -
+              2.0 * W * get(kappa_rho) * get(B) * square(get(B_n)) *
+                  spatial_velocity.get(i)) /
+            (a_denom * W);
+        characteristic_modes->get(wave, 3 + i) =
+            get(kappa_rho) * y * get(B) * magnetic_field.get(i) / W +
+            (s_vec.get(i) - y * spatial_velocity.get(i)) *
+                (get(kappa_rho) * get(B) * get(B_n) +
+                 (1.0 - cs2) * square(rho) * square(get(a)) * h * W) /
+                a_denom;
+      }
+      characteristic_modes->get(wave, 6) =
+          get(kappa_rho) * y * rho * get(B) -
+          (1.0 - cs2) * square(rho * get(a)) * h * W / a_denom;
+      characteristic_modes->get(wave, 7) =
+          (get(kappa_rho) * get(B) *
+               (2.0 * square(get(B_n)) +
+                rho * get(a) * (get(a) * get(h_star) - y)) -
+           get(kappa_B) * get(B) - 2.0 * get(kappa_Bv) * y * W +
+           (1.0 - cs2) * square(rho * get(a)) * get(B_n)) /
+          a_denom;
+      characteristic_modes->get(wave, 8) =
+          -(1.0 - cs2) * square(rho * get(a)) * h;
+
+      const DataVector inv_one_minus_vn2 =
+          1.0 / ((1.0 - square(get(v_n))) + 1.0e-14);
+      for (size_t i = 0; i < 3; ++i) {
+        characteristic_projectors->get(wave, i) = 0.0;
+        characteristic_projectors->get(wave, 3 + i) =
+            unit_normal.get(i) * inv_one_minus_vn2;
+      }
+      characteristic_projectors->get(wave, 6) = 0.0;
+      characteristic_projectors->get(wave, 7) = 0.0;
+      characteristic_projectors->get(wave, 8) = y * inv_one_minus_vn2;
+    } else {
+      get(m_1s) = rho * h * get(a) * W *
+                  (get(B) * get(B_dot_v) - get(rho_h_star) * get(a));
+      get(m_1v) = rho * h *
+                  (get(B_n) * get(B_dot_v) * (y * get(a) + 2.0 * get(G) * W) -
+                   2.0 * get(a) * square(get(B_n)) -
+                   get(a) * W *
+                       (y * get(a) * (get(B_squared) / square(W) + rho * h) +
+                        (1.0 - 1.0 / cs2) * get(script_G) * W));
+      get(m_1B) = rho * h *
+                  (get(B) * (y * get(a) - get(G) * W) +
+                   2.0 * get(B_n) * (square(get(a)) + get(G))) /
+                  W;
+      get(m_4) =
+          (rho / a_denom) *
+          (square(get(a)) * square(get(B)) * h -
+           2.0 * square(get(B_n)) * h * (square(get(a)) + get(G)) +
+           square(get(B)) * W * (2.0 * y * get(a) * h - get(G)) +
+           get(B_n) * get(B) *
+               (get(G) + 2.0 * h * W * get(G) - 2.0 * y * get(a) * h) +
+           get(script_G) * W * square(get(a)) * (h * W * (1.0 - cs2) - 1.0) /
+               cs2_denom +
+           rho * h * cube(get(a)) *
+               (y - 2.0 * y * get(h_star) * W + get(a) * (W - get(h_star))));
+      for (size_t i = 0; i < 3; ++i) {
+        characteristic_modes->get(wave, i) =
+            get(m_1s) * s_vec.get(i) + get(m_1v) * spatial_velocity.get(i) +
+            get(m_1B) * magnetic_field.get(i);
+        characteristic_modes->get(wave, 3 + i) =
+            rho * h * get(a) *
+            (magnetic_field.get(i) * (1.0 - y * get(v_n)) -
+             get(B_n) * (s_vec.get(i) - y * spatial_velocity.get(i)));
+      }
+      characteristic_modes->get(wave, 6) =
+          -rho * get(B) * get(G) * get(B_n) / a_denom -
+          square(rho) * get(a) * h * (y * get(a) - get(G) * W);
+      characteristic_modes->get(wave, 7) = get(m_4);
+      characteristic_modes->get(wave, 8) = 0.0;
+
+      get(f_1v) =
+          W * (-get(G) +
+               get(B) * get(G) * get(B_n) * W / (get(Z) * square(a_denom)) +
+               get(script_G) * square(W) * (kappa_i + rho) /
+                   (get(Z) * rho * cs2_denom));
+      get(g_1B) = get(script_G) * kappa_i * W / (rho * get(Z) * cs2_denom) -
+                  (square(get(a)) + get(G)) / W;
+      get(g_1v) = get(B_dot_v) * square(W) * get(g_1B) +
+                  W * (get(a) * get(B) +
+                       get(script_G) * get(B) * square(W) / (get(Z) * a_denom));
+      get(h_1) = -(get(f_1v) + y * get(a));
+      for (size_t i = 0; i < 3; ++i) {
+        characteristic_projectors->get(wave, i) =
+            get(a) * unit_normal.get(i) -
+            get(B) * get(G) * W * B_cov.get(i) / (get(Z) * a_denom) +
+            get(f_1v) * v_cov.get(i);
+        characteristic_projectors->get(wave, 3 + i) =
+            get(B) * unit_normal.get(i) + get(g_1B) * B_cov.get(i) +
+            get(g_1v) * v_cov.get(i) -
+            (get(script_G_rho) * get(kappa_rho) * get(B) / (G_denom * rho)) *
+                unit_normal.get(i);
+      }
+      characteristic_projectors->get(wave, 6) =
+          get(h_1) +
+          get(script_G) * (kappa_i - rho * cs2) / (square(rho) * cs2_denom);
+      characteristic_projectors->get(wave, 7) = get(h_1);
+      characteristic_projectors->get(wave, 8) =
+          (get(B) * get(K) *
+               (get(G) * rho - get(script_G_rho) * get(kappa_rho)) +
+           get(G) * get(B_n) *
+               (rho * (square(get(a)) + get(G)) -
+                get(script_G_rho) * kappa_i)) /
+          (G_denom * rho * a_denom);
+    }
+  }
+}
 
 template <size_t ThermodynamicDim>
 void flux_jacobian_hydro(
@@ -1458,6 +1856,20 @@ GENERATE_INSTANTIATIONS(FUNCTION_INSTANTIATION, (1, 2, 3))
       const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
           equation_of_state,                                                   \
       SlowMagnetosonicSpeedMethod slow_speed_method);                          \
+  template void characteristic_eigenvectors_mhd<GET_DIM(data)>(                \
+      const gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,      \
+      const gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors, \
+      const tnsr::i<DataVector, 9>& characteristic_speeds,                     \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,           \
+      const Scalar<DataVector>& rest_mass_density,                             \
+      const Scalar<DataVector>& specific_internal_energy,                      \
+      const Scalar<DataVector>& lorentz_factor,                                \
+      const Scalar<DataVector>& specific_enthalpy,                             \
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
+      const tnsr::i<DataVector, 3>& unit_normal,                               \
+      const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
+          equation_of_state);                                                  \
   template void flux_jacobian_hydro<GET_DIM(data)>(                            \
       const gsl::not_null<tnsr::iJ<DataVector, 6>*> characteristic_matrix,     \
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \

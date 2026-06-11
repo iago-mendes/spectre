@@ -325,6 +325,37 @@ void characteristic_speeds_mhd(
 /// @}
 
 /// @{
+/*!
+ * \brief Compute analytical right and left eigenvectors for the GRMHD
+ * Valencia divergence-cleaning system using precomputed characteristic speeds.
+ *
+ * The input `characteristic_speeds` follows the `MhdSpeed` ordering.
+ *
+ * The output conventions match `numerical_characteristics`:
+ * - Right eigenvectors / modes: `characteristic_modes.get(i, n)` is the
+ *   \f$i\f$th wave eigenvector component \f$n\f$.
+ * - Left eigenvectors / projectors:
+ *   `characteristic_projectors.get(i, n)`.
+ *
+ * Component ordering for eigenvector entries \f$n\f$ is
+ * \f$[S_x,S_y,S_z,B_x,B_y,B_z,D,\tau,\phi]\f$.
+ */
+template <size_t ThermodynamicDim>
+void characteristic_eigenvectors_mhd(
+    gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,
+    gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors,
+    const tnsr::i<DataVector, 9>& characteristic_speeds,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state);
+/// @}
 
 /**
  * \brief Compute the characteristic matrix for relativistic hydrodynamics +

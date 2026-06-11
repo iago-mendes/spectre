@@ -398,6 +398,271 @@ std::array<Quad, 9> characteristic_speeds_mhd(
   return characteristic_speeds;
 }
 
+bool characteristic_eigenvectors_mhd(
+    std::array<std::array<Quad, 9>, 9>* right_eigenvectors,
+    std::array<std::array<Quad, 9>, 9>* left_eigenvectors,
+    const std::array<Quad, 9>& characteristic_speeds,
+    const std::array<Quad, 3>& spatial_velocity,
+    const std::array<Quad, 3>& magnetic_field, const Quad& rest_mass_density,
+    const Quad& specific_internal_energy, const Quad& lorentz_factor,
+    const Quad& specific_enthalpy, const std::array<std::array<Quad, 3>, 3>& g,
+    const std::array<Quad, 3>& unit_normal,
+    const std::array<Quad, 3>& tangent_1,
+    const std::array<Quad, 3>& tangent_2) {
+  const Quad eps_floor{"1e-30"};
+  const Quad gamma_minus_one =
+      abs(specific_internal_energy) > eps_floor
+          ? ((specific_enthalpy - Quad{1.0}) - specific_internal_energy) /
+                specific_internal_energy
+          : Quad{0.0};
+  const Quad pressure =
+      gamma_minus_one * rest_mass_density * specific_internal_energy;
+  const Quad sound_speed_squared =
+      (gamma_minus_one * specific_internal_energy +
+       sq(gamma_minus_one) * specific_internal_energy) /
+      specific_enthalpy;
+  const Quad kappa =
+      pressure != Quad{0.0} ? gamma_minus_one * rest_mass_density : Quad{0.0};
+
+  std::array<Quad, 3> v_cov{};
+  std::array<Quad, 3> B_cov{};
+  const Quad det_g = g[0][0] * (g[1][1] * g[2][2] - g[1][2] * g[2][1]) -
+                     g[0][1] * (g[1][0] * g[2][2] - g[1][2] * g[2][0]) +
+                     g[0][2] * (g[1][0] * g[2][1] - g[1][1] * g[2][0]);
+  const Quad inv_det_g = Quad{1.0} / det_g;
+  std::array<std::array<Quad, 3>, 3> inv_g{};
+  inv_g[0][0] = (g[1][1] * g[2][2] - g[1][2] * g[2][1]) * inv_det_g;
+  inv_g[0][1] = (g[0][2] * g[2][1] - g[0][1] * g[2][2]) * inv_det_g;
+  inv_g[0][2] = (g[0][1] * g[1][2] - g[0][2] * g[1][1]) * inv_det_g;
+  inv_g[1][0] = (g[1][2] * g[2][0] - g[1][0] * g[2][2]) * inv_det_g;
+  inv_g[1][1] = (g[0][0] * g[2][2] - g[0][2] * g[2][0]) * inv_det_g;
+  inv_g[1][2] = (g[0][2] * g[1][0] - g[0][0] * g[1][2]) * inv_det_g;
+  inv_g[2][0] = (g[1][0] * g[2][1] - g[1][1] * g[2][0]) * inv_det_g;
+  inv_g[2][1] = (g[0][1] * g[2][0] - g[0][0] * g[2][1]) * inv_det_g;
+  inv_g[2][2] = (g[0][0] * g[1][1] - g[0][1] * g[1][0]) * inv_det_g;
+  std::array<Quad, 3> s_vec{};
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      v_cov[i] += g[i][j] * spatial_velocity[j];
+      B_cov[i] += g[i][j] * magnetic_field[j];
+      s_vec[i] += inv_g[i][j] * unit_normal[j];
+    }
+  }
+  Quad v_n{0.0};
+  Quad v_1{0.0};
+  Quad v_2{0.0};
+  Quad B_n{0.0};
+  Quad B_1{0.0};
+  Quad B_2{0.0};
+  Quad B_squared{0.0};
+  Quad B_dot_v{0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    v_n += spatial_velocity[i] * unit_normal[i];
+    v_1 += spatial_velocity[i] * tangent_1[i];
+    v_2 += spatial_velocity[i] * tangent_2[i];
+    B_n += magnetic_field[i] * unit_normal[i];
+    B_1 += magnetic_field[i] * tangent_1[i];
+    B_2 += magnetic_field[i] * tangent_2[i];
+    B_squared += magnetic_field[i] * B_cov[i];
+    B_dot_v += B_cov[i] * spatial_velocity[i];
+  }
+
+  const Quad cs2 = sound_speed_squared;
+  const Quad rho = rest_mass_density;
+  const Quad h = specific_enthalpy;
+  const Quad W = lorentz_factor;
+  const Quad b_squared = B_squared / sq(W) + sq(B_dot_v);
+  const Quad rho_h_star = rho * h + b_squared;
+  const Quad h_star = h + b_squared / rho;
+  const Quad sqrt_rho_h_star = sqrt(rho_h_star);
+  const Quad r_1 = B_dot_v + sqrt_rho_h_star;
+  // const Quad r_2 = B_n * v_n - r_1;
+  const Quad r_4 = B_squared + r_1 * B_dot_v * sq(W);
+  const Quad B_21 = B_2 * v_1 - B_1 * v_2;
+  const Quad B_31 = B_n * v_1 - B_1 * v_n;
+  const Quad B_32 = B_n * v_2 - B_2 * v_n;
+
+  std::array<std::array<Quad, 9>, 9> right{};
+  std::array<std::array<Quad, 9>, 9> left{};
+  for (size_t wave = 0; wave < 9; ++wave) {
+    const Quad y = characteristic_speeds[wave];
+    const Quad a = W * (v_n - y);
+    const Quad B = B_n / W + B_dot_v * W * (v_n - y);
+    const Quad G = Quad{1.0} - sq(y);
+    const Quad script_G = rho * h * sq(a) - G * b_squared;
+    const Quad script_G_rho = script_G / (rho * h * cs2);
+    const Quad kappa_rho = kappa + rho * cs2;
+    const Quad Z = rho * h * sq(W);
+    const Quad K = -W * (Quad{1.0} - v_n * y);
+    const Quad kappa_B =
+        kappa_rho * sq(B) + (Quad{1.0} - cs2) * sq(rho * a) * h;
+    const Quad kappa_Bv = kappa_B * B_dot_v - kappa_rho * rho * a * B * h_star;
+    const Quad eps{"1e-14"};
+    const Quad a_denom = a + eps;
+    const Quad G_denom = G + eps;
+    const Quad cs2_denom = cs2 + eps;
+
+    if (wave == grmhd::ValenciaDivClean::MhdSpeed::Entropy) {
+      for (size_t i = 0; i < 3; ++i) {
+        right[wave][i] = h * W * (kappa - rho * cs2) * spatial_velocity[i];
+        right[wave][3 + i] = Quad{0.0};
+      }
+      right[wave][6] = kappa;
+      right[wave][7] = kappa * (h * W - Quad{1.0}) - rho * h * W * cs2;
+      right[wave][8] = Quad{0.0};
+
+      const Quad G_entropy = Quad{1.0} - sq(v_n);
+      const Quad entropy_norm = Quad{1.0} / (rho * h * cs2);
+      for (size_t i = 0; i < 3; ++i) {
+        // S_b components
+        left[wave][i] = entropy_norm * W * v_cov[i];
+        // B_b components: gamma_{ba}b^a - (B_n / GW) s_b
+        const Quad b_cov_i = B_cov[i] / W + W * v_cov[i] * B_dot_v;
+        left[wave][3 + i] =
+            entropy_norm * (b_cov_i - (B_n / (G_entropy * W)) * unit_normal[i]);
+      }
+      // D component
+      left[wave][6] = entropy_norm * (h - W);
+      // tau component
+      left[wave][7] = entropy_norm * (-W);
+      // phi component: W B^a v_a - B_n v_n / GW
+      left[wave][8] =
+          entropy_norm * (W * B_dot_v - (B_n * v_n) / (G_entropy * W));
+    } else if (wave == grmhd::ValenciaDivClean::MhdSpeed::AlfvenMinus or
+               wave == grmhd::ValenciaDivClean::MhdSpeed::AlfvenPlus) {
+      // Explicit S_b components (Rows 1, 2, 3 of the paper's array)
+      right[wave][0] =
+          -Quad{2.0} * sqrt_rho_h_star * B_21 * (B_n + r_1 * v_n * sq(W));
+      right[wave][1] =
+          -sqrt_rho_h_star * (B_n * B_32 + B_1 * B_21 +
+                              r_1 * sq(W) * (B_2 + v_1 * B_21 + v_n * B_32));
+      right[wave][2] =
+          sqrt_rho_h_star * (B_n * B_31 - B_2 * B_21 +
+                             r_1 * sq(W) * (B_1 - v_2 * B_21 + v_n * B_31));
+
+      // Explicit B_b components (Rows 4, 5, 6 of the paper's array)
+      right[wave][3] = Quad{0.0};
+      right[wave][4] = sqrt_rho_h_star * B_2 + v_2 * r_4;
+      right[wave][5] = -sqrt_rho_h_star * B_1 - v_1 * r_4;
+
+      // Explicit Scalar components D and tau (Rows 7, 8 of the paper's array)
+      right[wave][6] = -rho * W * B_21;
+      right[wave][7] =
+          -B_21 * W * (Quad{2.0} * W * sqrt_rho_h_star * r_1 - rho);
+
+      // Appended 9th component for the Divergence Cleaning scalar phi
+      right[wave][8] = Quad{0.0};
+
+      const Quad y_Alf = y;
+      const Quad alf_norm = Quad{1.0} / sqrt_rho_h_star;
+
+      // Explicit S_b components (Rows 1, 2, 3 of the paper's array)
+      left[wave][0] = alf_norm * (B_21 * y_Alf);
+      left[wave][1] = alf_norm * (B_2 + B_32 * y_Alf);
+      left[wave][2] = alf_norm * (-B_1 - B_31 * y_Alf);
+
+      // Explicit B_b components (Rows 4, 5, 6 of the paper's array)
+      left[wave][3] = -B_21 * y_Alf * sqrt_rho_h_star;
+      left[wave][4] = -(B_2 + B_32 * y_Alf);
+      left[wave][5] = (B_1 + B_31 * y_Alf);
+
+      // Explicit Scalar components D and tau (Rows 7, 8 of the paper's array)
+      left[wave][6] = alf_norm * (-B_21);
+      left[wave][7] = alf_norm * (-B_21);
+
+      // Appended 9th component for the Divergence Cleaning scalar phi
+      left[wave][8] = -B_21;
+    } else if (wave == grmhd::ValenciaDivClean::MhdSpeed::ScalarMinus or
+               wave == grmhd::ValenciaDivClean::MhdSpeed::ScalarPlus) {
+      for (size_t i = 0; i < 3; ++i) {
+        right[wave][i] =
+            -((y * kappa_B + Quad{2.0} * kappa_rho * a * B * B_n) *
+                  magnetic_field[i] +
+              sq(W) * B * kappa_B * (s_vec[i] + y * spatial_velocity[i]) -
+              Quad{2.0} * W * kappa_rho * B * sq(B_n) * spatial_velocity[i]) /
+            (a_denom * W);
+        right[wave][3 + i] = kappa_rho * y * B * magnetic_field[i] / W +
+                             (s_vec[i] - y * spatial_velocity[i]) *
+                                 (kappa_rho * B * B_n +
+                                  (Quad{1.0} - cs2) * sq(rho) * sq(a) * h * W) /
+                                 a_denom;
+      }
+      right[wave][6] = kappa_rho * y * rho * B -
+                       (Quad{1.0} - cs2) * sq(rho * a) * h * W / a_denom;
+      right[wave][7] =
+          (kappa_rho * B * (Quad{2.0} * sq(B_n) + rho * a * (a * h_star - y)) -
+           kappa_B * B - Quad{2.0} * kappa_Bv * y * W +
+           (Quad{1.0} - cs2) * sq(rho * a) * B_n) /
+          a_denom;
+      right[wave][8] = -(Quad{1.0} - cs2) * sq(rho * a) * h;
+
+      const Quad inv_one_minus_vn2 = Quad{1.0} / (Quad{1.0} - sq(v_n) + eps);
+      for (size_t i = 0; i < 3; ++i) {
+        left[wave][i] = Quad{0.0};
+        left[wave][3 + i] = unit_normal[i] * inv_one_minus_vn2;
+      }
+      left[wave][6] = Quad{0.0};
+      left[wave][7] = Quad{0.0};
+      left[wave][8] = y * inv_one_minus_vn2;
+    } else {
+      const Quad m_1s = rho * h * a * W * (B * B_dot_v - rho_h_star * a);
+      const Quad m_1v = rho * h *
+                        (B_n * B_dot_v * (y * a + Quad{2.0} * G * W) -
+                         Quad{2.0} * a * sq(B_n) -
+                         a * W *
+                             (y * a * (B_squared / sq(W) + rho * h) +
+                              (Quad{1.0} - Quad{1.0} / cs2) * script_G * W));
+      const Quad m_1B =
+          rho * h * (B * (y * a - G * W) + Quad{2.0} * B_n * (sq(a) + G)) / W;
+      const Quad m_4 =
+          (rho / a_denom) *
+          (sq(a) * sq(B) * h - Quad{2.0} * sq(B_n) * h * (sq(a) + G) +
+           sq(B) * W * (Quad{2.0} * y * a * h - G) +
+           B_n * B * (G + Quad{2.0} * h * W * G - Quad{2.0} * y * a * h) +
+           script_G * W * sq(a) * (h * W * (Quad{1.0} - cs2) - Quad{1.0}) /
+               cs2_denom +
+           rho * h * cube(a) *
+               (y - Quad{2.0} * y * h_star * W + a * (W - h_star)));
+      for (size_t i = 0; i < 3; ++i) {
+        right[wave][i] = m_1s * s_vec[i] + m_1v * spatial_velocity[i] +
+                         m_1B * magnetic_field[i];
+        right[wave][3 + i] = rho * h * a *
+                             (magnetic_field[i] * (Quad{1.0} - y * v_n) -
+                              B_n * (s_vec[i] - y * spatial_velocity[i]));
+      }
+      right[wave][6] =
+          -rho * B * G * B_n / a_denom - sq(rho) * a * h * (y * a - G * W);
+      right[wave][7] = m_4;
+      right[wave][8] = Quad{0.0};
+
+      const Quad f_1v =
+          W * (-G + B * G * B_n * W / (Z * sq(a_denom)) +
+               script_G * sq(W) * (kappa + rho) / (Z * rho * cs2_denom));
+      const Quad g_1B =
+          script_G * kappa * W / (rho * Z * cs2_denom) - (sq(a) + G) / W;
+      const Quad g_1v = B_dot_v * sq(W) * g_1B +
+                        W * (a * B + script_G * B * sq(W) / (Z * a_denom));
+      const Quad h_1 = -(f_1v + y * a);
+      for (size_t i = 0; i < 3; ++i) {
+        left[wave][i] = a * unit_normal[i] -
+                        B * G * W * B_cov[i] / (Z * a_denom) + f_1v * v_cov[i];
+        left[wave][3 + i] =
+            B * unit_normal[i] + g_1B * B_cov[i] + g_1v * v_cov[i] +
+            -(script_G_rho * kappa_rho * B / (G_denom * rho)) * unit_normal[i];
+      }
+      left[wave][6] =
+          h_1 + script_G * (kappa - rho * cs2) / (sq(rho) * cs2_denom);
+      left[wave][7] = h_1;
+      left[wave][8] = (B * K * (G * rho - script_G_rho * kappa_rho) +
+                       G * B_n * (rho * (sq(a) + G) - script_G_rho * kappa)) /
+                      (G_denom * rho * a_denom);
+    }
+  }
+
+  *right_eigenvectors = right;
+  *left_eigenvectors = left;
+  return true;
+}
 
 }  // namespace quad_precision
 
