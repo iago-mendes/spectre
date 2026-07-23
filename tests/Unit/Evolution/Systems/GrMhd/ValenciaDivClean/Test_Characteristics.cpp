@@ -24,6 +24,8 @@
 #include "DataStructures/Variables.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Fluxes.hpp"
 #include "Framework/Pypp.hpp"
 #include "Framework/SetupLocalPythonEnvironment.hpp"
 #include "Framework/TestHelpers.hpp"
@@ -2925,6 +2927,542 @@ void test_hydro_mhd_comparison(const bool output) {
   CHECK(hydro_err_at_small_sigma < 1.0e-6);
 }
 
+// Diagnostic for the numeric-eigensystem-in-Marquina problem (task #51).  The
+// Marquina reconstruction needs sum_i R_i (x) L_i = I, i.e. L.R = I.
+// numerical_characteristics stores geev's RAW eigenvectors (no
+// biorthonormalization).  For DISTINCT eigenvalues, left/right eigenvectors of a
+// matrix are automatically biorthogonal (L_i.R_j = 0, i != j), so a scalar
+// rescale L_i <- L_i/(L_i.R_i) should give L.R = I; only a degenerate block can
+// break that.  Here we sweep B_n -> 0 and, per point, measure:
+//   raw_offdiag = max_{i!=j} |L_i.R_j|            (biorthogonality of geev output)
+//   raw_mindiag = min_i |L_i.R_i|                 (how far the diagonal is from 1)
+//   rescaled_id = || sum_i R_i (L_i/(L_i.R_i))^T - I ||   (does a scalar rescale fix it)
+// TSV dump guarded by SPECTRE_NUMEIG_DUMP.
+void test_numeric_biorthogonality(const bool output) {
+  const ScopedFpeState disable_fpes(false);
+  constexpr size_t num_points = 1;
+  const EquationsOfState::IdealFluid<true> eos_2d(1.37, 0.0);
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  const double W = 1.4;
+  const double phi_B = M_PI / 4.0;
+  const double vn_frac = 0.28;
+  const double sigma = 1.3;
+  Scalar<DataVector> rest_mass_density{DataVector(num_points, 1.13)};
+  const Scalar<DataVector> pressure{DataVector(num_points, 0.12)};
+  const Scalar<DataVector> specific_internal_energy =
+      eos_2d.specific_internal_energy_from_density_and_pressure(
+          rest_mass_density, pressure);
+  const Scalar<DataVector> specific_enthalpy =
+      hydro::relativistic_specific_enthalpy(rest_mass_density,
+                                            specific_internal_energy, pressure);
+  const Scalar<DataVector> lorentz_factor{DataVector(num_points, W)};
+  const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.13)};
+  const double vmag = std::sqrt(std::max(0.0, 1.0 - 1.0 / square(W)));
+  const double vn = vn_frac * vmag;
+  const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+  tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+  spatial_velocity.get(0) = vn;
+  spatial_velocity.get(1) = vt;
+  spatial_velocity.get(2) = 0.0;
+  const double b_mag = std::sqrt(sigma * get(rest_mass_density)[0] *
+                                 get(specific_enthalpy)[0]);
+
+  std::ofstream dump;
+  if (output) {
+    dump.open("numeric_biorthogonality.tsv", std::ios::out | std::ios::trunc);
+    dump << std::setprecision(16);
+    dump << "bn_frac\tmin_gap\traw_offdiag\traw_mindiag\trescaled_id\n";
+  }
+
+  constexpr size_t n_bn = 40;
+  double well_sep_rescaled_id = 1.0e30;  // best (smallest) at large gap
+  for (size_t ib = 0; ib < n_bn; ++ib) {
+    const double bn_frac = std::pow(
+        10.0, std::log10(0.5) + (std::log10(1.0e-10) - std::log10(0.5)) *
+                                    static_cast<double>(ib) /
+                                    static_cast<double>(n_bn - 1));
+    const double bx = bn_frac * b_mag;
+    const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
+    tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+    magnetic_field.get(0) = bx;
+    magnetic_field.get(1) = bt * std::cos(phi_B);
+    magnetic_field.get(2) = bt * std::sin(phi_B);
+
+    tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+    tnsr::ij<DataVector, 9> modes{num_points, 0.0};
+    tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
+    grmhd::ValenciaDivClean::numerical_characteristics<9>(
+        make_not_null(&speeds), make_not_null(&modes),
+        make_not_null(&projectors), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, electron_fraction,
+        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+        unit_normal, eos_2d);
+
+    // L.R matrix (M_ij = L_i . R_j = projectors row i dot modes row j).
+    std::array<std::array<double, 9>, 9> m{};
+    for (size_t i = 0; i < 9; ++i) {
+      for (size_t j = 0; j < 9; ++j) {
+        double v = 0.0;
+        for (size_t k = 0; k < 9; ++k) {
+          v += projectors.get(i, k)[0] * modes.get(j, k)[0];
+        }
+        m[i][j] = v;
+      }
+    }
+    double raw_offdiag = 0.0;
+    double raw_mindiag = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < 9; ++i) {
+      raw_mindiag = std::min(raw_mindiag, std::abs(m[i][i]));
+      for (size_t j = 0; j < 9; ++j) {
+        if (i != j) {
+          raw_offdiag = std::max(raw_offdiag, std::abs(m[i][j]));
+        }
+      }
+    }
+    // Scalar-rescaled reconstruction identity: sum_i R_i (L_i/M_ii)^T.
+    double rescaled_id = 0.0;
+    for (size_t a = 0; a < 9; ++a) {
+      for (size_t b = 0; b < 9; ++b) {
+        double v = 0.0;
+        for (size_t i = 0; i < 9; ++i) {
+          v += modes.get(i, a)[0] * projectors.get(i, b)[0] / m[i][i];
+        }
+        rescaled_id = std::max(rescaled_id, std::abs(v - (a == b ? 1.0 : 0.0)));
+      }
+    }
+
+    std::array<double, 9> sorted{};
+    for (size_t i = 0; i < 9; ++i) {
+      sorted[i] = speeds.get(i)[0];
+    }
+    std::sort(sorted.begin(), sorted.end());
+    double min_gap = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i + 1 < 9; ++i) {
+      min_gap = std::min(min_gap, sorted[i + 1] - sorted[i]);
+    }
+    if (bn_frac > 0.1) {
+      well_sep_rescaled_id = std::min(well_sep_rescaled_id, rescaled_id);
+    }
+    if (dump.is_open()) {
+      dump << bn_frac << '\t' << min_gap << '\t' << raw_offdiag << '\t'
+           << raw_mindiag << '\t' << rescaled_id << '\n';
+    }
+  }
+  // At a well-separated (non-degenerate) state, a scalar rescale of geev's own
+  // eigenvectors must reconstruct the identity -- i.e. the numeric decomposition
+  // needs no inversion there, only per-wave renormalization.
+  CHECK(well_sep_rescaled_id < 1.0e-9);
+
+  // Contrast: the HYDRO system has an EXACT 4-fold degeneracy at v_n (the contact
+  // modes), so geev returns an arbitrary basis for that eigenspace and its left /
+  // right bases are NOT mutually biorthogonal -- a scalar rescale then does NOT
+  // recover the identity.  This is the genuine "degenerate block" problem (and
+  // the likely cause of the earlier HydroYe numeric-Marquina failure).
+  {
+    tnsr::i<DataVector, 6> h_speeds{num_points, 0.0};
+    tnsr::ij<DataVector, 6> h_modes{num_points, 0.0};
+    tnsr::IJ<DataVector, 6> h_projectors{num_points, 0.0};
+    grmhd::ValenciaDivClean::numerical_characteristics<6>(
+        make_not_null(&h_speeds), make_not_null(&h_modes),
+        make_not_null(&h_projectors), spatial_velocity,
+        tnsr::I<DataVector, 3, Frame::Inertial>{num_points, 0.0},
+        rest_mass_density, specific_internal_energy, electron_fraction,
+        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+        unit_normal, eos_2d);
+    std::array<std::array<double, 6>, 6> hm{};
+    for (size_t i = 0; i < 6; ++i) {
+      for (size_t j = 0; j < 6; ++j) {
+        double v = 0.0;
+        for (size_t k = 0; k < 6; ++k) {
+          v += h_projectors.get(i, k)[0] * h_modes.get(j, k)[0];
+        }
+        hm[i][j] = v;
+      }
+    }
+    double h_offdiag = 0.0;
+    for (size_t i = 0; i < 6; ++i) {
+      for (size_t j = 0; j < 6; ++j) {
+        if (i != j) {
+          h_offdiag = std::max(h_offdiag, std::abs(hm[i][j]));
+        }
+      }
+    }
+    double h_rescaled_id = 0.0;
+    for (size_t a = 0; a < 6; ++a) {
+      for (size_t b = 0; b < 6; ++b) {
+        double v = 0.0;
+        for (size_t i = 0; i < 6; ++i) {
+          v += h_modes.get(i, a)[0] * h_projectors.get(i, b)[0] / hm[i][i];
+        }
+        h_rescaled_id = std::max(h_rescaled_id, std::abs(v - (a == b ? 1.0 : 0.0)));
+      }
+    }
+    if (output) {
+      std::cout << "HYDRO_NUMEIG exact-degeneracy: raw_offdiag=" << h_offdiag
+                << "  rescaled_id=" << h_rescaled_id << "\n";
+    }
+    // The exact degenerate block breaks biorthogonality: a scalar rescale is not
+    // enough (the block needs a proper projector, e.g. the complementary one).
+    CHECK(h_rescaled_id > 1.0e-3);
+  }
+}
+
+// Flux-level comparison of the analytic vs numeric decomposition (task #51,
+// step 4).  What Marquina actually uses is the dissipation matrix
+// |A| = sum_i |lambda_i| R_i (L_i/(L_i.R_i))^T (the decomposition-dependent part
+// of the numerical flux).  Over the parameter-space corners, sweep B_n -> 0 and
+// compare, against the flux Jacobian A = flux_jacobian_mhd:
+//   err_signed_analytic = || sum_i lambda_i R_i^an  L_i^an  - A ||   (grows near deg.)
+//   err_signed_numeric  = || sum_i lambda_i R_i^num L_i^num - A ||   (~round-off)
+//   diss_diff           = || |A|_analytic - |A|_numeric ||          (analytic flux error)
+// with the numeric decomposition as the (validated) reference.  Dump guarded by
+// SPECTRE_NUMEIG_DUMP.
+// Marquina boundary-correction (numerical flux) comparison, numeric vs analytic
+// (task #51, step 4).  This is the quantity actually used as the DG boundary
+// correction -- not the flux Jacobian.  For each parameter-space corner we build
+// a physical interface (an interior state and a slightly perturbed exterior
+// state), compute the real conserved variables and normal fluxes with
+// ConservativeFromPrimitive / Fluxes, and then apply the exact Marquina per-wave
+// flux formula (copied from Marquina::dg_boundary_terms) with EACH decomposition.
+// The numeric decomposition is the reference; we report the relative difference
+// of the analytic boundary correction from it, swept over B_n -> 0.  Flat metric
+// (lapse 1, shift 0, sqrt(gamma) 1), interior normal +x / exterior normal -x.
+// Dump guarded by SPECTRE_NUMEIG_DUMP.
+void test_numeric_vs_analytic_flux(const bool output) {
+  const ScopedFpeState disable_fpes(false);
+  constexpr size_t num_points = 1;
+  const EquationsOfState::IdealFluid<true> eos_2d(1.37, 0.0);
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const Scalar<DataVector> sqrt_det{DataVector(num_points, 1.0)};
+  const Scalar<DataVector> lapse{DataVector(num_points, 1.0)};
+  const tnsr::I<DataVector, 3, Frame::Inertial> shift{num_points, 0.0};
+  // Interior normal +x, exterior normal -x (its outward normal).
+  const auto normal_int = unit_basis_form(Direction<3>::lower_xi(),
+                                          inv_spatial_metric);
+  tnsr::i<DataVector, 3, Frame::Inertial> normal_ext{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    normal_ext.get(i) = -normal_int.get(i);
+  }
+
+  // A physical MHD state -> its conserved variables U (order
+  // [S_x,S_y,S_z,B_x,B_y,B_z,D,tau,phi]) and normal flux F.n for a given normal.
+  struct State {
+    std::array<double, 9> u;
+    std::array<double, 9> fn;
+    tnsr::I<DataVector, 3, Frame::Inertial> velocity;
+    tnsr::I<DataVector, 3, Frame::Inertial> bfield;
+    Scalar<DataVector> rho, eps, ye, h, W, phi;
+  };
+  const auto make_state = [&](double density, double pressure_val, double W_lor,
+                              double vn_frac, double bn_frac, double b_mag,
+                              double phi_val, double phi_ang,
+                              const tnsr::i<DataVector, 3, Frame::Inertial>& nrm) {
+    State s;
+    s.rho = Scalar<DataVector>{DataVector(num_points, density)};
+    const Scalar<DataVector> pressure{DataVector(num_points, pressure_val)};
+    s.eps = eos_2d.specific_internal_energy_from_density_and_pressure(s.rho,
+                                                                      pressure);
+    s.ye = Scalar<DataVector>{DataVector(num_points, 0.13)};
+    s.h = hydro::relativistic_specific_enthalpy(s.rho, s.eps, pressure);
+    s.W = Scalar<DataVector>{DataVector(num_points, W_lor)};
+    s.phi = Scalar<DataVector>{DataVector(num_points, phi_val)};
+    const double vmag = std::sqrt(std::max(0.0, 1.0 - 1.0 / square(W_lor)));
+    const double vn = vn_frac * vmag;
+    const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+    s.velocity = tnsr::I<DataVector, 3, Frame::Inertial>{num_points, 0.0};
+    s.velocity.get(0) = vn;
+    s.velocity.get(1) = vt;
+    const double bx = bn_frac * b_mag;
+    const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
+    s.bfield = tnsr::I<DataVector, 3, Frame::Inertial>{num_points, 0.0};
+    s.bfield.get(0) = bx;
+    s.bfield.get(1) = bt * std::cos(phi_ang);
+    s.bfield.get(2) = bt * std::sin(phi_ang);
+    Scalar<DataVector> tilde_d{num_points}, tilde_ye{num_points},
+        tilde_tau{num_points}, tilde_phi{num_points};
+    tnsr::i<DataVector, 3, Frame::Inertial> tilde_s{num_points};
+    tnsr::I<DataVector, 3, Frame::Inertial> tilde_b{num_points};
+    grmhd::ValenciaDivClean::ConservativeFromPrimitive::apply(
+        make_not_null(&tilde_d), make_not_null(&tilde_ye),
+        make_not_null(&tilde_tau), make_not_null(&tilde_s),
+        make_not_null(&tilde_b), make_not_null(&tilde_phi), s.rho, s.ye, s.eps,
+        pressure, s.velocity, s.W, s.bfield, sqrt_det, spatial_metric, s.phi);
+    tnsr::I<DataVector, 3, Frame::Inertial> f_d{num_points}, f_ye{num_points},
+        f_tau{num_points}, f_phi{num_points};
+    tnsr::Ij<DataVector, 3, Frame::Inertial> f_s{num_points};
+    tnsr::IJ<DataVector, 3, Frame::Inertial> f_b{num_points};
+    grmhd::ValenciaDivClean::ComputeFluxes::apply(
+        make_not_null(&f_d), make_not_null(&f_ye), make_not_null(&f_tau),
+        make_not_null(&f_s), make_not_null(&f_b), make_not_null(&f_phi),
+        tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse, shift,
+        sqrt_det, spatial_metric, inv_spatial_metric, pressure, s.velocity, s.W,
+        s.bfield);
+    // Conserved vector + normal flux in Marquina's variable order.
+    s.u = {get<0>(tilde_s)[0], get<1>(tilde_s)[0], get<2>(tilde_s)[0],
+           get<0>(tilde_b)[0], get<1>(tilde_b)[0], get<2>(tilde_b)[0],
+           get(tilde_d)[0],    get(tilde_tau)[0],  get(tilde_phi)[0]};
+    const auto ndot = [&](const auto& flux, size_t comp) {
+      double v = 0.0;
+      for (size_t i = 0; i < 3; ++i) {
+        v += flux.get(comp, i)[0] * nrm.get(i)[0];
+      }
+      return v;
+    };
+    const auto ndot_vec = [&](const tnsr::I<DataVector, 3, Frame::Inertial>& fl) {
+      double v = 0.0;
+      for (size_t i = 0; i < 3; ++i) {
+        v += fl.get(i)[0] * nrm.get(i)[0];
+      }
+      return v;
+    };
+    s.fn = {ndot(f_s, 0), ndot(f_s, 1), ndot(f_s, 2), ndot(f_b, 0),
+            ndot(f_b, 1), ndot(f_b, 2), ndot_vec(f_d), ndot_vec(f_tau),
+            ndot_vec(f_phi)};
+    return s;
+  };
+
+  // Decomposition (speeds, L, R) in MhdSpeed order at a state, with a given
+  // normal, either analytic or numeric (matched to analytic speeds + rescaled),
+  // exactly as Marquina::dg_package_data builds it.  ok=false if it threw / is
+  // not biorthonormal.
+  struct Decomp {
+    std::array<double, 9> speed;
+    std::array<std::array<double, 9>, 9> l;  // l[i] = L_i / (L_i.R_i)
+    std::array<std::array<double, 9>, 9> r;  // r[i] = R_i
+    bool ok;
+  };
+  const auto decompose = [&](const State& s,
+                             const tnsr::i<DataVector, 3, Frame::Inertial>& nrm,
+                             bool numeric) {
+    Decomp d;
+    d.ok = true;
+    tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), s.velocity, s.bfield, s.rho, s.eps, s.W, s.h,
+        spatial_metric, nrm, eos_2d);
+    for (size_t i = 0; i < 9; ++i) {
+      d.speed[i] = speeds.get(i)[0];
+    }
+    tnsr::ij<DataVector, 9> modes{num_points, 0.0};
+    tnsr::IJ<DataVector, 9> proj{num_points, 0.0};
+    if (numeric) {
+      // numerical_characteristics ASSERTs on a complex eigenvalue -- which
+      // blaze::geev can return for a near-degenerate real spectrum -- so the
+      // numeric decomposition can fail outright there.  Catch it and flag.
+      try {
+        tnsr::i<DataVector, 9> ns{num_points, 0.0};
+        tnsr::ij<DataVector, 9> nm{num_points, 0.0};
+        tnsr::IJ<DataVector, 9> np{num_points, 0.0};
+        grmhd::ValenciaDivClean::numerical_characteristics<9>(
+            make_not_null(&ns), make_not_null(&nm), make_not_null(&np),
+            s.velocity, s.bfield, s.rho, s.eps, s.ye, s.W, s.h, spatial_metric,
+            inv_spatial_metric, nrm, eos_2d);
+        std::array<bool, 9> used{};
+        for (size_t k = 0; k < 9; ++k) {
+          size_t best = 9;
+          double bd = std::numeric_limits<double>::infinity();
+          for (size_t g = 0; g < 9; ++g) {
+            if (not used[g] and std::abs(ns.get(g)[0] - d.speed[k]) < bd) {
+              bd = std::abs(ns.get(g)[0] - d.speed[k]);
+              best = g;
+            }
+          }
+          used[best] = true;
+          for (size_t n = 0; n < 9; ++n) {
+            modes.get(k, n)[0] = nm.get(best, n)[0];
+            proj.get(k, n)[0] = np.get(best, n)[0];
+          }
+        }
+      } catch (...) {
+        d.ok = false;
+        return d;
+      }
+    } else {
+      try {
+        grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd(
+            make_not_null(&modes), make_not_null(&proj), speeds, s.velocity,
+            s.bfield, s.rho, s.eps, s.W, s.h, spatial_metric, nrm, eos_2d);
+      } catch (...) {
+        d.ok = false;
+      }
+    }
+    for (size_t i = 0; i < 9; ++i) {
+      double diagonal = 0.0;
+      for (size_t n = 0; n < 9; ++n) {
+        diagonal += proj.get(i, n)[0] * modes.get(i, n)[0];
+      }
+      for (size_t n = 0; n < 9; ++n) {
+        d.r[i][n] = modes.get(i, n)[0];
+        d.l[i][n] = proj.get(i, n)[0] / diagonal;
+      }
+    }
+    return d;
+  };
+
+  // Marquina per-wave boundary correction G (9-vector), replicating
+  // Marquina::dg_boundary_terms: align the exterior decomposition to the
+  // interior frame (negate speeds, swap +/- pairs), then upwind each wave.
+  const auto marquina_flux = [&](const State& si, const State& se,
+                                 const Decomp& di, const Decomp& de) {
+    // Align exterior to interior frame.
+    const std::array<std::array<size_t, 2>, 4> pairs{
+        {{{0, 8}}, {{1, 7}}, {{2, 6}}, {{3, 5}}}};
+    std::array<double, 9> se_speed = de.speed;
+    auto le = de.l;
+    auto re = de.r;
+    se_speed[4] = -de.speed[4];
+    for (const auto& pr : pairs) {
+      const size_t m = pr[0], p = pr[1];
+      se_speed[m] = -de.speed[p];
+      se_speed[p] = -de.speed[m];
+      le[m] = de.l[p];
+      le[p] = de.l[m];
+      re[m] = de.r[p];
+      re[p] = de.r[m];
+    }
+    std::array<double, 9> g{};
+    for (size_t i = 0; i < 9; ++i) {
+      double omega_int = 0.0, omega_ext = 0.0, phi_int = 0.0, phi_ext = 0.0;
+      for (size_t n = 0; n < 9; ++n) {
+        omega_int += di.l[i][n] * si.u[n];
+        omega_ext += le[i][n] * se.u[n];
+        phi_int += di.l[i][n] * si.fn[n];
+        phi_ext += le[i][n] * (-se.fn[n]);
+      }
+      const double li = di.speed[i];
+      const double lex = se_speed[i];
+      double phi_plus = 0.0, phi_minus = 0.0;
+      if (li >= 0.0 and lex >= 0.0) {
+        phi_plus = phi_int;
+      } else if (li <= 0.0 and lex <= 0.0) {
+        phi_minus = phi_ext;
+      } else {
+        const double alpha = std::max(std::abs(li), std::abs(lex));
+        phi_plus = 0.5 * (phi_int + alpha * omega_int);
+        phi_minus = 0.5 * (phi_ext - alpha * omega_ext);
+      }
+      for (size_t n = 0; n < 9; ++n) {
+        g[n] += phi_plus * di.r[i][n] + phi_minus * re[i][n];
+      }
+    }
+    return g;
+  };
+
+  struct Cfg {
+    const char* name;
+    double pressure;
+    double sigma;
+  };
+  const std::array<Cfg, 4> cfgs{{{"cold_weakB", 1.3e-4, 1.1e-4},
+                                 {"cold_strongB", 1.3e-4, 1.2e3},
+                                 {"hot_weakB", 1.1, 1.1e-4},
+                                 {"hot_strongB", 1.1, 1.2e3}}};
+  const double W = 1.43;
+  const double phi_ang = M_PI / 4.0;
+
+  std::ofstream dump;
+  if (output) {
+    dump.open("numeric_vs_analytic_marquina_flux.tsv",
+              std::ios::out | std::ios::trunc);
+    dump << std::setprecision(16);
+    dump << "cfg\tname\tbn_frac\tmin_gap\tflux_rel_diff\tnumeric_ok\n";
+  }
+
+  for (size_t ic = 0; ic < cfgs.size(); ++ic) {
+    const Cfg& cf = cfgs[ic];
+    const double density = 1.13;
+    // |B| from sigma at the interior state's enthalpy.
+    const Scalar<DataVector> rho0{DataVector(num_points, density)};
+    const Scalar<DataVector> p0{DataVector(num_points, cf.pressure)};
+    const auto eps0 =
+        eos_2d.specific_internal_energy_from_density_and_pressure(rho0, p0);
+    const auto h0 = hydro::relativistic_specific_enthalpy(rho0, eps0, p0);
+    const double b_mag = std::sqrt(cf.sigma * density * get(h0)[0]);
+
+    constexpr size_t n_bn = 40;
+    for (size_t ib = 0; ib < n_bn; ++ib) {
+      const double bn_frac = std::pow(
+          10.0, std::log10(0.5) + (std::log10(1.0e-10) - std::log10(0.5)) *
+                                      static_cast<double>(ib) /
+                                      static_cast<double>(n_bn - 1));
+      // Interior state, and a modestly perturbed exterior state (smooth jump).
+      const State si = make_state(density, cf.pressure, W, 0.28, bn_frac, b_mag,
+                                  0.02, phi_ang, normal_int);
+      const State se = make_state(density * 1.05, cf.pressure * 1.04, W * 1.01,
+                                  0.3, bn_frac, b_mag * 1.03, 0.025, phi_ang,
+                                  normal_ext);
+
+      // min gap from the interior analytic speeds
+      std::array<double, 9> sorted{};
+      tnsr::i<DataVector, 9> isp{num_points, 0.0};
+      grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+          make_not_null(&isp), si.velocity, si.bfield, si.rho, si.eps, si.W,
+          si.h, spatial_metric, normal_int, eos_2d);
+      for (size_t i = 0; i < 9; ++i) {
+        sorted[i] = isp.get(i)[0];
+      }
+      std::sort(sorted.begin(), sorted.end());
+      double min_gap = std::numeric_limits<double>::infinity();
+      for (size_t i = 0; i + 1 < 9; ++i) {
+        min_gap = std::min(min_gap, sorted[i + 1] - sorted[i]);
+      }
+
+      const Decomp di_an = decompose(si, normal_int, false);
+      const Decomp de_an = decompose(se, normal_ext, false);
+      const Decomp di_nu = decompose(si, normal_int, true);
+      const Decomp de_nu = decompose(se, normal_ext, true);
+
+      // numeric biorthonormality (proxy for "usable"): reconstruct identity.
+      const auto biorth_ok = [&](const Decomp& d) {
+        double e = 0.0;
+        for (size_t m = 0; m < 9; ++m) {
+          for (size_t n = 0; n < 9; ++n) {
+            double v = 0.0;
+            for (size_t i = 0; i < 9; ++i) {
+              v += d.r[i][m] * d.l[i][n];
+            }
+            e = std::max(e, std::abs(v - (m == n ? 1.0 : 0.0)));
+          }
+        }
+        return e < 1.0e-6;
+      };
+      const bool numeric_ok = di_nu.ok and de_nu.ok and biorth_ok(di_nu) and
+                              biorth_ok(de_nu);
+
+      double flux_rel_diff = -1.0;
+      if (numeric_ok and di_an.ok and de_an.ok) {
+        const auto g_nu = marquina_flux(si, se, di_nu, de_nu);
+        const auto g_an = marquina_flux(si, se, di_an, de_an);
+        double num = 0.0, den = 0.0;
+        for (size_t n = 0; n < 9; ++n) {
+          num = std::max(num, std::abs(g_an[n] - g_nu[n]));
+          den = std::max(den, std::abs(g_nu[n]));
+        }
+        flux_rel_diff = num / std::max(den, 1.0e-300);
+      }
+      if (dump.is_open()) {
+        dump << ic << '\t' << cf.name << '\t' << bn_frac << '\t' << min_gap
+             << '\t' << flux_rel_diff << '\t' << (numeric_ok ? 1 : 0) << '\n';
+      }
+    }
+  }
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
@@ -2954,6 +3492,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   test_degeneracy_parameter_sweep(std::getenv("SPECTRE_DEGEN_DUMP") != nullptr);
   test_flux_jacobian_precision(std::getenv("SPECTRE_MATRIX_DUMP") != nullptr);
   test_hydro_mhd_comparison(std::getenv("SPECTRE_HYDROMHD_DUMP") != nullptr);
+  test_numeric_biorthogonality(std::getenv("SPECTRE_NUMEIG_DUMP") != nullptr);
+  test_numeric_vs_analytic_flux(std::getenv("SPECTRE_NUMEIG_DUMP") != nullptr);
   test_mhd_characteristics(dv);
   test_mhd_numerical_characteristics(dv);
 

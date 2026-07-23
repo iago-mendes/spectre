@@ -58,8 +58,19 @@ enum class MarquinaCharacteristicsMethod {
   /// Use the analytic eigenvectors, falling back to the numeric eigensystem
   /// where the analytic ones are too degenerate (not biorthogonal).
   AnalyticWithNumericFallback,
-  /// A smarter complementary-projection scheme (not yet implemented).
-  AnalyticWithComplementaryProjection
+  /// Complementary projection with the SPEED-GAP detector: per point, only the
+  /// waves whose speeds actually collapse (gap < DegeneracyTolerance) are
+  /// reconstructed by the complement; well-separated waves stay analytic.  So
+  /// away from a degeneracy this reduces to AlwaysAnalytic.
+  AnalyticWithComplementaryProjection,
+  /// Complementary projection applied UNCONDITIONALLY to the collapse-prone
+  /// fluid subspace (Alfven-, slow-, entropy, slow+, Alfven+), regardless of
+  /// whether those speeds are currently degenerate.  Unlike
+  /// AnalyticWithComplementaryProjection this is NOT adaptive: it always lumps
+  /// that subspace into one complement vector, so it is more diffusive than the
+  /// full analytic decomposition when the modes are well separated, and only
+  /// pays off when they collapse.  (The fast and GLM-scalar waves stay analytic.)
+  AlwaysComplementaryProjection
 };
 std::ostream& operator<<(std::ostream& os, MarquinaCharacteristicsMethod t);
 

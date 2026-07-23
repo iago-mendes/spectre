@@ -53,6 +53,8 @@ std::ostream& operator<<(std::ostream& os,
       return os << "AnalyticWithNumericFallback";
     case MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection:
       return os << "AnalyticWithComplementaryProjection";
+    case MarquinaCharacteristicsMethod::AlwaysComplementaryProjection:
+      return os << "AlwaysComplementaryProjection";
     default:
       ERROR("Unknown MarquinaCharacteristicsMethod");
   }
@@ -139,22 +141,47 @@ double Marquina::dg_package_data(
     /*mesh_velocity*/,
     const std::optional<Scalar<DataVector>>& /*normal_dot_mesh_velocity*/,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) const {
-  // Supported: AlwaysAnalytic (both systems) and, for the MHD system,
-  // AnalyticWithComplementaryProjection (Fedkiw-Merriman-Osher 1997: handle the
-  // degenerate wave subspace by the complement of the well-conditioned waves,
-  // avoiding the ill-defined degenerate eigenvectors; see
-  // runs-ai/mhd_marquina/reports/complementary_projection_study.md).  The
-  // numeric / numeric-fallback methods are a later phase
-  // (runs-ai/mhd_marquina/reports/numeric_marquina_attempt.md).
+  // Supported:
+  //  - AlwaysAnalytic (both systems): closed-form eigenvectors.
+  //  - AnalyticWithComplementaryProjection (MHD): handle the degenerate wave
+  //    subspace by the complement of the well-conditioned waves (Fedkiw-Merriman-
+  //    Osher 1997), avoiding the ill-defined degenerate eigenvectors; see
+  //    runs-ai/mhd_marquina/reports/complementary_projection_study.md.
+  //  - AlwaysNumeric (MHD): build the decomposition from the per-point numeric
+  //    eigensolver (blaze::geev via numerical_characteristics) instead of the
+  //    closed-form eigenvectors.  For distinct eigenvalues geev's left/right
+  //    eigenvectors are biorthogonal to round-off, so a per-wave rescale
+  //    L_i <- L_i/(L_i.R_i) gives L.R = I with no inversion.  This is a PURELY
+  //    numeric method: it does NOT fall back to the complementary projection.
+  //    At an exact (or double-underflowed) degeneracy geev returns an arbitrary,
+  //    non-biorthonormal basis for the repeated eigenspace and L.R != I; in that
+  //    case the numeric decomposition is unusable and we ERROR (use
+  //    AnalyticWithComplementaryProjection for a degeneracy-robust method).
+  //    See runs-ai/mhd_marquina/meetings/2026-07-09/numeric_eigensystem/.
+  const bool use_numeric =
+      characteristics_method_ == MarquinaCharacteristicsMethod::AlwaysNumeric;
+  // AlwaysComplementaryProjection unconditionally complements the collapse-prone
+  // fluid subspace (non-adaptive); AnalyticWithComplementaryProjection only
+  // complements waves the speed-gap detector flags as degenerate.
+  const bool always_complementary_projection =
+      characteristics_method_ ==
+      MarquinaCharacteristicsMethod::AlwaysComplementaryProjection;
+  // Complementary projection (either variant) is used ONLY when its method is
+  // explicitly requested; AlwaysAnalytic and AlwaysNumeric never invoke it (they
+  // ERROR if their decomposition is unusable at a degeneracy).
   const bool complementary_projection =
       characteristics_method_ ==
-      MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection;
-  if (characteristics_method_ != MarquinaCharacteristicsMethod::AlwaysAnalytic and
-      not complementary_projection) {
+          MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection or
+      always_complementary_projection;
+  if (characteristics_method_ ==
+          MarquinaCharacteristicsMethod::AnalyticWithNumericFallback or
+      (use_numeric and
+       characteristics_system_ == MarquinaCharacteristicsSystem::HydroYe)) {
     ERROR(
         "Marquina supports CharacteristicsMethod: AlwaysAnalytic and "
-        "AnalyticWithComplementaryProjection (both systems). The numeric / "
-        "fallback methods are not yet implemented. Requested "
+        "AnalyticWithComplementaryProjection (both systems), and AlwaysNumeric "
+        "(MHD system).  AnalyticWithNumericFallback and numeric HydroYe are not "
+        "yet implemented.  Requested "
         << characteristics_method_ << " with system " << characteristics_system_
         << ".");
   }
@@ -235,12 +262,58 @@ double Marquina::dg_package_data(
     // disabled for this scope) and zero the affected waves below, then
     // reconstruct their subspace by complement in dg_boundary_terms.  For
     // AlwaysAnalytic the scope keeps exceptions enabled (unchanged behaviour).
-    const ScopedFpeState fpe_scope(not complementary_projection);
-    characteristic_eigenvectors_mhd(
-        make_not_null(&mhd_modes), make_not_null(&mhd_projectors), mhd_speeds,
-        spatial_velocity, magnetic_field, rest_mass_density,
-        specific_internal_energy, lorentz_factor, specific_enthalpy,
-        spatial_metric, unit_normal_covector, equation_of_state);
+    // For AlwaysNumeric we also disable exceptions so a degenerate geev block
+    // (L.R != I) is caught by an explicit biorthonormality check that ERRORs,
+    // rather than tripping an FP trap on 1/(L_i.R_i).
+    const ScopedFpeState fpe_scope(not complementary_projection and
+                                   not use_numeric);
+    if (use_numeric) {
+      // Numeric eigenvectors from blaze::geev.  geev returns the eigenpairs in
+      // an arbitrary per-point order, so we reorder them into the canonical
+      // MhdSpeed enum order by matching each numeric eigenvalue to the nearest
+      // (accurate) analytic speed.  The analytic speeds are used only for the
+      // ordering and the Marquina split; the eigenVECTORS come from geev.  The
+      // subsequent loop rescales L_i by 1/(L_i.R_i) -- for distinct eigenvalues
+      // that yields L.R = I; an exact-degenerate block (non-biorthonormal) is
+      // rejected by the check after the loop.
+      tnsr::i<DataVector, 9> numeric_speeds{num_points, 0.0};
+      tnsr::ij<DataVector, 9> numeric_modes{num_points, 0.0};
+      tnsr::IJ<DataVector, 9> numeric_projectors{num_points, 0.0};
+      numerical_characteristics<9>(
+          make_not_null(&numeric_speeds), make_not_null(&numeric_modes),
+          make_not_null(&numeric_projectors), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, electron_fraction,
+          lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+          unit_normal_covector, equation_of_state);
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        std::array<bool, 9> used{};
+        for (size_t k = 0; k < 9; ++k) {
+          size_t best = 9;
+          double best_dist = std::numeric_limits<double>::infinity();
+          for (size_t g = 0; g < 9; ++g) {
+            if (not gsl::at(used, g)) {
+              const double dist =
+                  std::abs(numeric_speeds.get(g)[pt] - mhd_speeds.get(k)[pt]);
+              if (dist < best_dist) {
+                best_dist = dist;
+                best = g;
+              }
+            }
+          }
+          gsl::at(used, best) = true;
+          for (size_t n = 0; n < 9; ++n) {
+            mhd_modes.get(k, n)[pt] = numeric_modes.get(best, n)[pt];
+            mhd_projectors.get(k, n)[pt] = numeric_projectors.get(best, n)[pt];
+          }
+        }
+      }
+    } else {
+      characteristic_eigenvectors_mhd(
+          make_not_null(&mhd_modes), make_not_null(&mhd_projectors), mhd_speeds,
+          spatial_velocity, magnetic_field, rest_mass_density,
+          specific_internal_energy, lorentz_factor, specific_enthalpy,
+          spatial_metric, unit_normal_covector, equation_of_state);
+    }
     // characteristic_eigenvectors_mhd returns biorthogonal but NOT
     // biorthonormal eigenvectors (L_i . R_i is not 1); the Marquina
     // reconstruction needs L . R = identity, so rescale each left eigenvector
@@ -290,9 +363,17 @@ double Marquina::dg_package_data(
                   std::abs(mhd_speeds.get(i)[pt] - mhd_speeds.get(k)[pt]));
             }
           }
+          // AlwaysComplementaryProjection: unconditionally complement the
+          // collapse-prone fluid subspace (MhdSpeed indices 2,3,4,5,6 =
+          // Alfven-, slow-, entropy, slow+, Alfven+), regardless of the gap;
+          // the fast (1,7) and GLM-scalar (0,8) waves stay analytic.  Otherwise
+          // (adaptive CPM) flag by the speed gap / non-finiteness.
+          const bool in_fluid_subspace = (i >= 2 and i <= 6);
           const bool degenerate =
-              not std::isfinite(diagonal[pt]) or not std::isfinite(scale) or
-              min_speed_gap <= gap_tolerance;
+              always_complementary_projection
+                  ? in_fluid_subspace
+                  : (not std::isfinite(diagonal[pt]) or
+                     not std::isfinite(scale) or min_speed_gap <= gap_tolerance);
           for (size_t j = 0; j < 9; ++j) {
             if (degenerate) {
               packaged_left_eigenvectors->get(i, j)[pt] = 0.0;
@@ -312,6 +393,42 @@ double Marquina::dg_package_data(
               mhd_projectors.get(i, j) * inv_diagonal;
           packaged_right_eigenvectors->get(i, j) = mhd_modes.get(i, j);
         }
+      }
+    }
+    if (use_numeric) {
+      // AlwaysNumeric is a purely numeric method (no complement fallback).
+      // Verify that the rescaled numeric decomposition reproduces the identity,
+      // sum_i R_i (x) L_i = I.  For distinct eigenvalues geev's eigenvectors are
+      // biorthogonal, so this holds to round-off; at an exact / double-
+      // underflowed degeneracy geev returns a non-biorthonormal block basis and
+      // this fails -- there the fully numeric characteristics are unusable, so we
+      // ERROR (the user should choose AnalyticWithComplementaryProjection for a
+      // degeneracy-robust method).
+      double max_identity_error = 0.0;
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        for (size_t m = 0; m < 9; ++m) {
+          for (size_t n = 0; n < 9; ++n) {
+            double recon = 0.0;
+            for (size_t i = 0; i < 9; ++i) {
+              recon += packaged_right_eigenvectors->get(i, m)[pt] *
+                       packaged_left_eigenvectors->get(i, n)[pt];
+            }
+            max_identity_error = std::max(
+                max_identity_error, std::abs(recon - (m == n ? 1.0 : 0.0)));
+          }
+        }
+      }
+      if (not(max_identity_error < 1.0e-6)) {
+        ERROR(
+            "Marquina AlwaysNumeric: the numeric characteristic decomposition is "
+            "not biorthonormal (max |sum_i R_i x L_i - I| = "
+            << max_identity_error
+            << "), which happens at an exact / underflowed degeneracy where "
+               "blaze::geev returns an arbitrary basis for the repeated "
+               "eigenspace.  The fully numeric characteristics cannot be used "
+               "here; use CharacteristicsMethod: "
+               "AnalyticWithComplementaryProjection for a degeneracy-robust "
+               "decomposition.");
       }
     }
   }
@@ -432,7 +549,9 @@ void Marquina::dg_boundary_terms(
     auto right_int = right_characteristic_fields_int;
     const bool complementary_projection =
         characteristics_method_ ==
-        MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection;
+            MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection or
+        characteristics_method_ ==
+            MarquinaCharacteristicsMethod::AlwaysComplementaryProjection;
     if (complementary_projection) {
       // A wave is handled per-wave only if it is well conditioned (non-zeroed by
       // dg_package_data) on BOTH sides of the face; otherwise it joins the
@@ -556,8 +675,7 @@ void Marquina::dg_boundary_terms(
     // direction, true for the B_normal=0 group at v_normal); multiple distinct
     // degenerate groups fall back to a dissipative average-speed treatment.
     // Away from degeneracy nothing is zeroed, so P_block = 0 and this is a no-op.
-    if (characteristics_method_ ==
-        MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection) {
+    if (complementary_projection) {
       std::array<DataVector, 9> proj_u_int;
       std::array<DataVector, 9> proj_f_int;
       std::array<DataVector, 9> proj_u_ext;
@@ -1022,6 +1140,8 @@ Options::create_from_yaml<grmhd::ValenciaDivClean::BoundaryCorrections::
   } else if (type_read == "AnalyticWithComplementaryProjection") {
     return bc::MarquinaCharacteristicsMethod::
         AnalyticWithComplementaryProjection;
+  } else if (type_read == "AlwaysComplementaryProjection") {
+    return bc::MarquinaCharacteristicsMethod::AlwaysComplementaryProjection;
   }
   PARSE_ERROR(options.context(),
               "Failed to convert \""
