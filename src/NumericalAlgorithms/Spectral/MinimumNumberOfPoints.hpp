@@ -36,6 +36,8 @@ constexpr size_t minimum_number_of_points(const Basis /*basis*/,
     return 1;
   } else if (quadrature == Quadrature::SphericalSymmetry) {
     return 1;
+  } else if (quadrature == Quadrature::TranslationalSymmetry) {
+    return 1;
   }
   return std::numeric_limits<size_t>::max();
 }

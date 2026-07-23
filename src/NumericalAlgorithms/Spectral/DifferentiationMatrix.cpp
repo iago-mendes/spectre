@@ -444,6 +444,8 @@ template const Matrix&
     differentiation_matrix<Basis::Cartoon, Quadrature::AxialSymmetry>(size_t);
 template const Matrix& differentiation_matrix<
     Basis::Cartoon, Quadrature::SphericalSymmetry>(size_t);
+template const Matrix& differentiation_matrix<
+    Basis::Cartoon, Quadrature::TranslationalSymmetry>(size_t);
 template const Matrix&
     differentiation_matrix<Basis::Chebyshev, Quadrature::Gauss>(size_t);
 template const Matrix&

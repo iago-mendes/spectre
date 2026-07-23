@@ -191,6 +191,12 @@ void cartoon_sources_impl(
     const Scalar<DataVector>& sqrt_det_spatial_metric,
     const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords,
     const Spectral::Quadrature cartoon_quadrature) {
+  if (cartoon_quadrature == Spectral::Quadrature::TranslationalSymmetry) {
+    // Translational Cartoon (uniform in z): the collapsed direction contributes
+    // no geometric source terms (d/dz = 0), and there is no r=0 axis to guard
+    // against, so nothing to add here.
+    return;
+  }
 #ifdef SPECTRE_DEBUG
   for (size_t i = 0; i < get<0>(inertial_coords).size(); ++i) {
     ASSERT(not equal_within_roundoff(

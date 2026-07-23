@@ -45,7 +45,11 @@ size_t get_computational_dim(const Mesh<Dim>& subcell_mesh) {
     if (subcell_mesh.quadrature(2) == Spectral::Quadrature::SphericalSymmetry) {
       return 1;
     } else if (subcell_mesh.quadrature(2) ==
-               Spectral::Quadrature::AxialSymmetry) {
+                   Spectral::Quadrature::AxialSymmetry or
+               subcell_mesh.quadrature(2) ==
+                   Spectral::Quadrature::TranslationalSymmetry) {
+      // Translational-z Cartoon collapses the z direction just like axial
+      // symmetry (extents {nx, ny, 1}), so the computational dimension is 2.
       return 2;
     } else {
       return 3;

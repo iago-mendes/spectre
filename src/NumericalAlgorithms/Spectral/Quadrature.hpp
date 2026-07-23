@@ -69,11 +69,12 @@ enum class Quadrature : uint8_t {
   GaussRadauLower,
   GaussRadauUpper,
   AxialSymmetry,
-  SphericalSymmetry
+  SphericalSymmetry,
+  TranslationalSymmetry
 };
 
 /// All possible values of Quadrature
-std::array<Quadrature, 10> all_quadratures();
+std::array<Quadrature, 11> all_quadratures();
 
 /// Convert a string to a Quadrature enum.
 Quadrature to_quadrature(const std::string& quadrature);

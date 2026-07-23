@@ -53,6 +53,8 @@ std::array<Spectral::Basis, Dim> make_basis(
       case (domain::Topology::CartoonSphere):
         [[fallthrough]];
       case (domain::Topology::CartoonCylinder):
+        [[fallthrough]];
+      case (domain::Topology::CartoonTranslational):
         return Spectral::Basis::Cartoon;
       case (domain::Topology::B1Radial):
         return Spectral::Basis::ZernikeB1;
@@ -97,6 +99,8 @@ std::array<Spectral::Quadrature, Dim> make_quadrature(
             return Spectral::Quadrature::SphericalSymmetry;
           case (domain::Topology::CartoonCylinder):
             return Spectral::Quadrature::AxialSymmetry;
+          case (domain::Topology::CartoonTranslational):
+            return Spectral::Quadrature::TranslationalSymmetry;
           case (domain::Topology::B1Radial):
             return Spectral::Quadrature::GaussRadauUpper;
           default:

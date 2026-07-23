@@ -54,7 +54,8 @@ enum class Topology : uint8_t {
   B3Colatitude = 9,
   B3Longitude = 10,
   CartoonSphere = 11,
-  CartoonCylinder = 12
+  CartoonCylinder = 12,
+  CartoonTranslational = 13
 };
 
 /// Output operator for a Topology.
@@ -92,6 +93,11 @@ static constexpr auto cartoon_cylinder =
 
 static constexpr auto cartoon_cylinder_inner =
     std::array{Topology::B1Radial, Topology::I1, Topology::CartoonCylinder};
+
+// Cartesian 2D (x-y) plane with a translationally-symmetric collapsed z
+// direction (Kelvin-Helmholtz-style problems).
+static constexpr auto cartoon_rectangle =
+    std::array{Topology::I1, Topology::I1, Topology::CartoonTranslational};
 }  // namespace topologies
 
 }  // namespace domain

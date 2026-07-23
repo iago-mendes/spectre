@@ -13,6 +13,7 @@ spectre_target_sources(
   AngularDisk.cpp
   BinaryCompactObject.cpp
   CartoonCylinder.cpp
+  CartoonRectangle.cpp
   CartoonSphere1D.cpp
   CartoonSphere2D.cpp
   Cylinder.cpp
@@ -40,6 +41,7 @@ spectre_target_headers(
   AngularDisk.hpp
   BinaryCompactObject.hpp
   CartoonCylinder.hpp
+  CartoonRectangle.hpp
   CartoonSphere1D.hpp
   CartoonSphere2D.hpp
   Cylinder.hpp

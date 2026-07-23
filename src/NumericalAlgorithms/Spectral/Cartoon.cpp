@@ -65,6 +65,15 @@ std::pair<DataVector, DataVector> compute_collocation_points_and_weights<
       "basis.");
 }
 
+template <>
+std::pair<DataVector, DataVector> compute_collocation_points_and_weights<
+    Basis::Cartoon, Quadrature::TranslationalSymmetry>(
+    const size_t /*num_points*/) {
+  ERROR(
+      "Invalid to compute collocation points and weights for a Cartoon "
+      "basis.");
+}
+
 template <Basis BasisTYpe>
 Matrix spectral_indefinite_integral_matrix(size_t num_points);
 

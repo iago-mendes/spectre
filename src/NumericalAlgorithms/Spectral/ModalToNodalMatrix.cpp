@@ -95,6 +95,8 @@ template const Matrix&
     modal_to_nodal_matrix<Basis::Cartoon, Quadrature::AxialSymmetry>(size_t);
 template const Matrix& modal_to_nodal_matrix<
     Basis::Cartoon, Quadrature::SphericalSymmetry>(size_t);
+template const Matrix& modal_to_nodal_matrix<
+    Basis::Cartoon, Quadrature::TranslationalSymmetry>(size_t);
 template const Matrix&
     modal_to_nodal_matrix<Basis::Chebyshev, Quadrature::Gauss>(size_t);
 template const Matrix&
