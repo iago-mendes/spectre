@@ -155,6 +155,7 @@ void test_dg(const gsl::not_null<std::mt19937*> generator,
     phi = get<::gh::Tags::Phi<DataVector, 3>>(analytic_vars);
     lapse = get<gr::Tags::Lapse<DataVector>>(analytic_vars);
     shift = get<gr::Tags::Shift<DataVector, 3>>(analytic_vars);
+    spatial_metric = get<gr::Tags::SpatialMetric<DataVector, 3>>(analytic_vars);
     inverse_spatial_metric =
         get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(analytic_vars);
 
@@ -238,6 +239,8 @@ void test_dg(const gsl::not_null<std::mt19937*> generator,
                   make_not_null(&rest_mass_density),
                   make_not_null(&electron_fraction),
                   make_not_null(&temperature), make_not_null(&spatial_velocity),
+                  make_not_null(&specific_internal_energy),
+                  make_not_null(&pressure), make_not_null(&lorentz_factor),
                   make_not_null(&inverse_spatial_metric), {}, normal_covector,
                   normal_vector,
 
@@ -395,6 +398,9 @@ void test_dg(const gsl::not_null<std::mt19937*> generator,
                     make_not_null(&electron_fraction_expected),
                     make_not_null(&temperature_expected),
                     make_not_null(&spatial_velocity_expected),
+                    make_not_null(&specific_internal_energy_expected),
+                    make_not_null(&pressure_expected),
+                    make_not_null(&lorentz_factor_expected),
                     make_not_null(&inverse_spatial_metric_expected), {},
                     normal_covector, normal_vector,
 

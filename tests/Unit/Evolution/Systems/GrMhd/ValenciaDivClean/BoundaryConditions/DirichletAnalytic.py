@@ -179,6 +179,50 @@ def soln_temperature_long(
     return soln_temperature(coords, time)
 
 
+def soln_spatial_metric_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return soln_spatial_metric(coords, time)
+
+
+def soln_specific_internal_energy_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return soln_specific_internal_energy(coords, time)
+
+
+def soln_pressure_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return soln_pressure(coords, time)
+
+
+def soln_lorentz_factor_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return soln_lorentz_factor(coords, time)
+
+
 def soln_tilde_d(
     face_mesh_velocity,
     outward_directed_normal_covector,
@@ -932,6 +976,17 @@ def data_electron_fraction_long(
     return _data_electron_fraction
 
 
+def data_spatial_metric(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return np.identity(3)
+
+
 def data_rest_mass_density(
     face_mesh_velocity,
     outward_directed_normal_covector,
@@ -952,6 +1007,39 @@ def data_spatial_velocity(
     dim,
 ):
     return data_velocity(coords)
+
+
+def data_specific_internal_energy_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return data_specific_internal_energy(coords)
+
+
+def data_pressure_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return data_pressure(coords)
+
+
+def data_lorentz_factor_long(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    coords,
+    time,
+    dim,
+):
+    return data_lorentz_factor(coords)
 
 
 def data_tilde_d(

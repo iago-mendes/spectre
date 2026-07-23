@@ -92,6 +92,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.BoundaryConditions.HydroFreeOutflow",
           helpers::Tags::PythonFunctionName<hydro::Tags::SpatialVelocityOneForm<
               DataVector, 3, Frame::Inertial>>,
           helpers::Tags::PythonFunctionName<
+              gr::Tags::SpatialMetric<DataVector, 3>>,
+          helpers::Tags::PythonFunctionName<
               hydro::Tags::RestMassDensity<DataVector>>,
           helpers::Tags::PythonFunctionName<
               hydro::Tags::ElectronFraction<DataVector>>,
@@ -99,6 +101,11 @@ SPECTRE_TEST_CASE("Unit.GrMhd.BoundaryConditions.HydroFreeOutflow",
               hydro::Tags::Temperature<DataVector>>,
           helpers::Tags::PythonFunctionName<
               hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::SpecificInternalEnergy<DataVector>>,
+          helpers::Tags::PythonFunctionName<hydro::Tags::Pressure<DataVector>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::LorentzFactor<DataVector>>,
 
           helpers::Tags::PythonFunctionName<
               gr::Tags::InverseSpatialMetric<DataVector, 3>>>{
@@ -118,10 +125,14 @@ SPECTRE_TEST_CASE("Unit.GrMhd.BoundaryConditions.HydroFreeOutflow",
           "lapse",
           "shift",
           "spatial_velocity_one_form",
+          "spatial_metric",
           "rest_mass_density",
           "electron_fraction",
           "temperature",
           "spatial_velocity",
+          "specific_internal_energy",
+          "pressure",
+          "lorentz_factor",
           "inv_spatial_metric"},
       "HydroFreeOutflow:\n", face_mesh_index, box_with_gridless_tags,
       tuples::TaggedTuple<>{}, 1.0e-10);

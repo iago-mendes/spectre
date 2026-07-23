@@ -184,7 +184,12 @@ void test_soln() {
           helpers::Tags::PythonFunctionName<
               hydro::Tags::Temperature<DataVector>>,
           helpers::Tags::PythonFunctionName<
-              hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>>{
+              hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::SpecificInternalEnergy<DataVector>>,
+          helpers::Tags::PythonFunctionName<hydro::Tags::Pressure<DataVector>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::LorentzFactor<DataVector>>>{
           "soln_error", "soln_tilde_d", "soln_tilde_ye", "soln_tilde_tau",
           "soln_tilde_s", "soln_tilde_b", "soln_tilde_phi", "soln_flux_tilde_d",
           "soln_flux_tilde_ye", "soln_flux_tilde_tau", "soln_flux_tilde_s",
@@ -193,7 +198,9 @@ void test_soln() {
           "soln_spatial_velocity",  // flat spacetime, so up and down indices
                                     // are same
           "soln_rest_mass_density", "soln_electron_fraction_long",
-          "soln_temperature_long", "soln_spatial_velocity"},
+          "soln_temperature_long", "soln_spatial_velocity",
+          "soln_specific_internal_energy_long", "soln_pressure_long",
+          "soln_lorentz_factor_long"},
       "DirichletAnalytic:\n"
       "  AnalyticPrescription:\n"
       "    SmoothFlow:\n"
@@ -269,7 +276,12 @@ void test_data() {
           helpers::Tags::PythonFunctionName<
               hydro::Tags::Temperature<DataVector>>,
           helpers::Tags::PythonFunctionName<
-              hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>>{
+              hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::SpecificInternalEnergy<DataVector>>,
+          helpers::Tags::PythonFunctionName<hydro::Tags::Pressure<DataVector>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::LorentzFactor<DataVector>>>{
           "soln_error", "data_tilde_d", "data_tilde_ye", "data_tilde_tau",
           "data_tilde_s", "data_tilde_b", "data_tilde_phi", "data_flux_tilde_d",
           "data_flux_tilde_ye", "data_flux_tilde_tau", "data_flux_tilde_s",
@@ -278,7 +290,9 @@ void test_data() {
           "data_spatial_velocity",  // flat spacetime, so up and down indices
                                     // are same
           "data_rest_mass_density", "data_electron_fraction_long",
-          "data_temperature", "data_spatial_velocity"},
+          "data_temperature", "data_spatial_velocity",
+          "data_specific_internal_energy_long", "data_pressure_long",
+          "data_lorentz_factor_long"},
       "DirichletAnalytic:\n"
       "  AnalyticPrescription:\n"
       "    MagneticRotor:\n"

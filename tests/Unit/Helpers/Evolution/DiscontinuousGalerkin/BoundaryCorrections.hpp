@@ -5,7 +5,10 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -154,7 +157,8 @@ void test_boundary_correction_conservation_impl(
     const BoundaryCorrection& correction_in, const Mesh<FaceDim>& face_mesh,
     const tuples::TaggedTuple<VolumeTags...>& volume_data,
     const tuples::TaggedTuple<Tags::Range<RangeTags>...>& ranges,
-    const bool use_moving_mesh, const ::dg::Formulation dg_formulation,
+    const bool use_consistent_lorentz_factor, const bool use_moving_mesh,
+    const ::dg::Formulation dg_formulation,
     const ZeroOnSmoothSolution zero_on_smooth_solution, const double eps) {
   CAPTURE(use_moving_mesh);
   CAPTURE(dg_formulation);
@@ -247,7 +251,64 @@ void test_boundary_correction_conservation_impl(
     fill_with_random_values(make_not_null(&get<tag>(interior_fields_on_face)),
                             generator, make_not_null(&local_dist));
   });
-
+  const auto set_consistent_lorentz_factor =
+      [](const gsl::not_null<Variables<face_tags_with_curved_background>*>
+             fields) {
+        using lorentz_factor_tag = hydro::Tags::LorentzFactor<DataVector>;
+        using spatial_velocity_tag =
+            hydro::Tags::SpatialVelocity<DataVector, FaceDim + 1,
+                                         Frame::Inertial>;
+        using spatial_metric_tag =
+            gr::Tags::SpatialMetric<DataVector, FaceDim + 1, Frame::Inertial>;
+        constexpr bool has_lorentz =
+            tmpl::list_contains_v<face_tags_with_curved_background,
+                                  lorentz_factor_tag>;
+        constexpr bool has_velocity =
+            tmpl::list_contains_v<face_tags_with_curved_background,
+                                  spatial_velocity_tag>;
+        constexpr bool has_spatial_metric =
+            tmpl::list_contains_v<face_tags_with_curved_background,
+                                  spatial_metric_tag>;
+        constexpr bool lorentz_range_specified =
+            tmpl::list_contains_v<tmpl::list<RangeTags...>, lorentz_factor_tag>;
+        constexpr bool velocity_range_specified =
+            tmpl::list_contains_v<tmpl::list<RangeTags...>,
+                                  spatial_velocity_tag>;
+        if constexpr (has_lorentz and has_velocity and
+                      velocity_range_specified and
+                      not lorentz_range_specified) {
+          const auto& spatial_velocity = get<spatial_velocity_tag>(*fields);
+          auto& lorentz_factor = get<lorentz_factor_tag>(*fields);
+          if constexpr (has_spatial_metric) {
+            const auto spatial_speed =
+                magnitude(spatial_velocity, get<spatial_metric_tag>(*fields));
+            const DataVector one_minus_speed_squared =
+                1.0 - get(spatial_speed) * get(spatial_speed);
+            double min_one_minus_speed_squared =
+                std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < one_minus_speed_squared.size(); ++i) {
+              min_one_minus_speed_squared = std::min(
+                  min_one_minus_speed_squared, one_minus_speed_squared[i]);
+            }
+            CAPTURE(min_one_minus_speed_squared);
+            CHECK(min_one_minus_speed_squared > 0.0);
+            get(lorentz_factor) = 1.0 / sqrt(one_minus_speed_squared);
+          } else {
+            const auto spatial_speed = magnitude(spatial_velocity);
+            const DataVector one_minus_speed_squared =
+                1.0 - get(spatial_speed) * get(spatial_speed);
+            double min_one_minus_speed_squared =
+                std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < one_minus_speed_squared.size(); ++i) {
+              min_one_minus_speed_squared = std::min(
+                  min_one_minus_speed_squared, one_minus_speed_squared[i]);
+            }
+            CAPTURE(min_one_minus_speed_squared);
+            CHECK(min_one_minus_speed_squared > 0.0);
+            get(lorentz_factor) = 1.0 / sqrt(one_minus_speed_squared);
+          }
+        }
+      };
   // Same as above but now for external data
   Variables<dg_package_field_tags> exterior_package_data{used_for_size.size()};
   auto exterior_fields_on_face =
@@ -335,6 +396,10 @@ void test_boundary_correction_conservation_impl(
         }
       }
     }
+  }
+  if (use_consistent_lorentz_factor) {
+    set_consistent_lorentz_factor(make_not_null(&interior_fields_on_face));
+    set_consistent_lorentz_factor(make_not_null(&exterior_fields_on_face));
   }
 
   std::optional<tnsr::I<DataVector, FaceDim + 1, Frame::Inertial>>
@@ -530,13 +595,15 @@ void test_boundary_correction_conservation(
     const tuples::TaggedTuple<Tags::Range<RangeTags>...>& ranges,
     const ZeroOnSmoothSolution zero_on_smooth_solution =
         ZeroOnSmoothSolution::Yes,
-    const double eps = 1.0e-12) {
+    const double eps = 1.0e-12,
+    const bool use_consistent_lorentz_factor = false) {
   for (const auto use_moving_mesh : {true, false}) {
     for (const auto& dg_formulation :
          {::dg::Formulation::StrongInertial, ::dg::Formulation::WeakInertial}) {
       detail::test_boundary_correction_conservation_impl<System>(
           generator, correction, face_mesh, volume_data, ranges,
-          use_moving_mesh, dg_formulation, zero_on_smooth_solution, eps);
+          use_consistent_lorentz_factor, use_moving_mesh, dg_formulation,
+          zero_on_smooth_solution, eps);
     }
   }
 }

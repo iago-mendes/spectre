@@ -105,6 +105,11 @@ void test_stuffs(const bool reflect_both) {
               hydro::Tags::Temperature<DataVector>>,
           helpers::Tags::PythonFunctionName<
               hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::SpecificInternalEnergy<DataVector>>,
+          helpers::Tags::PythonFunctionName<hydro::Tags::Pressure<DataVector>>,
+          helpers::Tags::PythonFunctionName<
+              hydro::Tags::LorentzFactor<DataVector>>,
 
           helpers::Tags::PythonFunctionName<
               gr::Tags::InverseSpatialMetric<DataVector, 3>>>{
@@ -128,6 +133,9 @@ void test_stuffs(const bool reflect_both) {
           "electron_fraction",
           "temperature",
           "spatial_velocity",
+          "specific_internal_energy",
+          "pressure",
+          "lorentz_factor",
           "inv_spatial_metric"},
       "Reflective:\n"
       "  ReflectBoth: " +
