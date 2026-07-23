@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <fstream>
 #include <iomanip>
@@ -1371,6 +1372,8 @@ void test_mhd_characteristics_errors(const bool output) {
     out_prec.open("mhd_evec_precision.tsv", std::ios::out | std::ios::trunc);
     out_prec << std::setprecision(16);
     out_prec << "config\tW\tspeed_gap\tRL_err_whole\tRL_err_iso\t"
+                "analytic_speed_err\t1W_speed_err\t1W_RL_err\t1W_biorth\t"
+                "1W_eig_resid\t"
                 "biorth_whole_norm\tbiorth_iso_norm\teig_resid\t"
                 "eig_resid_right\teig_resid_left\tnum_eig_resid\t"
                 "num_speed_err\teig_resid_iso\tnum_biorth\n";
@@ -1495,6 +1498,67 @@ void test_mhd_characteristics_errors(const bool output) {
           specific_internal_energy, lorentz_factor, specific_enthalpy,
           spatial_metric, unit_normal, eos_2d);
 
+      // 1/W ASYMPTOTIC-EXPANSION eigensystem: replace the 4 magnetosonic speeds
+      // with the large-W (eps = 1/W) series (asymptotic_magnetosonic_speeds),
+      // keep the other 5 speeds, and feed that set to the eigenvector formulas
+      // -- exactly like the isolated case but with the deployable double-
+      // precision 1/W speeds in place of the quad speeds.  This is the method
+      // that targets the high-W magnetosonic speed-solver cancellation.
+      const double rho_h_e =
+          get(rest_mass_density)[0] * get(specific_enthalpy)[0];
+      const double inv_sqrt_rho_h_e = 1.0 / std::sqrt(rho_h_e);
+      const std::array<double, 4> asym_e = asymptotic_speeds::speeds(
+          get(sound_speed_squared)[0], -vn, W, -bx * inv_sqrt_rho_h_e,
+          (bx * vn + by * vt) * inv_sqrt_rho_h_e,
+          (bx * bx + by * by + bz * bz) / rho_h_e);
+      tnsr::i<DataVector, 9> speeds_1w = speeds;
+      speeds_1w.get(grmhd::ValenciaDivClean::MhdSpeed::FastMagnetosonicMinus) =
+          DataVector(num_points, asym_e[0]);
+      speeds_1w.get(grmhd::ValenciaDivClean::MhdSpeed::FastMagnetosonicPlus) =
+          DataVector(num_points, asym_e[1]);
+      speeds_1w.get(grmhd::ValenciaDivClean::MhdSpeed::SlowMagnetosonicMinus) =
+          DataVector(num_points, asym_e[2]);
+      speeds_1w.get(grmhd::ValenciaDivClean::MhdSpeed::SlowMagnetosonicPlus) =
+          DataVector(num_points, asym_e[3]);
+      tnsr::ij<DataVector, 9> modes_1w{num_points, 0.0};
+      tnsr::IJ<DataVector, 9> projectors_1w{num_points, 0.0};
+      grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd(
+          make_not_null(&modes_1w), make_not_null(&projectors_1w), speeds_1w,
+          spatial_velocity, magnetic_field, rest_mass_density,
+          specific_internal_energy, lorentz_factor, specific_enthalpy,
+          spatial_metric, unit_normal, eos_2d);
+      const double speed_err_1w = std::max(
+          std::max(
+              std::abs(asym_e[0] -
+                       static_cast<double>(
+                           q_speeds[grmhd::ValenciaDivClean::MhdSpeed::
+                                        FastMagnetosonicMinus])),
+              std::abs(asym_e[1] -
+                       static_cast<double>(
+                           q_speeds[grmhd::ValenciaDivClean::MhdSpeed::
+                                        FastMagnetosonicPlus]))),
+          std::max(
+              std::abs(asym_e[2] -
+                       static_cast<double>(
+                           q_speeds[grmhd::ValenciaDivClean::MhdSpeed::
+                                        SlowMagnetosonicMinus])),
+              std::abs(asym_e[3] -
+                       static_cast<double>(
+                           q_speeds[grmhd::ValenciaDivClean::MhdSpeed::
+                                        SlowMagnetosonicPlus]))));
+      // Analytic closed-form magnetosonic speed error vs quad (same 4 waves as
+      // speed_err_1w), so the speeds panel compares analytic / 1W / numeric.
+      double analytic_speed_err = 0.0;
+      for (const auto w :
+           {grmhd::ValenciaDivClean::MhdSpeed::FastMagnetosonicMinus,
+            grmhd::ValenciaDivClean::MhdSpeed::FastMagnetosonicPlus,
+            grmhd::ValenciaDivClean::MhdSpeed::SlowMagnetosonicMinus,
+            grmhd::ValenciaDivClean::MhdSpeed::SlowMagnetosonicPlus}) {
+        analytic_speed_err = std::max(
+            analytic_speed_err,
+            std::abs(speeds.get(w)[0] - static_cast<double>(q_speeds[w])));
+      }
+
       // Minimum gap between the (quad) characteristic speeds, to quantify how
       // close this state is to a degeneracy (where the eigenvectors become
       // ill-conditioned).
@@ -1578,6 +1642,34 @@ void test_mhd_characteristics_errors(const bool output) {
         }
         eig_resid_iso =
             std::max({eig_resid_iso, ar_resid / std::max(rnorm, 1e-300),
+                      la_resid / std::max(lnorm, 1e-300)});
+      }
+
+      // 1/W eigenproblem residual: eigenvector formulas fed the 1/W-expansion
+      // speeds (modes_1w / projectors_1w), with the 1/W speed as the eigenvalue.
+      double eig_resid_1w = 0.0;
+      for (size_t w = 0; w < 9; ++w) {
+        const double y_1w = speeds_1w.get(w)[0];
+        double rnorm = 0.0;
+        double lnorm = 0.0;
+        double ar_resid = 0.0;
+        double la_resid = 0.0;
+        for (size_t m = 0; m < 9; ++m) {
+          double ar = 0.0;
+          double la = 0.0;
+          for (size_t n = 0; n < 9; ++n) {
+            ar += char_matrix.get(m, n)[0] * modes_1w.get(w, n)[0];
+            la += projectors_1w.get(w, n)[0] * char_matrix.get(n, m)[0];
+          }
+          ar_resid =
+              std::max(ar_resid, std::abs(ar - y_1w * modes_1w.get(w, m)[0]));
+          la_resid = std::max(
+              la_resid, std::abs(la - y_1w * projectors_1w.get(w, m)[0]));
+          rnorm = std::max(rnorm, std::abs(modes_1w.get(w, m)[0]));
+          lnorm = std::max(lnorm, std::abs(projectors_1w.get(w, m)[0]));
+        }
+        eig_resid_1w =
+            std::max({eig_resid_1w, ar_resid / std::max(rnorm, 1e-300),
                       la_resid / std::max(lnorm, 1e-300)});
       }
 
@@ -1740,6 +1832,18 @@ void test_mhd_characteristics_errors(const bool output) {
                         static_cast<double>(q_left[wave][n]))});
         }
       }
+      // 1/W component error: eigenvector formulas fed the 1/W speeds vs quad.
+      double max_RL_err_1w = 0.0;
+      for (size_t wave = 0; wave < 9; ++wave) {
+        for (size_t n = 0; n < 9; ++n) {
+          max_RL_err_1w = std::max(
+              {max_RL_err_1w,
+               std::abs(modes_1w.get(wave, n)[0] -
+                        static_cast<double>(q_right[wave][n])),
+               std::abs(projectors_1w.get(wave, n)[0] -
+                        static_cast<double>(q_left[wave][n]))});
+        }
+      }
       // Normalized off-diagonal biorthogonality (divide each row by its
       // diagonal, since the paper's eigenvectors are biorthogonal but NOT
       // unit-normalized; the raw biorth_err above is dominated by the non-unit
@@ -1771,6 +1875,8 @@ void test_mhd_characteristics_errors(const bool output) {
       const double biorth_norm_whole = normalized_offdiag(projectors, modes);
       const double biorth_norm_iso =
           normalized_offdiag(projectors_iso, modes_iso);
+      const double biorth_norm_1w =
+          normalized_offdiag(projectors_1w, modes_1w);
       // Biorthogonality of the NUMERIC (geev) left/right eigenvectors, in the
       // same normalized-off-diagonal measure, to compare against the analytic
       // biorth_norm_whole near degeneracies.  +inf if geev failed.
@@ -1791,6 +1897,9 @@ void test_mhd_characteristics_errors(const bool output) {
         // whole vs isolated normalized off-diagonal biorthogonality.
         out_prec << config.name << '\t' << W << '\t' << speed_gap << '\t'
                  << max_RL_err << '\t' << max_RL_err_iso << '\t'
+                 << analytic_speed_err << '\t'
+                 << speed_err_1w << '\t' << max_RL_err_1w << '\t'
+                 << biorth_norm_1w << '\t' << eig_resid_1w << '\t'
                  << biorth_norm_whole << '\t' << biorth_norm_iso << '\t'
                  << eig_resid << '\t' << eig_resid_right << '\t'
                  << eig_resid_left << '\t' << num_eig_resid << '\t'
@@ -1829,12 +1938,15 @@ void test_mhd_characteristics_errors(const bool output) {
       // Print one tab-separated line to stdout so the Python verification
       // script can compare the C++ expansion against the Mathematica derivation
       // using exactly the same inputs that were passed to speeds().
-      std::cout << std::setprecision(17) << "ASYMP_CHECK" << '\t' << config.name
-                << '\t' << W << '\t' << get(sound_speed_squared)[0] << '\t'
-                << sv_asym << '\t' << Bs_asym << '\t'
-                << Bv_scalar * inv_sqrt_rho_h << '\t' << B_squared / rho_h
-                << '\t' << asym_fast_m << '\t' << asym_fast_p << '\t'
-                << asym_slow_m << '\t' << asym_slow_p << '\n';
+      if (output) {
+        std::cout << std::setprecision(17) << "ASYMP_CHECK" << '\t'
+                  << config.name << '\t' << W << '\t'
+                  << get(sound_speed_squared)[0] << '\t' << sv_asym << '\t'
+                  << Bs_asym << '\t' << Bv_scalar * inv_sqrt_rho_h << '\t'
+                  << B_squared / rho_h << '\t' << asym_fast_m << '\t'
+                  << asym_fast_p << '\t' << asym_slow_m << '\t' << asym_slow_p
+                  << '\n';
+      }
 
       // Extract speeds
       const double fast_m = speeds.get(
@@ -2155,6 +2267,664 @@ void run_mhd_characteristic_benchmarks(const bool enable) {
   };
 }
 
+// Degeneracy-tolerance study.  Sweep the normal magnetic field B_n -> 0 (the
+// Type-I degeneracy, where the slow / Alfven / entropy speeds collapse toward
+// v_n) and, at each state, measure how well competing decompositions
+// reconstruct the flux Jacobian A = R Lambda L^T.  The reference A_ref is the
+// QUAD-precision analytic reconstruction sum_i lam_i^q R_i^q (L_i^q)^T (accurate
+// to gaps ~1e-30, unlike double ~1e-16).  We compare:
+//   * all-analytic:   sum over all 9 double modes (biorthonormality is lost near
+//                     degeneracy, so this blows up);
+//   * CPM variants:   lump a near-degenerate set S into (I - P_kept) upwound at
+//                     the mean speed of S -- accurate near degeneracy, but a
+//                     single-speed approximation that costs accuracy away from
+//                     it.
+// The crossover of the error curves suggests the speed-gap DegeneracyTolerance.
+// The sweep TSV is written only when output is set (SPECTRE_DEGEN_DUMP).
+// One degeneracy-sweep point.  The reference A is the flux Jacobian
+// flux_jacobian_mhd, which the matrix-precision study (matrix_errors) showed is
+// accurate to round-off through the degeneracy.  We reconstruct A with the
+// double analytic all-modes decomposition (err_analytic) and with the
+// complementary projection of the fluid modes slow+Alfven+entropy
+// (err_cpm_fluid).  ok=false if the analytic eigenvector formulas throw.
+struct DegenPointResult {
+  double gap;
+  double err_analytic;
+  double err_cpm_fluid;
+  std::array<double, 9> speeds;
+  bool ok;
+};
+DegenPointResult degeneracy_point_result(
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& electron_fraction,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::IdealFluid<true>& eos) {
+  constexpr size_t num_points = 1;
+  try {
+    tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, lorentz_factor,
+        specific_enthalpy, spatial_metric, unit_normal, eos);
+    tnsr::ij<DataVector, 9> modes{num_points, 0.0};
+    tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
+    grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd(
+        make_not_null(&modes), make_not_null(&projectors), speeds,
+        spatial_velocity, magnetic_field, rest_mass_density,
+        specific_internal_energy, lorentz_factor, specific_enthalpy,
+        spatial_metric, unit_normal, eos);
+    tnsr::iJ<DataVector, 9> jacobian{num_points, 0.0};
+    grmhd::ValenciaDivClean::flux_jacobian_mhd(
+        make_not_null(&jacobian), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, electron_fraction,
+        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+        unit_normal, eos);
+    std::array<std::array<double, 9>, 9> a_ref{};
+    for (size_t m = 0; m < 9; ++m) {
+      for (size_t n = 0; n < 9; ++n) {
+        a_ref[m][n] = jacobian.get(m, n)[0];
+      }
+    }
+    std::array<double, 9> diag_d{};
+    std::array<double, 9> lam{};
+    for (size_t i = 0; i < 9; ++i) {
+      double dd = 0.0;
+      for (size_t k = 0; k < 9; ++k) {
+        dd += projectors.get(i, k)[0] * modes.get(i, k)[0];
+      }
+      diag_d[i] = dd;
+      lam[i] = speeds.get(i)[0];
+    }
+    // Fluid complement set: Alfven-, slow-, entropy, slow+, Alfven+ (indices
+    // 2,3,4,5,6).
+    const std::array<bool, 9> fluid_mask{
+        {false, false, true, true, true, true, true, false, false}};
+    const std::array<bool, 9> none_mask{};
+    const auto recon_err = [&](const std::array<bool, 9>& in_s) {
+      double lam_s = 0.0;
+      size_t count = 0;
+      for (size_t i = 0; i < 9; ++i) {
+        if (in_s[i]) {
+          lam_s += lam[i];
+          ++count;
+        }
+      }
+      if (count > 0) {
+        lam_s /= static_cast<double>(count);
+      }
+      double err = 0.0;
+      for (size_t m = 0; m < 9; ++m) {
+        for (size_t n = 0; n < 9; ++n) {
+          double kept_lam = 0.0;
+          double kept_proj = 0.0;
+          for (size_t i = 0; i < 9; ++i) {
+            if (not in_s[i]) {
+              const double rl =
+                  modes.get(i, m)[0] * projectors.get(i, n)[0] / diag_d[i];
+              kept_lam += lam[i] * rl;
+              kept_proj += rl;
+            }
+          }
+          double val = kept_lam;
+          if (count > 0) {
+            val += lam_s * ((m == n ? 1.0 : 0.0) - kept_proj);
+          }
+          err = std::max(err, std::abs(val - a_ref[m][n]));
+        }
+      }
+      return err;
+    };
+    std::array<double, 9> sorted = lam;
+    std::sort(sorted.begin(), sorted.end());
+    double gap = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i + 1 < 9; ++i) {
+      gap = std::min(gap, sorted[i + 1] - sorted[i]);
+    }
+    return {gap, recon_err(none_mask), recon_err(fluid_mask), lam, true};
+  } catch (...) {
+    return {0.0, 0.0, 0.0, std::array<double, 9>{}, false};
+  }
+}
+
+// Parameter-space survey of the analytic-vs-CPM crossover.  For a grid of
+// background states (thermal pressure/cs^2, magnetization sigma, Lorentz factor
+// W, field angle phi) sweep B_n -> 0 and dump the reconstruction errors, so the
+// crossover gap can be compared across configs (it is state-dependent).  Uses
+// the fluid-modes complement only.  TSV dump guarded by SPECTRE_DEGEN_DUMP.
+void test_degeneracy_parameter_sweep(const bool output) {
+  const ScopedFpeState disable_fpes(false);
+  constexpr size_t num_points = 1;
+  // Non-round adiabatic index so mistaken powers (rho vs rho^2, ...) cannot hide
+  // behind unit values.  The spatial metric is kept flat: the eigen-
+  // reconstruction A = R Lambda L^T used below is only clean in flat space,
+  // because the conserved variables mix covariant (S_i) and contravariant (B^i)
+  // components (a non-flat metric leaves a constant reconstruction offset).
+  const EquationsOfState::IdealFluid<true> eos_2d(1.37, 0.0);
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  struct Cfg {
+    double pressure;
+    double sigma;
+    double W;
+    double phi;
+    double vn_frac;
+  };
+  // Four representative configs = the corners of the (temperature x
+  // magnetization) parameter space, so the crossover spread is captured:
+  //   0 cold_weakB   - cold fluid, weakly magnetized
+  //   1 cold_strongB - cold fluid, strongly magnetized
+  //   2 hot_weakB    - hot fluid, weakly magnetized
+  //   3 hot_strongB  - hot fluid, strongly magnetized
+  // (pressure, sigma, W, phi, vn_frac); non-round values throughout.
+  const std::array<Cfg, 4> cfgs{{{1.3e-4, 1.1e-4, 1.43, M_PI / 4.0, 0.28},
+                                 {1.3e-4, 1.2e3, 1.43, M_PI / 4.0, 0.28},
+                                 {1.1, 1.1e-4, 1.43, M_PI / 4.0, 0.28},
+                                 {1.1, 1.2e3, 1.43, M_PI / 4.0, 0.28}}};
+  const size_t nc = cfgs.size();
+
+  std::ofstream dump;
+  if (output) {
+    dump.open("degeneracy_parameter_sweep.tsv", std::ios::out | std::ios::trunc);
+    dump << std::setprecision(16);
+    dump << "cfg\tpressure\tsigma\tW\tphi\tvn_frac\tbn_frac\tmin_gap\t"
+            "err_analytic\terr_cpm_fluid\t"
+            "sm\tfm\tam\tslm\tent\tslp\tap\tfp\tsp\n";
+  }
+
+  constexpr size_t n_bn = 50;
+  double best_analytic = std::numeric_limits<double>::infinity();
+  for (size_t ic = 0; ic < nc; ++ic) {
+    const Cfg& cf = cfgs[ic];
+    Scalar<DataVector> rest_mass_density{DataVector(num_points, 1.13)};
+    const Scalar<DataVector> pressure{DataVector(num_points, cf.pressure)};
+    const Scalar<DataVector> specific_internal_energy =
+        eos_2d.specific_internal_energy_from_density_and_pressure(
+            rest_mass_density, pressure);
+    const Scalar<DataVector> specific_enthalpy =
+        hydro::relativistic_specific_enthalpy(rest_mass_density,
+                                              specific_internal_energy,
+                                              pressure);
+    const Scalar<DataVector> lorentz_factor{DataVector(num_points, cf.W)};
+    const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.13)};
+    const double vmag = std::sqrt(std::max(0.0, 1.0 - 1.0 / square(cf.W)));
+    const double vn = cf.vn_frac * vmag;
+    const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+    tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+    spatial_velocity.get(0) = vn;
+    spatial_velocity.get(1) = vt;
+    spatial_velocity.get(2) = 0.0;
+    const double b_mag = std::sqrt(cf.sigma * get(rest_mass_density)[0] *
+                                   get(specific_enthalpy)[0]);
+    for (size_t ib = 0; ib < n_bn; ++ib) {
+      const double bn_frac = std::pow(
+          10.0, std::log10(0.5) + (std::log10(1.0e-10) - std::log10(0.5)) *
+                                      static_cast<double>(ib) /
+                                      static_cast<double>(n_bn - 1));
+      const double bx = bn_frac * b_mag;
+      const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
+      tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+      magnetic_field.get(0) = bx;
+      magnetic_field.get(1) = bt * std::cos(cf.phi);
+      magnetic_field.get(2) = bt * std::sin(cf.phi);
+      const auto e = degeneracy_point_result(
+          spatial_velocity, magnetic_field, rest_mass_density,
+          specific_internal_energy, electron_fraction, lorentz_factor,
+          specific_enthalpy, spatial_metric, inv_spatial_metric, unit_normal,
+          eos_2d);
+      if (not e.ok) {
+        break;
+      }
+      best_analytic = std::min(best_analytic, e.err_analytic);
+      if (dump.is_open()) {
+        dump << ic << '\t' << cf.pressure << '\t' << cf.sigma << '\t' << cf.W
+             << '\t' << cf.phi << '\t' << cf.vn_frac << '\t' << bn_frac << '\t'
+             << e.gap << '\t' << e.err_analytic << '\t' << e.err_cpm_fluid;
+        for (size_t i = 0; i < 9; ++i) {
+          dump << '\t' << e.speeds[i];
+        }
+        dump << '\n';
+      }
+    }
+  }
+  CHECK(best_analytic < 1.0e-9);
+}
+
+// Numerical-precision study of the analytic MHD flux Jacobian ENTRIES.
+//
+// The double flux_jacobian_mhd forms the same 9x9 matrix that the numeric
+// eigensystem path (numerical_characteristics -> blaze::geev) diagonalizes, so
+// if that matrix's entries lose accuracy to floating-point cancellation as the
+// state approaches degeneracy (normal field B_n -> 0), the numeric path is
+// capped by the same loss.  Here we recompute the identical matrix in
+// quad precision (quad_precision::flux_jacobian_mhd) and measure the max
+// absolute/relative entry difference vs the min eigenvalue gap, isolating the
+// cancellation in the matrix itself (independent of the eigen-decomposition).
+//
+// Isotropic non-flat metric, normal along x.  Two states: a hot moderate-sigma
+// state and a cold state.  B_n/|B| is swept from ~0.5 down to ~1e-9.  TSV dump
+// guarded by SPECTRE_MATRIX_DUMP.  A CHECK verifies double==quad to ~1e-14 in
+// the well-conditioned regime (B_n/|B| ~ 0.3-0.5); failure there means the port
+// is buggy.
+void test_flux_jacobian_precision(const bool output) {
+  const ScopedFpeState disable_fpes(false);
+  constexpr size_t num_points = 1;
+  // Non-round adiabatic index and isotropic metric (see the parameter sweep).
+  constexpr double adiabatic_index = 1.37;
+  const EquationsOfState::IdealFluid<true> eos_2d(adiabatic_index, 0.0);
+  constexpr double metric_value = 1.17;
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = metric_value;
+  spatial_metric.get(1, 1) = metric_value;
+  spatial_metric.get(2, 2) = metric_value;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  std::ofstream dump;
+  if (output) {
+    dump.open("flux_jacobian_precision.tsv", std::ios::out | std::ios::trunc);
+    dump << std::setprecision(16);
+    dump << "state\tbn_frac\tbx\tmin_gap\tmax_abs_err\tmax_rel_err\n";
+  }
+
+  struct State {
+    std::string name;
+    double W;
+    double density;
+    double pressure;
+    double sigma;  // B^2 / (rho h)
+  };
+  // Hot moderate-sigma state and a cold state.
+  const std::array<State, 2> states{
+      {{"hot", 1.23, 1.13, 0.12, 1.3}, {"cold", 1.07, 1.13, 1.3e-4, 0.27}}};
+
+  const double phi_B = M_PI / 4.0;  // tangential B angle
+  const double vn_fraction = 0.28;
+
+  bool checked_well_conditioned = false;
+
+  for (const auto& st : states) {
+    const Scalar<DataVector> rest_mass_density{
+        DataVector(num_points, st.density)};
+    const Scalar<DataVector> pressure{DataVector(num_points, st.pressure)};
+    const Scalar<DataVector> specific_internal_energy =
+        eos_2d.specific_internal_energy_from_density_and_pressure(
+            rest_mass_density, pressure);
+    const Scalar<DataVector> specific_enthalpy =
+        hydro::relativistic_specific_enthalpy(
+            rest_mass_density, specific_internal_energy, pressure);
+    const Scalar<DataVector> lorentz_factor{DataVector(num_points, st.W)};
+    const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.13)};
+
+    // Contravariant norms carry 1/sqrt(metric_value) (isotropic metric).
+    const double vmag =
+        std::sqrt(std::max(0.0, (1.0 - 1.0 / square(st.W)) / metric_value));
+    const double vn = vn_fraction * vmag;
+    const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+    tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+    spatial_velocity.get(0) = vn;
+    spatial_velocity.get(1) = vt;
+    spatial_velocity.get(2) = 0.0;
+    const double b_mag = std::sqrt(st.sigma * st.density *
+                                   get(specific_enthalpy)[0] / metric_value);
+
+    // EoS-consistent quad c_s^2 and kappa, computed EXACTLY as the double
+    // flux_jacobian_mhd computes them for an IdealFluid, so the quad and double
+    // matrices share identical thermodynamic inputs (any residual difference is
+    // then genuine entry-level floating-point behaviour, not an EoS mismatch).
+    // Double path (see IdealFluid.cpp + flux_jacobian_mhd):
+    //   chi = (Gamma-1) eps,  kappa_times_p_over_rho2 = (Gamma-1)^2 eps,
+    //   c_s^2 = (chi + kappa_times_p_over_rho2) / h,
+    //   kappa = kappa_times_p_over_rho2 / p * rho^2 = (Gamma-1) rho,
+    // using the LITERAL (Gamma-1) and the same double-precision h (cast to quad)
+    // that is passed to the double function.
+    const quad_ref::Quad q_eps = get(specific_internal_energy)[0];
+    const quad_ref::Quad q_h = get(specific_enthalpy)[0];
+    const quad_ref::Quad q_rho = get(rest_mass_density)[0];
+    const quad_ref::Quad q_gamma_minus_one =
+        quad_ref::Quad{adiabatic_index} - quad_ref::Quad{1.0};
+    const quad_ref::Quad q_chi = q_gamma_minus_one * q_eps;
+    const quad_ref::Quad q_kappa_p_over_rho2 =
+        q_gamma_minus_one * q_gamma_minus_one * q_eps;
+    const quad_ref::Quad q_cs2 = (q_chi + q_kappa_p_over_rho2) / q_h;
+    const quad_ref::Quad q_kappa = q_gamma_minus_one * q_rho;
+
+    constexpr size_t n_bn = 50;
+    for (size_t ib = 0; ib < n_bn; ++ib) {
+      // log-spaced B_n fraction from 0.5 down to 1e-9
+      const double bn_frac = std::pow(
+          10.0, std::log10(0.5) +
+                    (std::log10(1.0e-9) - std::log10(0.5)) *
+                        static_cast<double>(ib) / static_cast<double>(n_bn - 1));
+      const double bx = bn_frac * b_mag;
+      const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
+      tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+      magnetic_field.get(0) = bx;
+      magnetic_field.get(1) = bt * std::cos(phi_B);
+      magnetic_field.get(2) = bt * std::sin(phi_B);
+
+      // Double analytic flux Jacobian.
+      tnsr::iJ<DataVector, 9> jacobian{num_points, 0.0};
+      grmhd::ValenciaDivClean::flux_jacobian_mhd(
+          make_not_null(&jacobian), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, electron_fraction,
+          lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+          unit_normal, eos_2d);
+
+      // Quad analytic flux Jacobian (same matrix, quad precision).
+      std::array<quad_ref::Quad, 3> q_v{};
+      std::array<quad_ref::Quad, 3> q_b{};
+      std::array<quad_ref::Quad, 3> q_n{};
+      std::array<std::array<quad_ref::Quad, 3>, 3> q_g{};
+      std::array<std::array<quad_ref::Quad, 3>, 3> q_inv_g{};
+      for (size_t i = 0; i < 3; ++i) {
+        q_v[i] = spatial_velocity.get(i)[0];
+        q_b[i] = magnetic_field.get(i)[0];
+        q_n[i] = unit_normal.get(i)[0];
+        for (size_t j = 0; j < 3; ++j) {
+          q_g[i][j] = spatial_metric.get(i, j)[0];
+          q_inv_g[i][j] = inv_spatial_metric.get(i, j)[0];
+        }
+      }
+      const auto q_jac = quad_ref::flux_jacobian_mhd(
+          q_v, q_b, q_rho, q_eps, quad_ref::Quad{"0.1"}, st.W, q_h, q_g,
+          q_inv_g, q_n, q_cs2, q_kappa);
+
+      // Max absolute entry difference, and the max per-entry RELATIVE error
+      // restricted to entries that are "significant" -- i.e. whose magnitude is
+      // not a mere round-off residue of an analytically-zero entry.  We treat an
+      // entry as significant when its magnitude exceeds 1e-8 times the largest
+      // entry of the matrix (matrix inf-scale).  Below that floor a nominally
+      // zero entry can show up as ~1e-16 in one precision and a different ~1e-16
+      // in the other, giving a meaningless relative error of order unity; those
+      // entries carry no accuracy loss because their absolute value is
+      // negligible against the matrix scale.  The reported max_rel_err therefore
+      // measures genuine loss of significant digits in the meaningful entries,
+      // which is exactly what caps the eigensolver.
+      double matrix_scale = 0.0;
+      for (size_t m = 0; m < 9; ++m) {
+        for (size_t n = 0; n < 9; ++n) {
+          matrix_scale = std::max(matrix_scale, std::abs(jacobian.get(m, n)[0]));
+          matrix_scale =
+              std::max(matrix_scale, std::abs(static_cast<double>(q_jac[m][n])));
+        }
+      }
+      const double significant_floor = 1.0e-8 * matrix_scale;
+      double max_abs_err = 0.0;
+      double max_rel_err = 0.0;
+      for (size_t m = 0; m < 9; ++m) {
+        for (size_t n = 0; n < 9; ++n) {
+          const double dbl = jacobian.get(m, n)[0];
+          const double quad = static_cast<double>(q_jac[m][n]);
+          const double abs_err = std::abs(dbl - quad);
+          max_abs_err = std::max(max_abs_err, abs_err);
+          const double scale = std::max(std::abs(dbl), std::abs(quad));
+          if (scale > significant_floor) {
+            max_rel_err = std::max(max_rel_err, abs_err / scale);
+          }
+        }
+      }
+
+      // Min eigenvalue gap from the analytic speeds.
+      tnsr::i<DataVector, 9> speeds{num_points, 0.0};
+      grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+          make_not_null(&speeds), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, lorentz_factor,
+          specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+      std::array<double, 9> sorted{};
+      for (size_t i = 0; i < 9; ++i) {
+        sorted[i] = speeds.get(i)[0];
+      }
+      std::sort(sorted.begin(), sorted.end());
+      double min_gap = std::numeric_limits<double>::infinity();
+      for (size_t i = 0; i + 1 < 9; ++i) {
+        min_gap = std::min(min_gap, sorted[i + 1] - sorted[i]);
+      }
+
+      // Verification: in the well-conditioned regime (B_n/|B| ~ 0.3-0.5) the
+      // quad and double matrices must agree to ~1e-14 relative.  A larger error
+      // there indicates a bug in the quad port.
+      if (bn_frac >= 0.3 and bn_frac <= 0.5) {
+        CHECK(max_rel_err < 1.0e-13);
+        checked_well_conditioned = true;
+      }
+
+      if (dump.is_open()) {
+        dump << st.name << '\t' << bn_frac << '\t' << bx << '\t' << min_gap
+             << '\t' << max_abs_err << '\t' << max_rel_err << '\n';
+      }
+    }
+  }
+  CHECK(checked_well_conditioned);
+}
+
+// Hydro-vs-MHD comparison (task #50).  As the field vanishes (sigma -> 0, so
+// |B| -> 0) the MHD flux Jacobian's fluid sub-block on {S_x,S_y,S_z,D,tau} must
+// approach the hydro flux Jacobian on the same variables, and the MHD fast
+// speeds must approach the hydro acoustic speeds v_n +- c_s (slow/Alfven/entropy
+// -> v_n).  This quantifies the mode correspondence and how weak the field must
+// be for the hydro system to be a faithful stand-in (a weak-field switch).
+// Flat metric (the comparison needs no eigen-reconstruction; primitives are
+// de-rounded).  Dump guarded by SPECTRE_HYDROMHD_DUMP.
+void test_hydro_mhd_comparison(const bool output) {
+  const ScopedFpeState disable_fpes(false);
+  constexpr size_t num_points = 1;
+  const EquationsOfState::IdealFluid<true> eos_2d(1.37, 0.0);
+
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{num_points, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
+
+  // Fluid vars shared by both systems: S_x,S_y,S_z,D,tau.  MHD order is
+  // [S_x,S_y,S_z,B^x,B^y,B^z,D,tau,phi]; hydro order is [D,S_x,S_y,S_z,tau,Y_e].
+  const std::array<size_t, 5> mhd_fluid{{0, 1, 2, 6, 7}};
+  const std::array<size_t, 5> hyd_fluid{{1, 2, 3, 0, 4}};
+  // Speed of each hydro eigenvector (HydroVectorR order): R1..R4 at v_n
+  // (NormalDotVelocity), Rplus at LambdaPlus, Rminus at LambdaMinus.
+  const std::array<size_t, 6> hyd_speed_idx{{0, 0, 0, 0, 1, 2}};
+
+  // Parameter grid: thermal pressure (cs^2) x field orientation bn_frac = B_n/|B|
+  // (proximity to the field degeneracy at a given |B|).  W, phi, vn fixed.
+  const double W = 1.4;
+  const double phi_B = M_PI / 4.0;
+  const double vn_frac = 0.28;
+  const std::array<double, 5> pressures{{1.3e-4, 1.3e-3, 1.3e-2, 1.2e-1, 1.1}};
+  const std::array<double, 5> bn_fracs{{0.03, 0.13, 0.3, 0.6, 0.9}};
+
+  std::ofstream dump;
+  if (output) {
+    dump.open("hydro_mhd_comparison.tsv", std::ios::out | std::ios::trunc);
+    dump << std::setprecision(16);
+    dump << "cfg\tpressure\tbn_frac\tW\tsigma\tb_norm\tmatrix_fluid_diff\t"
+            "err_mhd_recon\terr_hydro_recon\tmhd_sm\tmhd_fm\tmhd_am\tmhd_slm\t"
+            "mhd_ent\tmhd_slp\tmhd_ap\tmhd_fp\tmhd_sp\thyd_vn\thyd_lp\thyd_lm\n";
+  }
+
+  constexpr size_t n_sig = 45;
+  double diff_at_small_sigma = 1.0;
+  double hydro_err_at_small_sigma = 1.0;
+  size_t cfg = 0;
+  for (const double pressure_val : pressures) {
+    for (const double bn_frac : bn_fracs) {
+      Scalar<DataVector> rest_mass_density{DataVector(num_points, 1.13)};
+      const Scalar<DataVector> pressure{DataVector(num_points, pressure_val)};
+      const Scalar<DataVector> specific_internal_energy =
+          eos_2d.specific_internal_energy_from_density_and_pressure(
+              rest_mass_density, pressure);
+      const Scalar<DataVector> specific_enthalpy =
+          hydro::relativistic_specific_enthalpy(
+              rest_mass_density, specific_internal_energy, pressure);
+      const Scalar<DataVector> lorentz_factor{DataVector(num_points, W)};
+      const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.13)};
+      const double vmag = std::sqrt(std::max(0.0, 1.0 - 1.0 / square(W)));
+      const double vn = vn_frac * vmag;
+      const double vt = std::sqrt(std::max(0.0, square(vmag) - square(vn)));
+      tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{num_points, 0.0};
+      spatial_velocity.get(0) = vn;
+      spatial_velocity.get(1) = vt;
+      spatial_velocity.get(2) = 0.0;
+
+      for (size_t is = 0; is < n_sig; ++is) {
+        const double sigma =
+            std::pow(10.0, 1.0 + (std::log10(1.0e-9) - 1.0) *
+                                     static_cast<double>(is) /
+                                     static_cast<double>(n_sig - 1));
+        const double b_mag = std::sqrt(sigma * get(rest_mass_density)[0] *
+                                       get(specific_enthalpy)[0]);
+        const double bx = bn_frac * b_mag;
+        const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
+        tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
+        magnetic_field.get(0) = bx;
+        magnetic_field.get(1) = bt * std::cos(phi_B);
+        magnetic_field.get(2) = bt * std::sin(phi_B);
+
+        tnsr::iJ<DataVector, 9> jac_mhd{num_points, 0.0};
+        grmhd::ValenciaDivClean::flux_jacobian_mhd(
+            make_not_null(&jac_mhd), spatial_velocity, magnetic_field,
+            rest_mass_density, specific_internal_energy, electron_fraction,
+            lorentz_factor, specific_enthalpy, spatial_metric,
+            inv_spatial_metric, unit_normal, eos_2d);
+        tnsr::iJ<DataVector, 6> jac_hyd{num_points, 0.0};
+        grmhd::ValenciaDivClean::flux_jacobian_hydro(
+            make_not_null(&jac_hyd), spatial_velocity, rest_mass_density,
+            specific_internal_energy, electron_fraction, lorentz_factor,
+            specific_enthalpy, spatial_metric, inv_spatial_metric, unit_normal,
+            eos_2d);
+        double matrix_diff = 0.0;
+        for (size_t a = 0; a < 5; ++a) {
+          for (size_t b = 0; b < 5; ++b) {
+            matrix_diff = std::max(
+                matrix_diff,
+                std::abs(jac_mhd.get(mhd_fluid[a], mhd_fluid[b])[0] -
+                         jac_hyd.get(hyd_fluid[a], hyd_fluid[b])[0]));
+          }
+        }
+
+        tnsr::i<DataVector, 9> mhd_speeds{num_points, 0.0};
+        grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+            make_not_null(&mhd_speeds), spatial_velocity, magnetic_field,
+            rest_mass_density, specific_internal_energy, lorentz_factor,
+            specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+        tnsr::i<DataVector, 3> hyd_speeds{num_points, 0.0};
+        grmhd::ValenciaDivClean::characteristic_speeds_hydro(
+            make_not_null(&hyd_speeds), spatial_velocity, rest_mass_density,
+            specific_internal_energy, electron_fraction, lorentz_factor,
+            specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+
+        // Reconstruct the fluid sub-block of jac_mhd from each system's own
+        // eigen-decomposition (see the header comment on this function).
+        double err_mhd_recon = 1.0e30;  // sentinel: MHD eigenvectors threw
+        try {
+          tnsr::ij<DataVector, 9> modes{num_points, 0.0};
+          tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
+          grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd(
+              make_not_null(&modes), make_not_null(&projectors), mhd_speeds,
+              spatial_velocity, magnetic_field, rest_mass_density,
+              specific_internal_energy, lorentz_factor, specific_enthalpy,
+              spatial_metric, unit_normal, eos_2d);
+          std::array<double, 9> diag{};
+          for (size_t i = 0; i < 9; ++i) {
+            double d = 0.0;
+            for (size_t k = 0; k < 9; ++k) {
+              d += projectors.get(i, k)[0] * modes.get(i, k)[0];
+            }
+            diag[i] = d;
+          }
+          double e = 0.0;
+          for (size_t a = 0; a < 5; ++a) {
+            for (size_t b = 0; b < 5; ++b) {
+              double val = 0.0;
+              for (size_t i = 0; i < 9; ++i) {
+                val += mhd_speeds.get(i)[0] * modes.get(i, mhd_fluid[a])[0] *
+                       projectors.get(i, mhd_fluid[b])[0] / diag[i];
+              }
+              e = std::max(
+                  e, std::abs(val - jac_mhd.get(mhd_fluid[a], mhd_fluid[b])[0]));
+            }
+          }
+          err_mhd_recon = e;
+        } catch (...) {
+        }
+
+        tnsr::ij<DataVector, 6> hyd_modes{num_points, 0.0};
+        tnsr::IJ<DataVector, 6> hyd_projectors{num_points, 0.0};
+        grmhd::ValenciaDivClean::characteristic_eigenvectors_hydro(
+            make_not_null(&hyd_modes), make_not_null(&hyd_projectors),
+            spatial_velocity, rest_mass_density, specific_internal_energy,
+            specific_enthalpy, electron_fraction, lorentz_factor, unit_normal,
+            spatial_metric, eos_2d);
+        std::array<double, 6> hyd_diag{};
+        for (size_t i = 0; i < 6; ++i) {
+          double d = 0.0;
+          for (size_t k = 0; k < 6; ++k) {
+            d += hyd_projectors.get(i, k)[0] * hyd_modes.get(i, k)[0];
+          }
+          hyd_diag[i] = d;
+        }
+        double err_hydro_recon = 0.0;
+        for (size_t a = 0; a < 5; ++a) {
+          for (size_t b = 0; b < 5; ++b) {
+            double val = 0.0;
+            for (size_t i = 0; i < 6; ++i) {
+              val += hyd_speeds.get(hyd_speed_idx[i])[0] *
+                     hyd_modes.get(i, hyd_fluid[a])[0] *
+                     hyd_projectors.get(i, hyd_fluid[b])[0] / hyd_diag[i];
+            }
+            err_hydro_recon = std::max(
+                err_hydro_recon,
+                std::abs(val - jac_mhd.get(mhd_fluid[a], mhd_fluid[b])[0]));
+          }
+        }
+
+        if (sigma < 1.0e-6) {
+          diff_at_small_sigma = std::min(diff_at_small_sigma, matrix_diff);
+          hydro_err_at_small_sigma =
+              std::min(hydro_err_at_small_sigma, err_hydro_recon);
+        }
+        if (dump.is_open()) {
+          dump << cfg << '\t' << pressure_val << '\t' << bn_frac << '\t' << W
+               << '\t' << sigma << '\t' << b_mag << '\t' << matrix_diff << '\t'
+               << err_mhd_recon << '\t' << err_hydro_recon;
+          for (size_t i = 0; i < 9; ++i) {
+            dump << '\t' << mhd_speeds.get(i)[0];
+          }
+          for (size_t i = 0; i < 3; ++i) {
+            dump << '\t' << hyd_speeds.get(i)[0];
+          }
+          dump << '\n';
+        }
+      }
+      ++cfg;
+    }
+  }
+  // As |B| -> 0 both the MHD fluid sub-block and the hydro reconstruction of it
+  // must converge to the reference MHD matrix.
+  CHECK(diff_at_small_sigma < 1.0e-6);
+  CHECK(hydro_err_at_small_sigma < 1.0e-6);
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
@@ -2175,8 +2945,15 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   // Run data-producing sweeps — quartic_shape and typical_vn_sweep first
   // since they use moderate W.  test_mhd_characteristics_errors pushes to
   // W=100 at high sigma where the tighter production tolerance (1e-15)
-  // can intermittently trigger ASSERTs.
-  test_mhd_characteristics_errors(true);
+  // can intermittently trigger ASSERTs.  The precision-study TSVs +
+  // ASYMP_CHECK dump are written only when SPECTRE_MHD_PREC_DUMP is set
+  // (matching the SPECTRE_CPM_DUMP guard in Test_Marquina); the assertions
+  // run unconditionally.
+  test_mhd_characteristics_errors(std::getenv("SPECTRE_MHD_PREC_DUMP") !=
+                                  nullptr);
+  test_degeneracy_parameter_sweep(std::getenv("SPECTRE_DEGEN_DUMP") != nullptr);
+  test_flux_jacobian_precision(std::getenv("SPECTRE_MATRIX_DUMP") != nullptr);
+  test_hydro_mhd_comparison(std::getenv("SPECTRE_HYDROMHD_DUMP") != nullptr);
   test_mhd_characteristics(dv);
   test_mhd_numerical_characteristics(dv);
 
