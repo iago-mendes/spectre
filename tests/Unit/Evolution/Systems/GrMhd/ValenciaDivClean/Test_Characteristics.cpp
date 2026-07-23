@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <limits>
 #include <fstream>
+#include <sstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -3463,6 +3464,93 @@ void test_numeric_vs_analytic_flux(const bool output) {
   }
 }
 
+// Wave-structure dumper: read an exact Riemann profile (x, rho, p_tot, vx, vy, vz,
+// By, Bz) plus the constant B_x and adiabatic index, reconstruct the primitive
+// state per point (p_gas = p_tot - b^2/2), and write the nine MHD characteristic
+// speeds vs x using SpECTRE's own characteristic_speeds_mhd.  The exact solver
+// only outputs primitives, so the speeds (and hence the degeneracy structure) are
+// computed here.  Env-driven: SPECTRE_WAVESTRUCT="profile.dat:gamma:Bx"; output
+// goes to "profile.dat.speeds" (x + 9 speeds in MhdSpeed order).
+void dump_wave_structure() {
+  const char* spec = std::getenv("SPECTRE_WAVESTRUCT");
+  if (spec == nullptr) {
+    return;
+  }
+  const std::string s{spec};
+  const size_t c1 = s.find(':');
+  const size_t c2 = s.find(':', c1 + 1);
+  const std::string path = s.substr(0, c1);
+  const double gamma = std::stod(s.substr(c1 + 1, c2 - c1 - 1));
+  const double bx = std::stod(s.substr(c2 + 1));
+
+  const ScopedFpeState disable_fpes(false);
+  const EquationsOfState::IdealFluid<true> eos(gamma, 0.0);
+  constexpr size_t np = 1;
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{np, 0.0};
+  spatial_metric.get(0, 0) = 1.0;
+  spatial_metric.get(1, 1) = 1.0;
+  spatial_metric.get(2, 2) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto unit_normal =
+      unit_basis_form(Direction<3>::lower_xi(), det_and_inv.second);
+
+  std::ifstream in(path);
+  std::ofstream out(path + ".speeds");
+  out << std::setprecision(12);
+  out << "# x sm fm am slm ent slp ap fp sp  (MhdSpeed order)\n";
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() or line[0] == '#') {
+      continue;
+    }
+    std::istringstream ss(line);
+    double x = 0.0;
+    double rho = 0.0;
+    double p_tot = 0.0;
+    double vx = 0.0;
+    double vy = 0.0;
+    double vz = 0.0;
+    double by = 0.0;
+    double bz = 0.0;
+    if (not(ss >> x >> rho >> p_tot >> vx >> vy >> vz >> by >> bz)) {
+      continue;
+    }
+    const double v2 = vx * vx + vy * vy + vz * vz;
+    const double w = 1.0 / std::sqrt(std::max(1.0e-30, 1.0 - v2));
+    const double b_sq_lab = bx * bx + by * by + bz * bz;
+    const double v_dot_b = vx * bx + vy * by + vz * bz;
+    const double b2 = b_sq_lab / (w * w) + v_dot_b * v_dot_b;  // comoving b^2
+    const double p_gas = std::max(1.0e-13, p_tot - 0.5 * b2);
+    Scalar<DataVector> rest_mass_density{DataVector(np, rho)};
+    const Scalar<DataVector> pressure{DataVector(np, p_gas)};
+    const Scalar<DataVector> specific_internal_energy =
+        eos.specific_internal_energy_from_density_and_pressure(rest_mass_density,
+                                                               pressure);
+    const Scalar<DataVector> specific_enthalpy =
+        hydro::relativistic_specific_enthalpy(rest_mass_density,
+                                              specific_internal_energy, pressure);
+    const Scalar<DataVector> lorentz_factor{DataVector(np, w)};
+    tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{np, 0.0};
+    spatial_velocity.get(0) = vx;
+    spatial_velocity.get(1) = vy;
+    spatial_velocity.get(2) = vz;
+    tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{np, 0.0};
+    magnetic_field.get(0) = bx;
+    magnetic_field.get(1) = by;
+    magnetic_field.get(2) = bz;
+    tnsr::i<DataVector, 9> speeds{np, 0.0};
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, lorentz_factor,
+        specific_enthalpy, spatial_metric, unit_normal, eos);
+    out << x;
+    for (size_t i = 0; i < 9; ++i) {
+      out << ' ' << speeds.get(i)[0];
+    }
+    out << '\n';
+  }
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
@@ -3470,6 +3558,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   const pypp::SetupLocalPythonEnvironment local_python_env{
       "Evolution/Systems/GrMhd/ValenciaDivClean"};
 
+  dump_wave_structure();  // no-op unless SPECTRE_WAVESTRUCT is set
   const DataVector dv(5);
   test_characteristic_speeds(dv);
   // Test with aligned normals to check the code works
