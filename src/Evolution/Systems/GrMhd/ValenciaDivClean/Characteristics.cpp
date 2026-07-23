@@ -807,7 +807,8 @@ void characteristic_eigenvectors_mhd(
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const tnsr::i<DataVector, 3>& unit_normal,
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
-        equation_of_state) {
+        equation_of_state,
+    const bool skip_fluid_subspace) {
   const size_t num_points = get(lorentz_factor).size();
 
   Scalar<DataVector> sound_speed_squared{num_points};
@@ -991,6 +992,20 @@ void characteristic_eigenvectors_mhd(
   auto& G_entropy = get<::Tags::TempScalar<38>>(temp_tensors);
 
   for (size_t wave = 0; wave < 9; ++wave) {
+    // Optimization (skip-degenerate): when the caller will unconditionally
+    // complement the collapse-prone fluid subspace (MhdSpeed 2-6 = Alfven-,
+    // slow-, entropy, slow+, Alfven+) -- i.e. AlwaysComplementaryProjection --
+    // there is no need to build those (expensive, ill-conditioned) analytic
+    // eigenvectors: they get zeroed and reconstructed by complement anyway.
+    // Zero their rows and skip, giving a bit-identical result with less work.
+    if (skip_fluid_subspace and wave >= 2 and wave <= 6) {
+      for (size_t comp = 0; comp < 9; ++comp) {
+        characteristic_modes->get(wave, comp) = DataVector(num_points, 0.0);
+        characteristic_projectors->get(wave, comp) =
+            DataVector(num_points, 0.0);
+      }
+      continue;
+    }
     const DataVector& y = characteristic_speeds.get(wave);
     get(a) = W * (get(v_n) - y);
     get(B) = get(B_n) / W + get(B_dot_v) * W * (get(v_n) - y);
@@ -1593,9 +1608,16 @@ void characteristic_eigenvectors_hydro(
     Scalar<DataVector>& h_minus_W = get<::Tags::TempScalar<18>>(temp_tensors);
     get(h_minus_W) = get(h_minus_one) - get(W_minus_one);
 
+    // The zeta/kappa terms are identically zero for every EoS we support
+    // (zeta == 0; see above), but must not be evaluated as 0/kappa because
+    // kappa -> 0 in cold / atmosphere cells, giving 0/0 = NaN and an FPE.
+    // Guard them exactly like the R4 / L4 blocks do.
     characteristic_projectors->get(L3, 0) =
-        (get(h_minus_W) + get(zeta) * get(electron_fraction) / get(kappa)) *
-        get(prefactor_L3);
+        get(h_minus_W) * get(prefactor_L3);
+    if (zeta_max_abs >= 1e-14) {
+      characteristic_projectors->get(L3, 0) +=
+          get(zeta) * get(electron_fraction) / get(kappa) * get(prefactor_L3);
+    }
 
     for (size_t i = 0; i < 3; ++i) {
       characteristic_projectors->get(L3, i + 1) =
@@ -1604,8 +1626,10 @@ void characteristic_eigenvectors_hydro(
 
     characteristic_projectors->get(L3, 4) =
         (-get(lorentz_factor)) * get(prefactor_L3);
-    characteristic_projectors->get(L3, 5) =
-        (-get(zeta) / get(kappa)) * get(prefactor_L3);
+    if (zeta_max_abs >= 1e-14) {
+      characteristic_projectors->get(L3, 5) =
+          (-get(zeta) / get(kappa)) * get(prefactor_L3);
+    }  // else stays 0 (zeroed above)
   }
 
   // L4
@@ -2664,7 +2688,8 @@ GENERATE_INSTANTIATIONS(FUNCTION_INSTANTIATION, (1, 2, 3))
       const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
       const tnsr::i<DataVector, 3>& unit_normal,                               \
       const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
-          equation_of_state);                                                  \
+          equation_of_state,                                                   \
+      const bool skip_fluid_subspace);                                         \
   template void characteristic_eigenvectors_hydro<GET_DIM(data)>(              \
       const gsl::not_null<tnsr::ij<DataVector, 6>*> characteristic_modes,      \
       const gsl::not_null<tnsr::IJ<DataVector, 6>*> characteristic_projectors, \

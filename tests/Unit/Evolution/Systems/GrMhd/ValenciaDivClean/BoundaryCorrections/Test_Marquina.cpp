@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -42,7 +43,7 @@
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 
 namespace {
 // Deterministic validation of the complementary-projection SUBSPACE LOGIC for the
@@ -453,8 +454,8 @@ struct PhysicalState {
 // boundary correction receives as the volume tag.
 Variables<face_tags> make_face_variables(
     const PhysicalState& s,
-    const EquationsOfState::EquationOfState<true, 3>& eos_3d) {
-  const size_t num_points = 1;
+    const EquationsOfState::EquationOfState<true, 3>& eos_3d,
+    const size_t num_points = 1) {
   Variables<face_tags> vars{num_points};
 
   // Flat geometry.
@@ -650,7 +651,7 @@ FluxResult compute_marquina_flux(
                               hydro::Tags::GrmhdEquationOfState>& volume_data) {
   namespace helpers = TestHelpers::evolution::dg::detail;
   FluxResult result{};
-  const size_t num_points = 1;
+  const size_t num_points = interior_face.number_of_grid_points();
   try {
     const ScopedFpeState fpe(false);
     // Interior normal +x, exterior normal -x (flat space unit normals).
@@ -927,6 +928,107 @@ void test_marquina_flux_methods() {
     CHECK(rel_mhd_an < 1.0e-6);
   }
 }
+
+// Micro-benchmark (roadmap #1, regime A): time the real Marquina flux on a fixed
+// non-degenerate interface, per variant.  Env-guarded, so no effect on CI.
+//   SPECTRE_MARQFLUX_BENCH=<nreps>     e.g. 200000
+// Prints ns/call per {system,method}; the hydro full-vs-CPM ratio should
+// reproduce the ~30% speedup Emily observed and localize where the cost lives.
+// (HLL is a different BoundaryCorrection class -> its comparison lives in the
+// full-simulation timing, regime B.)
+void bench_marquina_flux() {
+  const char* const env = std::getenv("SPECTRE_MARQFLUX_BENCH");
+  if (env == nullptr) {
+    return;
+  }
+  // env = "nreps[:npts]"; npts = face points per call (defaults to 100 so the
+  // per-point kernel dominates the fixed per-call overhead and the O(N^2)
+  // dg_boundary_terms loop / CPM differences become visible).
+  const std::string env_str{env};
+  const auto colon = env_str.find(':');
+  const long nreps_l = std::atol(env_str.substr(0, colon).c_str());
+  const size_t nreps = static_cast<size_t>(nreps_l > 0 ? nreps_l : 2000);
+  const size_t npts =
+      colon == std::string::npos
+          ? 100
+          : static_cast<size_t>(std::max(1L, std::atol(env_str.c_str() + colon + 1)));
+
+  const double gamma = 1.37;
+  const auto eos_3d =
+      EquationsOfState::IdealFluid<true>{gamma, 0.0}.promote_to_3d_eos();
+  const tuples::TaggedTuple<gr::Tags::SpatialMetric<DataVector, 3>,
+                            hydro::Tags::GrmhdEquationOfState>
+      volume_data{[npts]() {
+                    tnsr::ii<DataVector, 3, Frame::Inertial> m{npts, 0.0};
+                    for (size_t i = 0; i < 3; ++i) {
+                      m.get(i, i) = DataVector{npts, 1.0};
+                    }
+                    return m;
+                  }(),
+                  EquationsOfState::IdealFluid<true>{gamma, 0.0}
+                      .promote_to_3d_eos()};
+
+  const double tol = 1.0e-3;
+  const double density = 1.0;
+  const double pressure = 1.1;
+  const double W = 1.3;
+  const double eps_val = pressure / (density * (gamma - 1.0));
+  const double h = 1.0 + eps_val + pressure / density;
+  const double b_mag = std::sqrt(1.0 * density * h);  // sigma = 1
+  // Two states: well-separated (bn_frac=0.9) and near-degenerate (bn_frac->0,
+  // i.e. B_normal->0 where slow/Alfven collapse -- the regime CPM targets).
+  const PhysicalState sep{density, pressure, W,          0.28, 0.9,
+                          b_mag,   0.02,     M_PI / 4.0,  0.13, gamma};
+  const PhysicalState degen{density, pressure, W,          0.28, 1.0e-7,
+                            b_mag,   0.02,     M_PI / 4.0,  0.13, gamma};
+
+  const auto run_state = [&](const std::string& label,
+                             const PhysicalState& interior) {
+    const PhysicalState exterior = perturb_exterior(interior);
+    const auto interior_face = make_face_variables(interior, *eos_3d, npts);
+    const auto exterior_face = make_face_variables(exterior, *eos_3d, npts);
+    const auto time_variant = [&](const std::string& name, const BC& bc) {
+      const auto warm =
+          compute_marquina_flux(bc, interior_face, exterior_face, volume_data);
+      volatile double sink = 0.0;
+      const auto t0 = std::chrono::steady_clock::now();
+      for (size_t i = 0; i < nreps; ++i) {
+        const auto r = compute_marquina_flux(bc, interior_face, exterior_face,
+                                             volume_data);
+        sink += r.fluid[0];
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      const double ns =
+          static_cast<double>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                  .count()) /
+          static_cast<double>(nreps);
+      std::cout << "  [" << label << "] " << name << "\t" << ns / npts
+                << " ns/pt (ok=" << warm.ok
+                << ", sink=" << static_cast<double>(sink) << ")\n";
+    };
+    time_variant("hydro_analytic",
+                 BC{MarqSystem::HydroYe, MarqMethod::AlwaysAnalytic});
+    time_variant("hydro_cpm",
+                 BC{MarqSystem::HydroYe,
+                    MarqMethod::AnalyticWithComplementaryProjection, tol});
+    time_variant("mhd_analytic",
+                 BC{MarqSystem::Mhd, MarqMethod::AlwaysAnalytic});
+    time_variant("mhd_cpm",
+                 BC{MarqSystem::Mhd,
+                    MarqMethod::AnalyticWithComplementaryProjection, tol});
+    time_variant("mhd_alwayscpm",
+                 BC{MarqSystem::Mhd, MarqMethod::AlwaysComplementaryProjection,
+                    tol});
+    time_variant("mhd_numeric",
+                 BC{MarqSystem::Mhd, MarqMethod::AlwaysNumeric});
+  };
+
+  std::cout << "=== Marquina flux micro-benchmark (nreps=" << nreps
+            << ", npts=" << npts << ") ===\n";
+  run_state("sep  ", sep);
+  run_state("degen", degen);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
@@ -943,6 +1045,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
   // physical-state sweeps.  Writes marquina_flux_methods.tsv when the env var
   // SPECTRE_MARQFLUX_DUMP is set; always runs the light non-degenerate check.
   test_marquina_flux_methods();
+
+  // Roadmap #1 regime A: env-guarded flux micro-benchmark (SPECTRE_MARQFLUX_BENCH).
+  bench_marquina_flux();
 
   MAKE_GENERATOR(gen);
 

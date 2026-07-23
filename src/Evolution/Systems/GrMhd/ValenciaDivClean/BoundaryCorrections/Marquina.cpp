@@ -308,11 +308,15 @@ double Marquina::dg_package_data(
         }
       }
     } else {
+      // skip-degenerate optimization: AlwaysComplementaryProjection zeroes and
+      // complements the fluid subspace (waves 2-6) unconditionally, so don't
+      // build those eigenvectors at all (bit-identical, less work).
       characteristic_eigenvectors_mhd(
           make_not_null(&mhd_modes), make_not_null(&mhd_projectors), mhd_speeds,
           spatial_velocity, magnetic_field, rest_mass_density,
           specific_internal_energy, lorentz_factor, specific_enthalpy,
-          spatial_metric, unit_normal_covector, equation_of_state);
+          spatial_metric, unit_normal_covector, equation_of_state,
+          always_complementary_projection);
     }
     // characteristic_eigenvectors_mhd returns biorthogonal but NOT
     // biorthonormal eigenvectors (L_i . R_i is not 1); the Marquina
@@ -823,23 +827,24 @@ void Marquina::dg_boundary_terms(
             grmhd::ValenciaDivClean::HydroVectorR::Rplus, j);
   }
   // Initialize boundary corrections to zero, as we'll compute them by adding
-  // the contributions from each characteristic field
+  // the contributions from each characteristic field.  (Each assignment zeros
+  // the whole DataVector; the previous `for (point ...)` wrapper repeated this
+  // num_points times with `point` unused -- an O(N^2) no-op.  Removing it gives
+  // a large speedup at realistic face-point counts; found by Emily/Claude.)
   const size_t num_points = get(tilde_d_int).size();
-  for (size_t point = 0; point < get(tilde_d_int).size(); ++point) {
-    get(*boundary_correction_tilde_d) = 0.0;
-    get<0>(*boundary_correction_tilde_s) = 0.0;
-    get<1>(*boundary_correction_tilde_s) = 0.0;
-    get<2>(*boundary_correction_tilde_s) = 0.0;
-    get(*boundary_correction_tilde_tau) = 0.0;
-    get(*boundary_correction_tilde_ye) = 0.0;
+  get(*boundary_correction_tilde_d) = 0.0;
+  get<0>(*boundary_correction_tilde_s) = 0.0;
+  get<1>(*boundary_correction_tilde_s) = 0.0;
+  get<2>(*boundary_correction_tilde_s) = 0.0;
+  get(*boundary_correction_tilde_tau) = 0.0;
+  get(*boundary_correction_tilde_ye) = 0.0;
 
-    // Not yet implemented for magnetic field and divergence cleaning field, so
-    // set to zero
-    get<0>(*boundary_correction_tilde_b) = 0.0;
-    get<1>(*boundary_correction_tilde_b) = 0.0;
-    get<2>(*boundary_correction_tilde_b) = 0.0;
-    get(*boundary_correction_tilde_phi) = 0.0;
-  }
+  // Not yet implemented for magnetic field and divergence cleaning field, so
+  // set to zero
+  get<0>(*boundary_correction_tilde_b) = 0.0;
+  get<1>(*boundary_correction_tilde_b) = 0.0;
+  get<2>(*boundary_correction_tilde_b) = 0.0;
+  get(*boundary_correction_tilde_phi) = 0.0;
 
   // Fallback flux for unmodeled B and Phi fields to satisfy DG contracts
   for (size_t j = 0; j < 3; ++j) {

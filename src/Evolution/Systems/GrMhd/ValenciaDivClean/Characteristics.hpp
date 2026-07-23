@@ -409,7 +409,8 @@ void characteristic_eigenvectors_mhd(
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const tnsr::i<DataVector, 3>& unit_normal,
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
-        equation_of_state);
+        equation_of_state,
+    bool skip_fluid_subspace = false);
 /// @}
 
 /**
