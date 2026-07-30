@@ -76,11 +76,20 @@ std::ostream& operator<<(std::ostream& os, HllemWaves waves);
  * `grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd`, so its quality is
  * a direct function of the eigenvector quality -- the point of the comparison
  * against classical (Anile/Komissarov/Anton) HLLEM. The eigensystem is
- * evaluated at the arithmetic-average state so the flux is conservative. Near a
- * degeneracy the collapse-prone eigenvectors are handled by the complementary
- * projection (as in `Marquina`); the fan is reconstructed assuming flat space
- * (the regime of the relativistic M&M tests) with an HLL fallback for curved
- * backgrounds and for non-finite results.
+ * evaluated at the arithmetic-average state so the flux is conservative. Each
+ * restored wave carries its own Einfeldt coefficient and is skipped where it
+ * leaves the HLL fan or collapses onto a neighbour (its analytic eigenvector is
+ * then ill-conditioned) -- matching PLUTO's per-wave HLLEM. As a consequence,
+ * where the slow/Alfven modes sit on the contact (e.g. the weakly magnetized 2D
+ * Kelvin-Helmholtz test) they are dropped and HLLEM reduces to HLL, exactly the
+ * behaviour reported by M&M; a field strong enough to separate the slow modes
+ * is needed to see them restored. The optional complementary projection
+ * (`UseComplementaryProjection`) that would instead restore the collapsed
+ * subspace as a block is disabled by default because it removes the dissipation
+ * that stabilizes those transverse modes at sharp shears (see its help string).
+ * The fan is reconstructed assuming flat space (the regime of the relativistic
+ * M&M tests) with an HLL fallback for curved backgrounds and non-finite
+ * results.
  */
 class Hllem final : public evolution::BoundaryCorrection {
  public:
@@ -110,6 +119,19 @@ class Hllem final : public evolution::BoundaryCorrection {
         "handled by the complementary projection."};
     using type = double;
   };
+  struct UseComplementaryProjection {
+    static constexpr Options::String help = {
+        "If true, at points where a restored wave collapses onto a neighbour "
+        "(its individual analytic eigenvector is ill-conditioned) restore the "
+        "whole fluid subspace as one block via the complement of the "
+        "well-conditioned fast eigenvectors, instead of dropping the wave (HLL "
+        "there). Composes with WavesToRestore. WARNING: unlike Marquina (whose "
+        "complement is upwind/dissipative), the HLLEM block complement removes "
+        "the numerical dissipation from the collapsed slow/Alfven transverse "
+        "modes, which is unstable at sharp relativistic shear layers -- leave "
+        "false and rely on the per-wave path (which matches PLUTO's HLLEM)."};
+    using type = bool;
+  };
   struct MagneticFieldMagnitudeForHydro {
     static constexpr Options::String help = {
         "When the magnetic field is below this value we use the hydro "
@@ -123,8 +145,9 @@ class Hllem final : public evolution::BoundaryCorrection {
     using type = double;
   };
   using options =
-      tmpl::list<WavesToRestore, DegeneracyTolerance,
-                 MagneticFieldMagnitudeForHydro, LightSpeedDensityCutoff>;
+      tmpl::list<WavesToRestore, UseComplementaryProjection,
+                 DegeneracyTolerance, MagneticFieldMagnitudeForHydro,
+                 LightSpeedDensityCutoff>;
   static constexpr Options::String help = {
       "Computes the HLLEM boundary correction term for the GRMHD system."};
 
@@ -135,8 +158,8 @@ class Hllem final : public evolution::BoundaryCorrection {
   Hllem& operator=(Hllem&&) = default;
   ~Hllem() override = default;
 
-  Hllem(HllemWaves waves_to_restore, double degeneracy_tolerance,
-        double magnetic_field_magnitude_for_hydro,
+  Hllem(HllemWaves waves_to_restore, bool use_complementary_projection,
+        double degeneracy_tolerance, double magnetic_field_magnitude_for_hydro,
         double light_speed_density_cutoff);
 
   /// \cond
@@ -303,6 +326,7 @@ class Hllem final : public evolution::BoundaryCorrection {
   friend bool operator==(const Hllem& lhs, const Hllem& rhs);
 
   HllemWaves waves_to_restore_{HllemWaves::All};
+  bool use_complementary_projection_{false};
   double degeneracy_tolerance_{std::numeric_limits<double>::signaling_NaN()};
   double magnetic_field_magnitude_for_hydro_{
       std::numeric_limits<double>::signaling_NaN()};

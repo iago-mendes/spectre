@@ -68,10 +68,12 @@ std::vector<size_t> restored_wave_indices(const HllemWaves waves) {
 }  // namespace
 
 Hllem::Hllem(const HllemWaves waves_to_restore,
+             const bool use_complementary_projection,
              const double degeneracy_tolerance,
              const double magnetic_field_magnitude_for_hydro,
              const double light_speed_density_cutoff)
     : waves_to_restore_(waves_to_restore),
+      use_complementary_projection_(use_complementary_projection),
       degeneracy_tolerance_(degeneracy_tolerance),
       magnetic_field_magnitude_for_hydro_(magnetic_field_magnitude_for_hydro),
       light_speed_density_cutoff_(light_speed_density_cutoff) {}
@@ -85,6 +87,7 @@ std::unique_ptr<evolution::BoundaryCorrection> Hllem::get_clone() const {
 void Hllem::pup(PUP::er& p) {
   BoundaryCorrection::pup(p);
   p | waves_to_restore_;
+  p | use_complementary_projection_;
   p | degeneracy_tolerance_;
   p | magnetic_field_magnitude_for_hydro_;
   p | light_speed_density_cutoff_;
@@ -419,6 +422,11 @@ void Hllem::dg_boundary_terms(
                             unit_normal, equation_of_state);
   tnsr::ij<DataVector, 9> modes{num_points, 0.0};
   tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
+  // Always build the full analytic eigensystem. The per-wave anti-diffusion
+  // uses the individual slow/Alfven/contact eigenvectors -- this is precisely
+  // what distinguishes ContactSlow from ContactAlfven (the M&M Fig 13 knob).
+  // The complementary projection is used only as a per-point fallback where
+  // those eigenvectors genuinely collapse (below).
   characteristic_eigenvectors_mhd(
       make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
       b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, flat_metric, unit_normal,
@@ -440,17 +448,27 @@ void Hllem::dg_boundary_terms(
   for (size_t n = 0; n < 9; ++n) {
     gsl::at(antidiff, n) = DataVector{num_points, 0.0};
   }
+
+  // Per-wave anti-diffusion for the restored internal waves, each carried by
+  // its own Einfeldt coefficient. A speed-gap guard drops a wave where its
+  // speed collapses onto a neighbour and its individual analytic eigenvector is
+  // ill-conditioned; those points are recorded for the complement fallback.
+  DataVector restored_wave_dropped{num_points, 0.0};
   for (const size_t wave : restored_wave_indices(waves_to_restore_)) {
     const DataVector& lam = mhd_speeds.get(wave);
     const DataVector lambdap = max(lam, 0.0);
     const DataVector lambdam = min(lam, 0.0);
     const DataVector delta = 1.0 - lambdam / (lambda_min - 1.0e-14) -
                              lambdap / (lambda_max + 1.0e-14);
-    // Degeneracy guard (speed-gap detector, as in Marquina): where this wave's
-    // speed collapses onto a neighbour the analytic eigenvectors are ill-
-    // conditioned and the anti-diffusion blows up, so drop this wave there.
-    // (A full complementary-projection treatment is the planned refinement.)
     DataVector wave_ok{num_points, 1.0};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      // Skip waves outside the HLL Riemann fan (as in PLUTO's hllem.c): the
+      // Einfeldt coefficient assumes lambda_min <= lambda_k <= lambda_max, and
+      // anti-diffusing an out-of-fan wave is both inconsistent and unstable.
+      if (lam[pt] >= lambda_max[pt] or lam[pt] <= lambda_min[pt]) {
+        wave_ok[pt] = 0.0;
+      }
+    }
     for (size_t j = 0; j < 9; ++j) {
       if (j == wave) {
         continue;
@@ -458,10 +476,10 @@ void Hllem::dg_boundary_terms(
       for (size_t pt = 0; pt < num_points; ++pt) {
         if (std::abs(lam[pt] - mhd_speeds.get(j)[pt]) < degeneracy_tolerance_) {
           wave_ok[pt] = 0.0;
+          restored_wave_dropped[pt] = 1.0;
         }
       }
     }
-    // L_wave . dU
     DataVector ldu{num_points, 0.0};
     for (size_t n = 0; n < 9; ++n) {
       ldu += projectors.get(wave, n) * gsl::at(du, n);
@@ -469,6 +487,57 @@ void Hllem::dg_boundary_terms(
     const DataVector w = coeff * delta * ldu * wave_ok;
     for (size_t n = 0; n < 9; ++n) {
       gsl::at(antidiff, n) += w * modes.get(wave, n);
+    }
+  }
+
+  if (use_complementary_projection_) {
+    // Complementary-projection fallback (Fedkiw-Merriman-Osher 1997). Where a
+    // restored wave collapsed above, its individual eigenvector is unusable so
+    // the per-wave term was dropped (leaving plain HLL there -- exactly the M&M
+    // "HLLEM == HLL" behaviour when slow modes sit on the contact). Instead,
+    // restore the whole collapse-prone fluid subspace {2..6} as ONE block via
+    // the complement of the well-conditioned fast/GLM waves {0,1,7,8},
+    //   P_fluid . dU = dU - sum_{k in {0,1,7,8}} r_k (l_k . dU),
+    // carried by a single Einfeldt coefficient at the (shared) contact speed.
+    // The clustered waves share that speed at a genuine collapse, so the single
+    // coefficient is accurate there; applying this block only at the collapse
+    // points (rather than everywhere) avoids the over-restoration -- and
+    // resulting instability -- that a blanket block complement produces in the
+    // smooth regions where the fluid waves are well separated.
+    const DataVector& lam_c = mhd_speeds.get(4);  // Entropy / contact
+    const DataVector delta_c = 1.0 - min(lam_c, 0.0) / (lambda_min - 1.0e-14) -
+                               max(lam_c, 0.0) / (lambda_max + 1.0e-14);
+    // Project du onto the fluid subspace via the complement of the
+    // well-conditioned fast waves {1,7}. The GLM/divergence-cleaning waves
+    // {0,8} travel at the light speed, are OUT OF the fluid HLL fan, and are
+    // handled by the (diffusive) HLL flux -- projecting them out here would
+    // corrupt the complement, so they are skipped per point when out of fan.
+    std::array<DataVector, 9> cdu = du;
+    const std::array<size_t, 4> nondegenerate_waves{{0, 1, 7, 8}};
+    for (const size_t k : nondegenerate_waves) {
+      const DataVector& lam_k = mhd_speeds.get(k);
+      DataVector ldu{num_points, 0.0};
+      for (size_t n = 0; n < 9; ++n) {
+        ldu += projectors.get(k, n) * gsl::at(du, n);
+      }
+      for (size_t n = 0; n < 9; ++n) {
+        const DataVector contrib = ldu * modes.get(k, n);
+        for (size_t pt = 0; pt < num_points; ++pt) {
+          if (lam_k[pt] < lambda_max[pt] and lam_k[pt] > lambda_min[pt]) {
+            gsl::at(cdu, n)[pt] -= contrib[pt];
+          }
+        }
+      }
+    }
+    // Keep the divergence-cleaning scalar phi (index 8) on the HLL flux.
+    cdu[8] = DataVector{num_points, 0.0};
+    for (size_t n = 0; n < 9; ++n) {
+      const DataVector block = coeff * delta_c * gsl::at(cdu, n);
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (restored_wave_dropped[pt] > 0.0) {
+          gsl::at(antidiff, n)[pt] = block[pt];
+        }
+      }
     }
   }
 
@@ -499,6 +568,8 @@ void Hllem::dg_boundary_terms(
 
 bool operator==(const Hllem& lhs, const Hllem& rhs) {
   return lhs.waves_to_restore_ == rhs.waves_to_restore_ and
+         lhs.use_complementary_projection_ ==
+             rhs.use_complementary_projection_ and
          lhs.degeneracy_tolerance_ == rhs.degeneracy_tolerance_ and
          lhs.magnetic_field_magnitude_for_hydro_ ==
              rhs.magnetic_field_magnitude_for_hydro_ and

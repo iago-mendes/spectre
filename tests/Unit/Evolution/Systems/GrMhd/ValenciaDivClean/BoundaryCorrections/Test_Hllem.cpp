@@ -48,7 +48,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
        {bc::HllemWaves::Contact, bc::HllemWaves::ContactSlow,
         bc::HllemWaves::ContactAlfven, bc::HllemWaves::All}) {
     TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
-        make_not_null(&gen), bc::Hllem{waves, 1.0e-10, 1.0e-30, 1.0e-8},
+        make_not_null(&gen), bc::Hllem{waves, true, 1.0e-10, 1.0e-30, 1.0e-8},
         Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
         volume_data, ranges);
   }
@@ -58,6 +58,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                                          bc::Hllem>(
           "Hllem:\n"
           "  WavesToRestore: ContactSlow\n"
+      "  UseComplementaryProjection: true\n"
           "  DegeneracyTolerance: 1.0e-10\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n");
@@ -66,11 +67,19 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges);
 
-  CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, 1.0e-10, 1.0e-30, 1.0e-8} !=
-              bc::Hllem{bc::HllemWaves::All, 1.0e-10, 1.0e-30, 1.0e-8});
-  CHECK(bc::Hllem{bc::HllemWaves::All, 1.0e-10, 1.0e-30, 1.0e-8} !=
-        bc::Hllem{bc::HllemWaves::ContactSlow, 1.0e-10, 1.0e-30, 1.0e-8});
-  CHECK(bc::Hllem{bc::HllemWaves::All, 1.0e-10, 1.0e-30, 1.0e-8} !=
-        bc::Hllem{bc::HllemWaves::All, 1.0e-9, 1.0e-30, 1.0e-8});
+  CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
+              bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8});
+  CHECK(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
+        bc::Hllem{bc::HllemWaves::ContactSlow, true, 1.0e-10, 1.0e-30, 1.0e-8});
+  CHECK(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
+        bc::Hllem{bc::HllemWaves::All, true, 1.0e-9, 1.0e-30, 1.0e-8});
+  CHECK(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
+        bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8});
+  // per-wave (non-CPM) path is also conservative
+  TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+      make_not_null(&gen),
+      bc::Hllem{bc::HllemWaves::All, false, 1.0e-3, 1.0e-30, 1.0e-8},
+      Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+      volume_data, ranges);
 }
 }  // namespace
