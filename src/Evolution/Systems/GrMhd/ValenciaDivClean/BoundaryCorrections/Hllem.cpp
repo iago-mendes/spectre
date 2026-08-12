@@ -42,6 +42,10 @@ std::ostream& operator<<(std::ostream& os, const HllemWaves waves) {
       return os << "ContactSlow";
     case HllemWaves::All:
       return os << "All";
+    case HllemWaves::ContactAlfvenFast:
+      return os << "ContactAlfvenFast";
+    case HllemWaves::AllWithFast:
+      return os << "AllWithFast";
     default:
       ERROR("Unknown HllemWaves");
   }
@@ -61,6 +65,12 @@ std::vector<size_t> restored_wave_indices(const HllemWaves waves) {
       return {3, 4, 5};
     case HllemWaves::All:
       return {2, 3, 4, 5, 6};
+    case HllemWaves::ContactAlfvenFast:
+      // fast-, Alfven-, contact, Alfven+, fast+ (no slow)
+      return {1, 2, 4, 6, 7};
+    case HllemWaves::AllWithFast:
+      // every interior wave; only the GLM scalars stay as the outer HLL bounds
+      return {1, 2, 3, 4, 5, 6, 7};
     default:
       ERROR("Unknown HllemWaves");
   }
@@ -420,6 +430,115 @@ void Hllem::dg_boundary_terms(
   characteristic_speeds_mhd(make_not_null(&mhd_speeds), v_avg, b_avg, rho_avg,
                             eps_avg, w_avg, enthalpy_avg, flat_metric,
                             unit_normal, equation_of_state);
+
+  // --- Scalar (divergence-cleaning) / MHD flux split -------------------------
+  // In flat space the GLM subsystem (Phi and the NORMAL magnetic field)
+  // decouples from the MHD system and propagates at the light speed; it keeps
+  // the +/-c HLL flux computed in the baseline above (for the linear (Phi,B_n)
+  // system HLL at
+  // +/-c is identically LLF at c). The MHD variables (D, Ye, Tau, S and the
+  // TANGENTIAL magnetic field) instead use the (much slower) fast-magnetosonic
+  // HLL bounds from the characteristic speeds. This makes the flux far less
+  // dissipative and -- crucially -- puts the fast waves AT the fan edge, so the
+  // anti-diffusion restores them as a no-op (delta_fast -> 0) instead of the
+  // over-restoration that blew up with the +/-c bounds. (Elias & Saul,
+  // 2026-07-30; cf. PLUTO Src/MHD/GLM/glm.c GLM_Solve.) Everything here stays
+  // inside the boundary correction; the evolution system is unchanged.
+  const DataVector fast_lambda_max =
+      max(0.0, mhd_speeds.get(7));  // v_n + c_fast
+  const DataVector fast_lambda_min =
+      min(0.0, mhd_speeds.get(1));  // v_n - c_fast
+  DataVector fast_dl = fast_lambda_max - fast_lambda_min;
+  for (size_t pt = 0; pt < num_points; ++pt) {
+    if (fast_dl[pt] < 1.0e-30) {
+      fast_dl[pt] = 1.0e-30;
+    }
+  }
+  const DataVector fast_inv_dl = 1.0 / fast_dl;
+  const DataVector fast_lprod = fast_lambda_max * fast_lambda_min;
+  const auto fast_hll = [&](const Scalar<DataVector>& u_int,
+                            const Scalar<DataVector>& nf_i,
+                            const Scalar<DataVector>& u_ext,
+                            const Scalar<DataVector>& nf_e) -> DataVector {
+    if (weak) {
+      return DataVector{(fast_lambda_max * get(nf_i) +
+                         fast_lambda_min * get(nf_e) +
+                         fast_lprod * (get(u_ext) - get(u_int))) *
+                        fast_inv_dl};
+    }
+    return DataVector{(fast_lambda_min * (get(nf_i) + get(nf_e)) +
+                       fast_lprod * (get(u_ext) - get(u_int))) *
+                      fast_inv_dl};
+  };
+  // fluid scalars: pure MHD -> fast bounds
+  get(*boundary_correction_tilde_d) =
+      fast_hll(tilde_d_int, normal_dot_flux_tilde_d_int, tilde_d_ext,
+               normal_dot_flux_tilde_d_ext);
+  get(*boundary_correction_tilde_ye) =
+      fast_hll(tilde_ye_int, normal_dot_flux_tilde_ye_int, tilde_ye_ext,
+               normal_dot_flux_tilde_ye_ext);
+  get(*boundary_correction_tilde_tau) =
+      fast_hll(tilde_tau_int, normal_dot_flux_tilde_tau_int, tilde_tau_ext,
+               normal_dot_flux_tilde_tau_ext);
+  // TildePhi keeps the +/-c HLL (divergence cleaning) from the baseline above.
+  // momentum: pure MHD (no GLM coupling) -> fast bounds, all components
+  for (size_t k = 0; k < 3; ++k) {
+    if (weak) {
+      boundary_correction_tilde_s->get(k) =
+          (fast_lambda_max * normal_dot_flux_tilde_s_int.get(k) +
+           fast_lambda_min * normal_dot_flux_tilde_s_ext.get(k) +
+           fast_lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
+          fast_inv_dl;
+    } else {
+      boundary_correction_tilde_s->get(k) =
+          (fast_lambda_min * (normal_dot_flux_tilde_s_int.get(k) +
+                              normal_dot_flux_tilde_s_ext.get(k)) +
+           fast_lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
+          fast_inv_dl;
+    }
+  }
+  // Magnetic field: normal component belongs to the GLM subsystem (keep the
+  // +/-c baseline), tangential component is MHD (fast bounds). Split, recompute
+  // the tangential part with fast bounds, then recombine G(B^i) = G(B_n) n^i +
+  // G(B_t).
+  {
+    DataVector bn_correction{num_points,
+                             0.0};  // n_i G(B^i) from the +/-c baseline
+    DataVector bn_int{num_points, 0.0};
+    DataVector bn_ext{num_points, 0.0};
+    DataVector nfbn_int{num_points, 0.0};
+    DataVector nfbn_ext{num_points, 0.0};
+    for (size_t k = 0; k < 3; ++k) {
+      bn_correction += boundary_correction_tilde_b->get(k) * unit_normal.get(k);
+      bn_int += tilde_b_int.get(k) * unit_normal.get(k);
+      bn_ext += tilde_b_ext.get(k) * unit_normal.get(k);
+      nfbn_int += normal_dot_flux_tilde_b_int.get(k) * unit_normal.get(k);
+      nfbn_ext += normal_dot_flux_tilde_b_ext.get(k) * unit_normal.get(k);
+    }
+    for (size_t k = 0; k < 3; ++k) {
+      const DataVector bt_int =
+          tilde_b_int.get(k) - bn_int * unit_normal.get(k);
+      const DataVector bt_ext =
+          tilde_b_ext.get(k) - bn_ext * unit_normal.get(k);
+      const DataVector nfbt_int =
+          normal_dot_flux_tilde_b_int.get(k) - nfbn_int * unit_normal.get(k);
+      const DataVector nfbt_ext =
+          normal_dot_flux_tilde_b_ext.get(k) - nfbn_ext * unit_normal.get(k);
+      DataVector g_bt{num_points, 0.0};
+      if (weak) {
+        g_bt = (fast_lambda_max * nfbt_int + fast_lambda_min * nfbt_ext +
+                fast_lprod * (bt_ext - bt_int)) *
+               fast_inv_dl;
+      } else {
+        g_bt = (fast_lambda_min * (nfbt_int + nfbt_ext) +
+                fast_lprod * (bt_ext - bt_int)) *
+               fast_inv_dl;
+      }
+      boundary_correction_tilde_b->get(k) =
+          bn_correction * unit_normal.get(k) + g_bt;
+    }
+  }
+
   tnsr::ij<DataVector, 9> modes{num_points, 0.0};
   tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
   // Always build the full analytic eigensystem. The per-wave anti-diffusion
@@ -443,7 +562,10 @@ void Hllem::dg_boundary_terms(
   du[7] = get(tilde_tau_ext) - get(tilde_tau_int);
   du[8] = get(tilde_phi_ext) - get(tilde_phi_int);
 
-  const DataVector coeff = lprod * inv_dl;  // lambda_min*lambda_max/(lmax-lmin)
+  // Anti-diffusion uses the FAST (MHD) bounds -- consistent with the fast-speed
+  // MHD baseline above. The fast waves then sit at the fan edge (delta -> 0),
+  // so restoring them is a stable no-op instead of the +/-c over-restoration.
+  const DataVector coeff = fast_lprod * fast_inv_dl;
   std::array<DataVector, 9> antidiff{};
   for (size_t n = 0; n < 9; ++n) {
     gsl::at(antidiff, n) = DataVector{num_points, 0.0};
@@ -458,14 +580,16 @@ void Hllem::dg_boundary_terms(
     const DataVector& lam = mhd_speeds.get(wave);
     const DataVector lambdap = max(lam, 0.0);
     const DataVector lambdam = min(lam, 0.0);
-    const DataVector delta = 1.0 - lambdam / (lambda_min - 1.0e-14) -
-                             lambdap / (lambda_max + 1.0e-14);
+    const DataVector delta = 1.0 - lambdam / (fast_lambda_min - 1.0e-14) -
+                             lambdap / (fast_lambda_max + 1.0e-14);
     DataVector wave_ok{num_points, 1.0};
     for (size_t pt = 0; pt < num_points; ++pt) {
       // Skip waves outside the HLL Riemann fan (as in PLUTO's hllem.c): the
       // Einfeldt coefficient assumes lambda_min <= lambda_k <= lambda_max, and
       // anti-diffusing an out-of-fan wave is both inconsistent and unstable.
-      if (lam[pt] >= lambda_max[pt] or lam[pt] <= lambda_min[pt]) {
+      // With the fast bounds the fast waves land at the edge and are skipped
+      // here (their delta is 0 anyway) -- exactly the intended no-op.
+      if (lam[pt] >= fast_lambda_max[pt] or lam[pt] <= fast_lambda_min[pt]) {
         wave_ok[pt] = 0.0;
       }
     }
@@ -505,8 +629,9 @@ void Hllem::dg_boundary_terms(
     // resulting instability -- that a blanket block complement produces in the
     // smooth regions where the fluid waves are well separated.
     const DataVector& lam_c = mhd_speeds.get(4);  // Entropy / contact
-    const DataVector delta_c = 1.0 - min(lam_c, 0.0) / (lambda_min - 1.0e-14) -
-                               max(lam_c, 0.0) / (lambda_max + 1.0e-14);
+    const DataVector delta_c = 1.0 -
+                               min(lam_c, 0.0) / (fast_lambda_min - 1.0e-14) -
+                               max(lam_c, 0.0) / (fast_lambda_max + 1.0e-14);
     // Project du onto the fluid subspace via the complement of the
     // well-conditioned fast waves {1,7}. The GLM/divergence-cleaning waves
     // {0,8} travel at the light speed, are OUT OF the fluid HLL fan, and are
@@ -523,7 +648,8 @@ void Hllem::dg_boundary_terms(
       for (size_t n = 0; n < 9; ++n) {
         const DataVector contrib = ldu * modes.get(k, n);
         for (size_t pt = 0; pt < num_points; ++pt) {
-          if (lam_k[pt] < lambda_max[pt] and lam_k[pt] > lambda_min[pt]) {
+          if (lam_k[pt] < fast_lambda_max[pt] and
+              lam_k[pt] > fast_lambda_min[pt]) {
             gsl::at(cdu, n)[pt] -= contrib[pt];
           }
         }
@@ -596,10 +722,14 @@ Options::create_from_yaml<
     return bc::HllemWaves::ContactSlow;
   } else if (type_read == "All") {
     return bc::HllemWaves::All;
+  } else if (type_read == "ContactAlfvenFast") {
+    return bc::HllemWaves::ContactAlfvenFast;
+  } else if (type_read == "AllWithFast") {
+    return bc::HllemWaves::AllWithFast;
   }
   PARSE_ERROR(options.context(),
               "Failed to convert \""
                   << type_read
                   << "\" to HllemWaves. Must be one of Contact, ContactAlfven, "
-                     "ContactSlow, or All.");
+                     "ContactSlow, All, ContactAlfvenFast, or AllWithFast.");
 }

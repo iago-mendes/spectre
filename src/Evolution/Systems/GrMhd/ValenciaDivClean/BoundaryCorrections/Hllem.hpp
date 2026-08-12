@@ -48,8 +48,21 @@ enum class HllemWaves {
   ContactAlfven,
   /// Contact + the two slow-magnetosonic waves.
   ContactSlow,
-  /// All five internal waves (contact + 2 Alfven + 2 slow).
-  All
+  /// All five fluid internal waves (contact + 2 Alfven + 2 slow).
+  All,
+  /// Contact + 2 Alfven + 2 fast, EXCLUDING the slow waves. This is the
+  /// SpECTRE analog of M&M's "5-wave" HLLEM (contact + Alfven) -- here the two
+  /// fast waves are also restored via their eigenvectors, because in the GLM
+  /// system the outermost (HLL) waves are the divergence-cleaning modes at the
+  /// light speed, so the fast waves are interior to the HLL fan (unlike M&M,
+  /// where the HLL bounds ARE the fast speeds). "7 waves" = 2 GLM (outer) +
+  /// 2 fast + 2 Alfven + contact.
+  ContactAlfvenFast,
+  /// All seven interior waves (contact + 2 Alfven + 2 slow + 2 fast); only the
+  /// two GLM/divergence waves remain as the outer HLL bounds. "9 waves" -- the
+  /// most complete HLLEM, enabled by having the full Teukolsky characteristic
+  /// decomposition (M&M cannot afford the fast/slow eigenvectors).
+  AllWithFast
 };
 std::ostream& operator<<(std::ostream& os, HllemWaves waves);
 
