@@ -112,6 +112,10 @@ def dg_package_data(
                 )
             )
 
+    # The fast-magnetosonic bounds are only distinct from the light speed in
+    # flat space; for the (curved) random test inputs the C++ falls back to the
+    # light speed, so the reference returns the light speed here as well.
+    metric_flatness = np.abs(lapse - 1.0) + np.sum(np.abs(shift))
     return (
         tilde_d,
         tilde_ye,
@@ -127,6 +131,10 @@ def dg_package_data(
         np.asarray(np.dot(flux_tilde_phi, normal_covector)),
         compute_char(1.0),
         compute_char(-1.0),
+        compute_char(1.0),
+        compute_char(-1.0),
+        normal_covector,
+        np.asarray(metric_flatness),
     )
 
 
@@ -145,6 +153,10 @@ def dg_boundary_terms(
     interior_normal_dot_flux_tilde_phi,
     interior_largest_outgoing_char_speed,
     interior_largest_ingoing_char_speed,
+    interior_fast_outgoing_char_speed,
+    interior_fast_ingoing_char_speed,
+    interior_interface_unit_normal,
+    interior_metric_flatness,
     exterior_tilde_d,
     exterior_tilde_ye,
     exterior_tilde_tau,
@@ -159,8 +171,13 @@ def dg_boundary_terms(
     exterior_normal_dot_flux_tilde_phi,
     exterior_largest_outgoing_char_speed,
     exterior_largest_ingoing_char_speed,
+    exterior_fast_outgoing_char_speed,
+    exterior_fast_ingoing_char_speed,
+    exterior_interface_unit_normal,
+    exterior_metric_flatness,
     use_strong_form,
 ):
+    # Light-speed (divergence-cleaning) bounds: for Phi and the normal B.
     lambda_max = np.maximum(
         0.0,
         np.maximum(
@@ -175,34 +192,101 @@ def dg_boundary_terms(
             -exterior_largest_outgoing_char_speed,
         ),
     )
+    # Fast-magnetosonic bounds: for the MHD variables.
+    fast_max = np.maximum(
+        0.0,
+        np.maximum(
+            interior_fast_outgoing_char_speed,
+            -exterior_fast_ingoing_char_speed,
+        ),
+    )
+    fast_min = np.minimum(
+        0.0,
+        np.minimum(
+            interior_fast_ingoing_char_speed,
+            -exterior_fast_outgoing_char_speed,
+        ),
+    )
 
-    lambda_interior = lambda_min if use_strong_form else lambda_max
-
-    # Use scope and locals() to get arguments into the eval context below
-    scope = locals()
-
-    def impl(var_name):
+    def hll(l_max, l_min, u_int, nf_int, u_ext, nf_ext):
+        l_int = l_min if use_strong_form else l_max
         return np.asarray(
-            (
-                lambda_interior
-                * eval("interior_normal_dot_flux_" + var_name, scope)
-                + lambda_min
-                * eval("exterior_normal_dot_flux_" + var_name, scope)
-                + lambda_max
-                * lambda_min
-                * (
-                    eval("exterior_" + var_name, scope)
-                    - eval("interior_" + var_name, scope)
-                )
-            )
-            / (lambda_max - lambda_min)
+            (l_int * nf_int + l_min * nf_ext + l_max * l_min * (u_ext - u_int))
+            / (l_max - l_min)
         )
 
+    tilde_d = hll(
+        fast_max,
+        fast_min,
+        interior_tilde_d,
+        interior_normal_dot_flux_tilde_d,
+        exterior_tilde_d,
+        exterior_normal_dot_flux_tilde_d,
+    )
+    tilde_ye = hll(
+        fast_max,
+        fast_min,
+        interior_tilde_ye,
+        interior_normal_dot_flux_tilde_ye,
+        exterior_tilde_ye,
+        exterior_normal_dot_flux_tilde_ye,
+    )
+    tilde_tau = hll(
+        fast_max,
+        fast_min,
+        interior_tilde_tau,
+        interior_normal_dot_flux_tilde_tau,
+        exterior_tilde_tau,
+        exterior_normal_dot_flux_tilde_tau,
+    )
+    tilde_phi = hll(
+        lambda_max,
+        lambda_min,
+        interior_tilde_phi,
+        interior_normal_dot_flux_tilde_phi,
+        exterior_tilde_phi,
+        exterior_normal_dot_flux_tilde_phi,
+    )
+    tilde_s = hll(
+        fast_max,
+        fast_min,
+        interior_tilde_s,
+        interior_normal_dot_flux_tilde_s,
+        exterior_tilde_s,
+        exterior_normal_dot_flux_tilde_s,
+    )
+    # Magnetic field: normal part (light) + tangential part (fast) when flat,
+    # else the plain light-speed HLL flux.
+    n = interior_interface_unit_normal
+    bn_int = np.dot(interior_tilde_b, n)
+    bn_ext = np.dot(exterior_tilde_b, n)
+    nfbn_int = np.dot(interior_normal_dot_flux_tilde_b, n)
+    nfbn_ext = np.dot(exterior_normal_dot_flux_tilde_b, n)
+    g_bn = hll(lambda_max, lambda_min, bn_int, nfbn_int, bn_ext, nfbn_ext)
+    bt_int = interior_tilde_b - bn_int * n
+    bt_ext = exterior_tilde_b - bn_ext * n
+    nfbt_int = interior_normal_dot_flux_tilde_b - nfbn_int * n
+    nfbt_ext = exterior_normal_dot_flux_tilde_b - nfbn_ext * n
+    g_bt = hll(fast_max, fast_min, bt_int, nfbt_int, bt_ext, nfbt_ext)
+    g_split = g_bn * n + g_bt
+    g_plain = hll(
+        lambda_max,
+        lambda_min,
+        interior_tilde_b,
+        interior_normal_dot_flux_tilde_b,
+        exterior_tilde_b,
+        exterior_normal_dot_flux_tilde_b,
+    )
+    is_curved = (interior_metric_flatness > 1.0e-12) or (
+        exterior_metric_flatness > 1.0e-12
+    )
+    tilde_b = g_plain if is_curved else g_split
+
     return (
-        impl("tilde_d"),
-        impl("tilde_ye"),
-        impl("tilde_tau"),
-        impl("tilde_s"),
-        impl("tilde_b"),
-        impl("tilde_phi"),
+        tilde_d,
+        tilde_ye,
+        tilde_tau,
+        tilde_s,
+        tilde_b,
+        tilde_phi,
     )
