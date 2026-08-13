@@ -604,11 +604,32 @@ void Hllem::dg_boundary_terms(
         }
       }
     }
+    // characteristic_eigenvectors_mhd returns biorthogonal but NOT
+    // biorthonormal eigenvectors (l_k . r_k is not 1), so the spectral
+    // projection of a jump onto wave k is r_k (l_k.dU)/(l_k.r_k), NOT
+    // r_k (l_k.dU). Without the 1/(l_k.r_k) normalization each restored wave is
+    // scaled by l_k.r_k, which over/under-restores it and leaks a residual into
+    // the other characteristic fields -- producing spurious oscillations in
+    // regions that should stay flat (e.g. behind the contact on the isolated
+    // contact-wave test). Normalize by the diagonal here, exactly as Marquina
+    // does; drop the wave where the diagonal is (near) zero (ill-conditioned).
+    DataVector diagonal{num_points, 0.0};
+    for (size_t n = 0; n < 9; ++n) {
+      diagonal += projectors.get(wave, n) * modes.get(wave, n);
+    }
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      if (not std::isfinite(diagonal[pt]) or std::abs(diagonal[pt]) < 1.0e-12) {
+        wave_ok[pt] = 0.0;
+        restored_wave_dropped[pt] = 1.0;
+      }
+    }
+    const DataVector inv_diagonal =
+        wave_ok / (diagonal + (1.0 - wave_ok));  // 1/diag where ok, else 0
     DataVector ldu{num_points, 0.0};
     for (size_t n = 0; n < 9; ++n) {
       ldu += projectors.get(wave, n) * gsl::at(du, n);
     }
-    const DataVector w = coeff * delta * ldu * wave_ok;
+    const DataVector w = coeff * delta * ldu * inv_diagonal;
     for (size_t n = 0; n < 9; ++n) {
       gsl::at(antidiff, n) += w * modes.get(wave, n);
     }
