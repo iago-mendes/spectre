@@ -28,10 +28,10 @@ def dg_package_data(
     rest_mass_density,
     electron_fraction,
     temperature,
+    spatial_velocity,
     specific_internal_energy,
     pressure,
     lorentz_factor,
-    spatial_velocity,
     normal_covector,
     normal_vector,
     mesh_velocity,
@@ -112,9 +112,11 @@ def dg_package_data(
                 )
             )
 
-    # The fast-magnetosonic bounds are only distinct from the light speed in
-    # flat space; for the (curved) random test inputs the C++ falls back to the
-    # light speed, so the reference returns the light speed here as well.
+    # The fast-magnetosonic bounds are now computed at the averaged interface
+    # state inside dg_boundary_terms, so dg_package_data packages the primitives
+    # (rest mass density, spatial velocity, pressure, Lorentz factor, specific
+    # internal energy) instead of per-side fast speeds. The return order matches
+    # dg_package_field_tags.
     metric_flatness = np.abs(lapse - 1.0) + np.sum(np.abs(shift))
     return (
         tilde_d,
@@ -131,10 +133,13 @@ def dg_package_data(
         np.asarray(np.dot(flux_tilde_phi, normal_covector)),
         compute_char(1.0),
         compute_char(-1.0),
-        compute_char(1.0),
-        compute_char(-1.0),
         normal_covector,
         np.asarray(metric_flatness),
+        rest_mass_density,
+        spatial_velocity,
+        pressure,
+        lorentz_factor,
+        specific_internal_energy,
     )
 
 
@@ -153,10 +158,13 @@ def dg_boundary_terms(
     interior_normal_dot_flux_tilde_phi,
     interior_largest_outgoing_char_speed,
     interior_largest_ingoing_char_speed,
-    interior_fast_outgoing_char_speed,
-    interior_fast_ingoing_char_speed,
     interior_interface_unit_normal,
     interior_metric_flatness,
+    interior_rest_mass_density,
+    interior_spatial_velocity,
+    interior_pressure,
+    interior_lorentz_factor,
+    interior_specific_internal_energy,
     exterior_tilde_d,
     exterior_tilde_ye,
     exterior_tilde_tau,
@@ -171,10 +179,13 @@ def dg_boundary_terms(
     exterior_normal_dot_flux_tilde_phi,
     exterior_largest_outgoing_char_speed,
     exterior_largest_ingoing_char_speed,
-    exterior_fast_outgoing_char_speed,
-    exterior_fast_ingoing_char_speed,
     exterior_interface_unit_normal,
     exterior_metric_flatness,
+    exterior_rest_mass_density,
+    exterior_spatial_velocity,
+    exterior_pressure,
+    exterior_lorentz_factor,
+    exterior_specific_internal_energy,
     use_strong_form,
 ):
     # Light-speed (divergence-cleaning) bounds: for Phi and the normal B.
@@ -192,21 +203,12 @@ def dg_boundary_terms(
             -exterior_largest_outgoing_char_speed,
         ),
     )
-    # Fast-magnetosonic bounds: for the MHD variables.
-    fast_max = np.maximum(
-        0.0,
-        np.maximum(
-            interior_fast_outgoing_char_speed,
-            -exterior_fast_ingoing_char_speed,
-        ),
-    )
-    fast_min = np.minimum(
-        0.0,
-        np.minimum(
-            interior_fast_ingoing_char_speed,
-            -exterior_fast_outgoing_char_speed,
-        ),
-    )
+    # Fast-magnetosonic bounds for the MHD variables are computed at the averaged
+    # interface state, but only in flat space. The random test inputs use a
+    # curved metric (metric_flatness > 1e-12 always), so the C++ falls back to
+    # the light bounds; the reference does the same here.
+    fast_max = lambda_max
+    fast_min = lambda_min
 
     def hll(l_max, l_min, u_int, nf_int, u_ext, nf_ext):
         l_int = l_min if use_strong_form else l_max
