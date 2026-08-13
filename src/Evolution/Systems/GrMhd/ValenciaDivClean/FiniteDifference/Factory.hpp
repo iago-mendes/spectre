@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Flat.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/MonotonicityPreserving5.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/MonotonisedCentral.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/PositivityPreservingAdaptiveOrder.hpp"
