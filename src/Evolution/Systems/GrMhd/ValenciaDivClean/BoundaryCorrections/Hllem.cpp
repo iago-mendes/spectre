@@ -392,12 +392,81 @@ void Hllem::dg_boundary_terms(
   // degeneracies (handled by the degeneracy guard + finiteness mask).
   const ScopedFpeState hllem_fpe_scope(false);
 
-  // averaged primitive state
+  // Averaged primitive state. The interface state the eigensystem is built at
+  // must be a THERMODYNAMICALLY CONSISTENT state: averaging rho, eps and p
+  // independently gives a triple that satisfies no equation of state (e.g. for
+  // an ideal fluid with rho jumping 1 -> 10 at fixed p, the averaged eps is
+  // 0.825 while the consistent value at the averaged density is 0.273). The
+  // eigenvectors are then those of no physical state, and the projection of a
+  // finite jump is correspondingly wrong -- measurably so: with the naive
+  // average the anti-diffusion leaves ~18% of the HLL diffusion in place on a
+  // 10:1 stationary contact (which HLLC/HLLD capture exactly), and leaks
+  // anti-diffusion into TildeTau whose jump is exactly zero. See
+  // Test_Hllem.cpp, test_stationary_contact_is_exact.
+  //
+  // We therefore average rho and p -- so that a CONTINUOUS pressure (the
+  // defining property of a contact) is preserved exactly -- and derive eps from
+  // the equation of state at (rho_avg, p_avg). Inverting p(rho, T) for T is
+  // done with a secant iteration seeded by the two sides' own temperatures;
+  // for an ideal fluid p is linear in T at fixed rho, so the first step is
+  // exact.
   Scalar<DataVector> rho_avg{
       0.5 * (get(rest_mass_density_int) + get(rest_mass_density_ext))};
+  Scalar<DataVector> p_avg{0.5 * (get(pressure_int) + get(pressure_ext))};
+  const Scalar<DataVector> ye_avg{
+      0.5 * (get(tilde_ye_int) / get(tilde_d_int) +
+             get(tilde_ye_ext) / get(tilde_d_ext))};
   Scalar<DataVector> eps_avg{0.5 * (get(specific_internal_energy_int) +
                                     get(specific_internal_energy_ext))};
-  Scalar<DataVector> p_avg{0.5 * (get(pressure_int) + get(pressure_ext))};
+  {
+    DataVector temperature_a =
+        get(equation_of_state.temperature_from_density_and_energy(
+            rest_mass_density_int, specific_internal_energy_int, ye_avg));
+    DataVector temperature_b =
+        get(equation_of_state.temperature_from_density_and_energy(
+            rest_mass_density_ext, specific_internal_energy_ext, ye_avg));
+    const auto pressure_residual = [&](const DataVector& temperature) {
+      return DataVector{
+          get(equation_of_state.pressure_from_density_and_temperature(
+              rho_avg, Scalar<DataVector>{temperature}, ye_avg)) -
+          get(p_avg)};
+    };
+    DataVector residual_a = pressure_residual(temperature_a);
+    DataVector residual_b = pressure_residual(temperature_b);
+    // Two secant steps: the first is exact for an ideal fluid, the second is
+    // insurance for a general (non-linear in T) equation of state.
+    for (size_t iteration = 0; iteration < 2; ++iteration) {
+      const DataVector denominator = residual_b - residual_a;
+      DataVector temperature_new = 0.5 * (temperature_a + temperature_b);
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (std::abs(denominator[pt]) > 1.0e-14) {
+          temperature_new[pt] =
+              temperature_b[pt] -
+              residual_b[pt] * (temperature_b[pt] - temperature_a[pt]) /
+                  denominator[pt];
+        }
+        // Temperatures must stay physical; fall back to the midpoint if the
+        // secant step leaves the (non-negative) physical range.
+        if (not std::isfinite(temperature_new[pt]) or
+            temperature_new[pt] < 0.0) {
+          temperature_new[pt] = 0.5 * (temperature_a[pt] + temperature_b[pt]);
+        }
+      }
+      temperature_a = temperature_b;
+      residual_a = residual_b;
+      temperature_b = temperature_new;
+      residual_b = pressure_residual(temperature_b);
+    }
+    eps_avg = equation_of_state
+                  .specific_internal_energy_from_density_and_temperature(
+                      rho_avg, Scalar<DataVector>{temperature_b}, ye_avg);
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      if (not std::isfinite(get(eps_avg)[pt]) or get(eps_avg)[pt] < 0.0) {
+        get(eps_avg)[pt] = 0.5 * (get(specific_internal_energy_int)[pt] +
+                                  get(specific_internal_energy_ext)[pt]);
+      }
+    }
+  }
   tnsr::I<DataVector, 3, Frame::Inertial> v_avg{num_points};
   tnsr::I<DataVector, 3, Frame::Inertial> b_avg{num_points};
   for (size_t i = 0; i < 3; ++i) {

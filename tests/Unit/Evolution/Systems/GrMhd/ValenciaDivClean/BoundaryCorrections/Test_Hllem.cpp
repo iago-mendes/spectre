@@ -7,12 +7,17 @@
 #include <cstddef>
 #include <string>
 
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/TaggedTuple.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/BoundaryCorrection.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hllem.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Fluxes.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Helpers/Evolution/DiscontinuousGalerkin/BoundaryCorrections.hpp"
+#include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -29,6 +34,263 @@
 namespace {
 namespace helpers = TestHelpers::evolution::dg;
 namespace bc = grmhd::ValenciaDivClean::BoundaryCorrections;
+
+// One side of an interface: primitives, conserved variables, and the normal
+// dot fluxes, all built from primitives in flat space.
+struct InterfaceState {
+  Scalar<DataVector> rest_mass_density{};
+  Scalar<DataVector> electron_fraction{};
+  Scalar<DataVector> specific_internal_energy{};
+  Scalar<DataVector> pressure{};
+  Scalar<DataVector> temperature{};
+  Scalar<DataVector> lorentz_factor{};
+  tnsr::I<DataVector, 3> spatial_velocity{};
+  tnsr::i<DataVector, 3> spatial_velocity_one_form{};
+  tnsr::I<DataVector, 3> magnetic_field{};
+
+  Scalar<DataVector> tilde_d{};
+  Scalar<DataVector> tilde_ye{};
+  Scalar<DataVector> tilde_tau{};
+  tnsr::i<DataVector, 3> tilde_s{};
+  tnsr::I<DataVector, 3> tilde_b{};
+  Scalar<DataVector> tilde_phi{};
+
+  tnsr::I<DataVector, 3> flux_tilde_d{};
+  tnsr::I<DataVector, 3> flux_tilde_ye{};
+  tnsr::I<DataVector, 3> flux_tilde_tau{};
+  tnsr::Ij<DataVector, 3> flux_tilde_s{};
+  tnsr::IJ<DataVector, 3> flux_tilde_b{};
+  tnsr::I<DataVector, 3> flux_tilde_phi{};
+};
+
+// Build a flat-space state at rest (v = 0) with the given density, uniform
+// pressure and uniform magnetic field. With v = 0 and p, B continuous across
+// the interface, the physical fluxes on the two sides are IDENTICAL and the
+// jump is a pure contact (entropy) jump carried by TildeD and TildeTau.
+InterfaceState make_state_at_rest(const double rest_mass_density,
+                                 const double pressure,
+                                 const std::array<double, 3>& magnetic_field,
+                                 const double adiabatic_index,
+                                 const size_t num_points) {
+  InterfaceState state{};
+  state.rest_mass_density = Scalar<DataVector>{num_points, rest_mass_density};
+  state.electron_fraction = Scalar<DataVector>{num_points, 0.5};
+  state.pressure = Scalar<DataVector>{num_points, pressure};
+  const double specific_internal_energy =
+      pressure / ((adiabatic_index - 1.0) * rest_mass_density);
+  state.specific_internal_energy =
+      Scalar<DataVector>{num_points, specific_internal_energy};
+  // Ideal fluid: T = (Gamma - 1) * epsilon
+  state.temperature = Scalar<DataVector>{
+      num_points, (adiabatic_index - 1.0) * specific_internal_energy};
+  state.lorentz_factor = Scalar<DataVector>{num_points, 1.0};
+  state.spatial_velocity = tnsr::I<DataVector, 3>{num_points, 0.0};
+  state.spatial_velocity_one_form = tnsr::i<DataVector, 3>{num_points, 0.0};
+  state.magnetic_field = tnsr::I<DataVector, 3>{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    state.magnetic_field.get(i) =
+        DataVector{num_points, gsl::at(magnetic_field, i)};
+  }
+
+  const Scalar<DataVector> sqrt_det_spatial_metric{num_points, 1.0};
+  const Scalar<DataVector> divergence_cleaning_field{num_points, 0.0};
+  const Scalar<DataVector> lapse{num_points, 1.0};
+  const tnsr::I<DataVector, 3> shift{num_points, 0.0};
+  auto spatial_metric = tnsr::ii<DataVector, 3>{num_points, 0.0};
+  auto inv_spatial_metric = tnsr::II<DataVector, 3>{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    spatial_metric.get(i, i) = DataVector{num_points, 1.0};
+    inv_spatial_metric.get(i, i) = DataVector{num_points, 1.0};
+  }
+
+  grmhd::ValenciaDivClean::ConservativeFromPrimitive::apply(
+      make_not_null(&state.tilde_d), make_not_null(&state.tilde_ye),
+      make_not_null(&state.tilde_tau), make_not_null(&state.tilde_s),
+      make_not_null(&state.tilde_b), make_not_null(&state.tilde_phi),
+      state.rest_mass_density, state.electron_fraction,
+      state.specific_internal_energy, state.pressure, state.spatial_velocity,
+      state.lorentz_factor, state.magnetic_field, sqrt_det_spatial_metric,
+      spatial_metric, divergence_cleaning_field);
+
+  grmhd::ValenciaDivClean::ComputeFluxes::apply(
+      make_not_null(&state.flux_tilde_d), make_not_null(&state.flux_tilde_ye),
+      make_not_null(&state.flux_tilde_tau), make_not_null(&state.flux_tilde_s),
+      make_not_null(&state.flux_tilde_b), make_not_null(&state.flux_tilde_phi),
+      state.tilde_d, state.tilde_ye, state.tilde_tau, state.tilde_s,
+      state.tilde_b, state.tilde_phi, lapse, shift, sqrt_det_spatial_metric,
+      spatial_metric, inv_spatial_metric, state.pressure,
+      state.spatial_velocity, state.lorentz_factor, state.magnetic_field);
+  return state;
+}
+
+// The HLLEM anti-diffusion is built so that a wave sitting exactly at
+// lambda = 0 gets the full Einfeldt weight delta = 1 (Mattia & Mignone 2022,
+// eq. 61), which exactly cancels the HLL diffusion for a jump lying entirely
+// along that wave's eigenvector. An isolated STATIONARY CONTACT is precisely
+// that situation: v = 0 with p and B continuous, so the physical fluxes agree
+// on the two sides and the whole jump is the entropy mode. HLLEM must then
+// return the common physical flux exactly, while HLL smears it. This is the
+// property that makes HLLEM competitive with HLLC/HLLD on contact-dominated
+// problems, so it is worth pinning down in a unit test.
+void test_stationary_contact_is_exact(const double density_ratio,
+                                      const bool require_exact) {
+  const size_t num_points = 1;
+  const double adiabatic_index = 5.0 / 3.0;
+  const auto equation_of_state =
+      EquationsOfState::IdealFluid<true>{adiabatic_index}.promote_to_3d_eos();
+
+  // Density jumps by `density_ratio`; pressure, velocity (zero) and the
+  // magnetic field (with a non-zero normal component) are continuous.
+  const double pressure = 1.0;
+  const std::array<double, 3> magnetic_field{{0.5, 0.3, 0.2}};
+  const auto state_int = make_state_at_rest(1.0, pressure, magnetic_field,
+                                            adiabatic_index, num_points);
+  const auto state_ext = make_state_at_rest(
+      density_ratio, pressure, magnetic_field, adiabatic_index, num_points);
+
+  const Scalar<DataVector> lapse{num_points, 1.0};
+  const tnsr::I<DataVector, 3> shift{num_points, 0.0};
+
+  // Interface normal along x for the interior; the exterior packages its data
+  // with the opposite (its own outward) normal.
+  auto normal_covector_int = tnsr::i<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_covector_int) = DataVector{num_points, 1.0};
+  auto normal_vector_int = tnsr::I<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_vector_int) = DataVector{num_points, 1.0};
+  auto normal_covector_ext = tnsr::i<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_covector_ext) = DataVector{num_points, -1.0};
+  auto normal_vector_ext = tnsr::I<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_vector_ext) = DataVector{num_points, -1.0};
+
+  // Packaged fields for one side.
+  struct Packaged {
+    Scalar<DataVector> tilde_d{}, tilde_ye{}, tilde_tau{}, tilde_phi{};
+    tnsr::i<DataVector, 3> tilde_s{};
+    tnsr::I<DataVector, 3> tilde_b{};
+    Scalar<DataVector> nf_tilde_d{}, nf_tilde_ye{}, nf_tilde_tau{},
+        nf_tilde_phi{};
+    tnsr::i<DataVector, 3> nf_tilde_s{};
+    tnsr::I<DataVector, 3> nf_tilde_b{};
+    Scalar<DataVector> largest_outgoing{}, largest_ingoing{}, metric_flatness{};
+    tnsr::i<DataVector, 3> interface_unit_normal{};
+    Scalar<DataVector> rest_mass_density{}, pressure{}, lorentz_factor{},
+        specific_internal_energy{};
+    tnsr::I<DataVector, 3> spatial_velocity{};
+  };
+
+  const auto package = [&](const bc::Hllem& solver, const InterfaceState& state,
+                           const tnsr::i<DataVector, 3>& normal_covector,
+                           const tnsr::I<DataVector, 3>& normal_vector) {
+    Packaged packaged{};
+    solver.dg_package_data(
+        make_not_null(&packaged.tilde_d), make_not_null(&packaged.tilde_ye),
+        make_not_null(&packaged.tilde_tau), make_not_null(&packaged.tilde_s),
+        make_not_null(&packaged.tilde_b), make_not_null(&packaged.tilde_phi),
+        make_not_null(&packaged.nf_tilde_d),
+        make_not_null(&packaged.nf_tilde_ye),
+        make_not_null(&packaged.nf_tilde_tau),
+        make_not_null(&packaged.nf_tilde_s),
+        make_not_null(&packaged.nf_tilde_b),
+        make_not_null(&packaged.nf_tilde_phi),
+        make_not_null(&packaged.largest_outgoing),
+        make_not_null(&packaged.largest_ingoing),
+        make_not_null(&packaged.interface_unit_normal),
+        make_not_null(&packaged.metric_flatness),
+        make_not_null(&packaged.rest_mass_density),
+        make_not_null(&packaged.spatial_velocity),
+        make_not_null(&packaged.pressure),
+        make_not_null(&packaged.lorentz_factor),
+        make_not_null(&packaged.specific_internal_energy), state.tilde_d,
+        state.tilde_ye, state.tilde_tau, state.tilde_s, state.tilde_b,
+        state.tilde_phi, state.flux_tilde_d, state.flux_tilde_ye,
+        state.flux_tilde_tau, state.flux_tilde_s, state.flux_tilde_b,
+        state.flux_tilde_phi, lapse, shift, state.spatial_velocity_one_form,
+        state.rest_mass_density, state.electron_fraction, state.temperature,
+        state.spatial_velocity, state.specific_internal_energy, state.pressure,
+        state.lorentz_factor, normal_covector, normal_vector, {}, {},
+        *equation_of_state);
+    return packaged;
+  };
+
+  // Restoring the contact must give the exact flux; restoring only the Alfven
+  // waves must NOT (the contact jump is then left to the HLL diffusion). That
+  // contrast is the point of the test: it shows the cancellation comes from the
+  // restored contact eigenvector and not from the test being trivial.
+  for (const auto waves :
+       {bc::HllemWaves::Contact, bc::HllemWaves::ContactSlow,
+        bc::HllemWaves::ContactAlfven, bc::HllemWaves::All}) {
+    const bc::Hllem solver{waves, false, 1.0e-10, 1.0e-30, 1.0e-8};
+    const auto interior =
+        package(solver, state_int, normal_covector_int, normal_vector_int);
+    const auto exterior =
+        package(solver, state_ext, normal_covector_ext, normal_vector_ext);
+
+    Scalar<DataVector> correction_tilde_d{num_points, 0.0};
+    Scalar<DataVector> correction_tilde_ye{num_points, 0.0};
+    Scalar<DataVector> correction_tilde_tau{num_points, 0.0};
+    tnsr::i<DataVector, 3> correction_tilde_s{num_points, 0.0};
+    tnsr::I<DataVector, 3> correction_tilde_b{num_points, 0.0};
+    Scalar<DataVector> correction_tilde_phi{num_points, 0.0};
+
+    solver.dg_boundary_terms(
+        make_not_null(&correction_tilde_d), make_not_null(&correction_tilde_ye),
+        make_not_null(&correction_tilde_tau),
+        make_not_null(&correction_tilde_s), make_not_null(&correction_tilde_b),
+        make_not_null(&correction_tilde_phi), interior.tilde_d,
+        interior.tilde_ye, interior.tilde_tau, interior.tilde_s,
+        interior.tilde_b, interior.tilde_phi, interior.nf_tilde_d,
+        interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
+        interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
+        interior.largest_ingoing, interior.interface_unit_normal,
+        interior.metric_flatness, interior.rest_mass_density,
+        interior.spatial_velocity, interior.pressure, interior.lorentz_factor,
+        interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
+        exterior.tilde_tau, exterior.tilde_s, exterior.tilde_b,
+        exterior.tilde_phi, exterior.nf_tilde_d, exterior.nf_tilde_ye,
+        exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
+        exterior.nf_tilde_phi, exterior.largest_outgoing,
+        exterior.largest_ingoing, exterior.interface_unit_normal,
+        exterior.metric_flatness, exterior.rest_mass_density,
+        exterior.spatial_velocity, exterior.pressure, exterior.lorentz_factor,
+        exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
+        *equation_of_state);
+
+    // The HLL diffusion that must be cancelled: coeff * (u_ext - u_int) in
+    // TildeD. If this were tiny the test would pass trivially.
+    // In the STRONG formulation the interior flux is already subtracted, so
+    // the boundary correction of an exactly-resolved interface is ZERO: the
+    // two sides carry the same physical flux (nf_ext = -nf_int) and only the
+    // diffusion term survives. HLLEM's anti-diffusion must cancel it.
+    const DataVector lambda_max =
+        max(0.0, get(interior.largest_outgoing), -get(exterior.largest_ingoing));
+    const DataVector lambda_min =
+        min(0.0, get(interior.largest_ingoing), -get(exterior.largest_outgoing));
+    const DataVector hll_diffusion_tilde_d =
+        lambda_max * lambda_min / (lambda_max - lambda_min) *
+        (get(exterior.tilde_d) - get(interior.tilde_d));
+    // Residuals relative to the HLL diffusion this interface would otherwise
+    // suffer: 0 means the contact is preserved exactly, 1 means no better than
+    // HLL. TildeTau is normalized the same way even though its own HLL
+    // diffusion vanishes here (the state has Delta(TildeTau) = 0 exactly), so a
+    // non-zero TildeTau residual is anti-diffusion LEAKING out of the density
+    // jump into the energy -- an error plain HLL does not make.
+    const double scale = fabs(hll_diffusion_tilde_d[0]);
+    const double residual_tilde_d = fabs(get(correction_tilde_d)[0]) / scale;
+    const double residual_tilde_tau = fabs(get(correction_tilde_tau)[0]) / scale;
+    CAPTURE(waves);
+    CAPTURE(density_ratio);
+    CAPTURE(scale);
+    CAPTURE(residual_tilde_d);
+    CAPTURE(residual_tilde_tau);
+    // Guard against a trivially-passing test: plain HLL really does smear this
+    // interface by an O(1) amount.
+    CHECK(scale > 0.1 * fabs(get(exterior.tilde_d)[0] - get(interior.tilde_d)[0]));
+    if (require_exact) {
+      CHECK(residual_tilde_d < 1.0e-10);
+      CHECK(residual_tilde_tau < 1.0e-10);
+    }
+  }
+}
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
@@ -81,5 +343,16 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-3, 1.0e-30, 1.0e-8},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges);
+
+  // HLLEM must preserve a stationary contact exactly at ANY jump strength, not
+  // just in the linear limit -- that is the property that puts it on the same
+  // footing as HLLC/HLLD on contact-dominated problems. It only holds because
+  // the eigensystem is built at a thermodynamically consistent average state;
+  // with independently averaged (rho, eps, p) the 10:1 case leaves ~18% of the
+  // HLL diffusion in place.
+  for (const double density_ratio :
+       {1.0 + 1.0e-6, 1.0 + 1.0e-3, 1.1, 2.0, 10.0}) {
+    test_stationary_contact_is_exact(density_ratio, true);
+  }
 }
 }  // namespace
