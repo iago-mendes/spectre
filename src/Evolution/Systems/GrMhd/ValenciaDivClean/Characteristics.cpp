@@ -32,6 +32,23 @@
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
 
+namespace grmhd::ValenciaDivClean {
+namespace detail {
+// Diagnostic counter for how often the denominator floors in the characteristic
+// decomposition actually BIND. A floor that never binds is inert; one that binds
+// constantly says the eigensystem is being evaluated where it is not meaningful
+// (atmosphere cells, or a genuine wave degeneracy), which is exactly when a
+// solver that uses the eigenbasis AS its flux (Marquina) cannot be trusted.
+size_t& denominator_floor_counter() {
+  static size_t counter = 0;
+  return counter;
+}
+}  // namespace detail
+
+size_t denominator_floor_count() { return detail::denominator_floor_counter(); }
+void reset_denominator_floor_count() { detail::denominator_floor_counter() = 0; }
+}  // namespace grmhd::ValenciaDivClean
+
 namespace {
 void compute_characteristic_speeds_approximate_mhd(
     const gsl::not_null<std::array<DataVector, 9>*> pchar_speeds,
@@ -111,9 +128,53 @@ void compute_characteristic_speeds_approximate_mhd(
   char_speeds[8] = char_speeds[0] + get(lapse);
   char_speeds[0] -= get(lapse);
 }
+
+// Guard a denominator against vanishing WITHOUT changing its sign.
+//
+// The `denominator + 1.0e-14` idiom previously used here has two defects.
+// First it is SIGN-BREAKING: a denominator of -1e-15 becomes +9e-15, so the
+// term it divides flips sign instead of being suppressed. Second, 1e-14 is
+// dimensionally arbitrary -- negligible against a pressure of 1e3, and
+// completely dominant against a pressure of 1e-20 -- so it silently sets the
+// answer for atmosphere cells while doing nothing where the denominator is
+// genuinely small but physical.
+//
+// Instead floor the MAGNITUDE, keeping the sign, relative to the natural scale
+// of the quantity (with a 1.0 backstop so the floor never itself degenerates).
+// Where the denominator is healthy this is exactly the identity.
+DataVector floored_denominator(const DataVector& denominator,
+                               const DataVector& scale,
+                               const double relative_floor = 1.0e-12) {
+  DataVector result = denominator;
+  for (size_t i = 0; i < result.size(); ++i) {
+    const double floor_value =
+        relative_floor * std::max(std::abs(scale[i]), 1.0);
+    if (std::abs(result[i]) < floor_value) {
+      result[i] = result[i] < 0.0 ? -floor_value : floor_value;
+      ++grmhd::ValenciaDivClean::detail::denominator_floor_counter();
+    }
+  }
+  return result;
+}
+
+DataVector floored_denominator(const DataVector& denominator,
+                               const double scale = 1.0,
+                               const double relative_floor = 1.0e-12) {
+  DataVector result = denominator;
+  const double floor_value = relative_floor * std::max(std::abs(scale), 1.0);
+  for (size_t i = 0; i < result.size(); ++i) {
+    if (std::abs(result[i]) < floor_value) {
+      result[i] = result[i] < 0.0 ? -floor_value : floor_value;
+      ++grmhd::ValenciaDivClean::detail::denominator_floor_counter();
+    }
+  }
+  return result;
+}
+
 }  // namespace
 
 namespace grmhd::ValenciaDivClean {
+
 
 template <size_t ThermodynamicDim>
 void characteristic_speeds_approximate_mhd(
@@ -833,8 +894,22 @@ void characteristic_eigenvectors_mhd(
         get(specific_enthalpy);
     pressure = equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy);
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
   } else if constexpr (ThermodynamicDim == 3) {
     if (not equation_of_state.is_equilibrium()) {
       ERROR(
@@ -853,8 +928,22 @@ void characteristic_eigenvectors_mhd(
     const Scalar<DataVector> electron_fraction{DataVector(num_points, 0.0)};
     pressure = equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy, electron_fraction);
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
   }
 
   const auto det_and_inv_spatial_metric =
@@ -962,7 +1051,7 @@ void characteristic_eigenvectors_mhd(
   auto& B_32 = get<::Tags::TempScalar<17>>(temp_tensors);
   get(b_squared) = get(B_squared) / square(W) + square(get(B_dot_v));
   get(rho_h_star) = rho * h + get(b_squared);
-  get(h_star) = h + get(b_squared) / rho;
+  get(h_star) = h + get(b_squared) / floored_denominator(rho);
   get(sqrt_rho_h_star) = sqrt(get(rho_h_star));
   get(r_1) = get(B_dot_v) + get(sqrt_rho_h_star);
   get(r_2) = get(B_n) * get(v_n) - get(r_1);
@@ -1011,7 +1100,11 @@ void characteristic_eigenvectors_mhd(
     get(B) = get(B_n) / W + get(B_dot_v) * W * (get(v_n) - y);
     get(G) = 1.0 - square(y);
     get(script_G) = rho * h * square(get(a)) - get(G) * get(b_squared);
-    get(script_G_rho) = get(script_G) / (rho * h * cs2);
+    // Same atmosphere limit as the kappa guard above: p -> 0 drives cs2 -> 0,
+    // so this denominator vanishes for a cell at the floor. Mask the division
+    // rather than let it raise an FPE (which the HLLEM caller used to suppress).
+    get(script_G_rho) =
+        get(script_G) / floored_denominator(rho * h * cs2, rho * h);
     get(kappa_rho) = kappa_i + rho * cs2;
     get(Z) = rho * h * square(W);
     get(K) = -W * (1.0 - get(v_n) * y);
@@ -1019,9 +1112,9 @@ void characteristic_eigenvectors_mhd(
                    (1.0 - cs2) * square(rho * get(a)) * h;
     get(kappa_Bv) = get(kappa_B) * get(B_dot_v) -
                     get(kappa_rho) * rho * get(a) * get(B) * get(h_star);
-    const DataVector a_denom = get(a) + 1.0e-14;
-    const DataVector G_denom = get(G) + 1.0e-14;
-    const DataVector cs2_denom = cs2 + 1.0e-14;
+    const DataVector a_denom = floored_denominator(get(a), W);
+    const DataVector G_denom = floored_denominator(get(G));
+    const DataVector cs2_denom = floored_denominator(cs2);
 
     if (wave == MhdSpeed::Entropy) {
       for (size_t i = 0; i < 3; ++i) {
@@ -1035,7 +1128,8 @@ void characteristic_eigenvectors_mhd(
       characteristic_modes->get(wave, 8) = 0.0;
 
       get(G_entropy) = 1.0 - square(get(v_n));
-      const DataVector entropy_norm = 1.0 / (rho * h * cs2);
+      const DataVector entropy_norm =
+          1.0 / floored_denominator(rho * h * cs2, rho * h);
       for (size_t i = 0; i < 3; ++i) {
         // S_b components
         characteristic_projectors->get(wave, i) =
@@ -1045,7 +1139,9 @@ void characteristic_eigenvectors_mhd(
             B_cov.get(i) / W + W * v_cov.get(i) * get(B_dot_v);
         characteristic_projectors->get(wave, 3 + i) =
             entropy_norm *
-            (b_cov_i - (get(B_n) / (get(G_entropy) * W)) * unit_normal.get(i));
+            (b_cov_i -
+             (get(B_n) / floored_denominator(get(G_entropy) * W, W)) *
+                 unit_normal.get(i));
       }
       // D component
       characteristic_projectors->get(wave, 6) = entropy_norm * (h - W);
@@ -1054,7 +1150,9 @@ void characteristic_eigenvectors_mhd(
       // phi component: W B^a v_a - B_n v_n / GW
       characteristic_projectors->get(wave, 8) =
           entropy_norm *
-          (W * get(B_dot_v) - (get(B_n) * get(v_n)) / (get(G_entropy) * W));
+          (W * get(B_dot_v) -
+           (get(B_n) * get(v_n)) /
+               floored_denominator(get(G_entropy) * W, W));
     } else if (wave == MhdSpeed::AlfvenMinus or wave == MhdSpeed::AlfvenPlus) {
       // The two Alfven eigenvectors differ by the sign of sqrt(rho h*)
       // (Teukolsky, "Characteristic Decomposition ... II. MHD", the
@@ -1071,10 +1169,14 @@ void characteristic_eigenvectors_mhd(
       // eigenvectors identical and also breaks biorthogonality.)
       const DataVector y_plus_branch =
           get(v_n) +
-          get(B_n) / (square(W) * (get(B_dot_v) + get(sqrt_rho_h_star)));
+          get(B_n) / floored_denominator(
+                         square(W) * (get(B_dot_v) + get(sqrt_rho_h_star)),
+                         square(W) * get(sqrt_rho_h_star));
       const DataVector y_minus_branch =
           get(v_n) +
-          get(B_n) / (square(W) * (get(B_dot_v) - get(sqrt_rho_h_star)));
+          get(B_n) / floored_denominator(
+                         square(W) * (get(B_dot_v) - get(sqrt_rho_h_star)),
+                         square(W) * get(sqrt_rho_h_star));
       DataVector alf_sign{num_points};
       for (size_t point = 0; point < num_points; ++point) {
         alf_sign[point] = (std::abs(y[point] - y_plus_branch[point]) <=
@@ -1088,7 +1190,8 @@ void characteristic_eigenvectors_mhd(
           get(B_squared) + r_1_s * get(B_dot_v) * square(W);
 
       const DataVector& y_Alf = y;
-      const DataVector inv_sqrt_rho_h_star_s = 1.0 / sqrt_rho_h_star_s;
+      const DataVector inv_sqrt_rho_h_star_s =
+          1.0 / floored_denominator(sqrt_rho_h_star_s);
 
       // The paper gives the Alfven eigenvector's S and B blocks as components
       // in the orthonormal frame (s, tangent_1, tangent_2) (Teukolsky Eq. 3.38
@@ -1201,7 +1304,7 @@ void characteristic_eigenvectors_mhd(
           -(1.0 - cs2) * square(rho * get(a)) * h;
 
       const DataVector inv_one_minus_vn2 =
-          1.0 / ((1.0 - square(get(v_n))) + 1.0e-14);
+          1.0 / floored_denominator(1.0 - square(get(v_n)));
       for (size_t i = 0; i < 3; ++i) {
         characteristic_projectors->get(wave, i) = 0.0;
         characteristic_projectors->get(wave, 3 + i) =
@@ -1218,7 +1321,7 @@ void characteristic_eigenvectors_mhd(
                    2.0 * get(a) * square(get(B_n)) -
                    get(a) * W *
                        (y * get(a) * (get(B_squared) / square(W) + rho * h) +
-                        (1.0 - 1.0 / cs2) * get(script_G) * W));
+                        (1.0 - 1.0 / cs2_denom) * get(script_G) * W));
       get(m_1B) = rho * h *
                   (get(B) * (y * get(a) - get(G) * W) +
                    2.0 * get(B_n) * (square(get(a)) + get(G))) /
@@ -1251,10 +1354,13 @@ void characteristic_eigenvectors_mhd(
 
       get(f_1v) =
           W * (-get(G) +
-               get(B) * get(G) * get(B_n) * W / (get(Z) * square(a_denom)) +
+               get(B) * get(G) * get(B_n) * W /
+                   floored_denominator(get(Z) * square(a_denom), get(Z)) +
                get(script_G) * square(W) * (kappa_i + rho) /
                    (get(Z) * rho * cs2_denom));
-      get(g_1B) = get(script_G) * kappa_i * W / (rho * get(Z) * cs2_denom) -
+      get(g_1B) = get(script_G) * kappa_i * W /
+                      floored_denominator(rho * get(Z) * cs2_denom,
+                                          rho * get(Z)) -
                   (square(get(a)) + get(G)) / W;
       get(g_1v) = get(B_dot_v) * square(W) * get(g_1B) +
                   W * (get(a) * get(B) +
@@ -1417,8 +1523,22 @@ void characteristic_eigenvectors_hydro(
                     rest_mass_density, specific_internal_energy));
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy));
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
     // For non-equilibrium 3D EoSs we do not have direct access to kappa and we
@@ -1446,8 +1566,22 @@ void characteristic_eigenvectors_hydro(
         get(specific_enthalpy);
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy, electron_fraction));
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
     get(zeta) = 0.0;
   }
 
@@ -1781,8 +1915,22 @@ void flux_jacobian_hydro(
         get(specific_enthalpy);
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy));
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
     get(zeta) = 0.0;
   } else if constexpr (ThermodynamicDim == 3) {
     // For non-equilibrium 3D EoSs we do not have direct access to kappa and we
@@ -1808,8 +1956,22 @@ void flux_jacobian_hydro(
         get(specific_enthalpy);
     get(pressure) = get(equation_of_state.pressure_from_density_and_energy(
         rest_mass_density, specific_internal_energy, electron_fraction));
-    get(kappa) = get(kappa_times_p_over_rho_squared) / get(pressure) *
-                 square(get(rest_mass_density));
+    // kappa = (kappa p / rho^2) * rho^2 / p is 0/0 for a cell driven to the
+    // atmosphere, where the equation of state returns p -> 0. The division
+    // raised a floating-point exception that used to be INVISIBLE: the HLLEM
+    // boundary correction disabled FPE trapping around this call, so the
+    // resulting inf/NaN was silently masked to "fall back to HLL here" and the
+    // run instead died later and elsewhere, in FixConservatives. kappa is
+    // finite in that limit and the terms it multiplies vanish with p, so
+    // masking the division to zero is safe -- the same idiom used elsewhere in
+    // ValenciaDivClean (e.g. FixConservatives' masked divisions).
+    // p -> 0 for a cell at the atmosphere floor, where this is 0/0. Floor the
+    // denominator against the local energy scale rho*h; kappa is then ~0 there,
+    // which is the correct limit (the terms it multiplies vanish with p).
+    get(kappa) = get(kappa_times_p_over_rho_squared) *
+                 square(get(rest_mass_density)) /
+                 floored_denominator(get(pressure), get(rest_mass_density) *
+                                                        get(specific_enthalpy));
     // For now, we assume that we are at compositional equilibrium, so we set
     // zeta to zero.
     get(zeta) = 0.0;

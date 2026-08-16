@@ -388,9 +388,13 @@ void Hllem::dg_boundary_terms(
       max(get(metric_flatness_ext)) > 1.0e-12) {
     return;
   }
-  // FP exceptions are disabled because the analytic eigenvectors diverge at
-  // degeneracies (handled by the degeneracy guard + finiteness mask).
-  const ScopedFpeState hllem_fpe_scope(false);
+  // FP exceptions stay ENABLED here. They used to be suppressed because the
+  // analytic eigenvectors diverge at degeneracies, with the resulting inf/NaN
+  // masked to "fall back to HLL at this point". That hid a real division by
+  // zero (p -> 0 for atmosphere cells, Characteristics.cpp), which then killed
+  // the run far away in FixConservatives on the strong-blast tests. The
+  // denominators are floored at the point of division instead, so a trap here
+  // now means a genuine bug rather than an expected degeneracy.
 
   // Averaged primitive state. The interface state the eigensystem is built at
   // must be a THERMODYNAMICALLY CONSISTENT state: averaging rho, eps and p

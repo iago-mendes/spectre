@@ -27,6 +27,14 @@ struct Normalized;
 
 namespace grmhd {
 namespace ValenciaDivClean {
+/// Number of times a denominator floor in the characteristic decomposition has
+/// actually BOUND since the last reset. A floor that never binds is inert; one
+/// that binds means the eigensystem is being evaluated where it is not
+/// meaningful (atmosphere cell, or a genuine wave degeneracy).
+size_t denominator_floor_count();
+/// \see denominator_floor_count
+void reset_denominator_floor_count();
+
 /// @{
 /*!
  * \brief Compute the characteristic speeds for the Valencia formulation of
