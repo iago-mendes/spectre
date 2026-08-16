@@ -122,15 +122,31 @@ class Marquina final : public evolution::BoundaryCorrection {
         "directly; a larger tolerance sends more near-degenerate waves to the "
         "robust complement, a smaller one keeps more waves analytic."};
   };
-  using options =
-      tmpl::list<CharacteristicsSystem, CharacteristicsMethod, DegeneracyTolerance>;
+  struct UseModifiedFormula {
+    using type = bool;
+    static type suggested_value() { return false; }
+    static constexpr Options::String help = {
+        "Use the MODIFIED Marquina flux formula of Aloy et al. 1999 (ApJS 122, "
+        "151) instead of the original Donat-Marquina flux. The original applies "
+        "sided upwinding where a wave's characteristic speed has the same sign "
+        "on both states, and its Lax-Friedrichs-like viscosity ONLY where the "
+        "speed changes sign; the modified formula drops that if-clause and "
+        "applies the viscous branch everywhere. It is more dissipative but far "
+        "more stable -- our original-form Marquina is exact at t=0.05 on the "
+        "|B|x2 stationary contact and then diverges to rho ~ 130 by t=1, while "
+        "codes that use the modified formula (Whisky, GENESIS, Ratpenat) are "
+        "robust in this regime."};
+  };
+
+  using options = tmpl::list<CharacteristicsSystem, CharacteristicsMethod,
+                             DegeneracyTolerance, UseModifiedFormula>;
   static constexpr Options::String help = {
       "The Marquina boundary correction for the GRMHD GLM-Valencia system."};
 
   Marquina() = default;
   Marquina(MarquinaCharacteristicsSystem characteristics_system,
            MarquinaCharacteristicsMethod characteristics_method,
-           double degeneracy_tolerance);
+           double degeneracy_tolerance, bool use_modified_formula = false);
   Marquina(MarquinaCharacteristicsSystem characteristics_system,
            MarquinaCharacteristicsMethod characteristics_method);
   Marquina(const Marquina&) = default;
@@ -289,6 +305,7 @@ class Marquina final : public evolution::BoundaryCorrection {
   MarquinaCharacteristicsMethod characteristics_method_{
       MarquinaCharacteristicsMethod::AlwaysAnalytic};
   double degeneracy_tolerance_{0.5};
+  bool use_modified_formula_{false};
 };
 
 bool operator==(const Marquina& lhs, const Marquina& rhs);

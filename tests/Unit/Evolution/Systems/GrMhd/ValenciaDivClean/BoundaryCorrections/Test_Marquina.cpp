@@ -1159,17 +1159,17 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Marquina",
     const auto marquina_cpm = TestHelpers::test_factory_creation<
         evolution::BoundaryCorrection, bc::Marquina>(
         "Marquina:\n  CharacteristicsSystem: Mhd\n  CharacteristicsMethod: "
-        "AnalyticWithComplementaryProjection\n  DegeneracyTolerance: 0.5");
+        "AnalyticWithComplementaryProjection\n  DegeneracyTolerance: 0.5\n  UseModifiedFormula: false");
     const auto marquina_numeric = TestHelpers::test_factory_creation<
         evolution::BoundaryCorrection, bc::Marquina>(
         "Marquina:\n  CharacteristicsSystem: Mhd\n  CharacteristicsMethod: "
-        "AlwaysNumeric\n  DegeneracyTolerance: 0.5");
+        "AlwaysNumeric\n  DegeneracyTolerance: 0.5\n  UseModifiedFormula: false");
   }
   for (const std::string& system_name : {"HydroYe", "Mhd"}) {
     const auto marquina = TestHelpers::test_factory_creation<
         evolution::BoundaryCorrection, bc::Marquina>(
         "Marquina:\n  CharacteristicsSystem: " + system_name +
-        "\n  CharacteristicsMethod: AlwaysAnalytic\n  DegeneracyTolerance: 0.5");
+        "\n  CharacteristicsMethod: AlwaysAnalytic\n  DegeneracyTolerance: 0.5\n  UseModifiedFormula: false");
   }
 
   // Equality compares the options.

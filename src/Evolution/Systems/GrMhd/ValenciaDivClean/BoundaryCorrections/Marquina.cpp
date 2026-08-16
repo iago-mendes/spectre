@@ -62,10 +62,11 @@ std::ostream& operator<<(std::ostream& os,
 
 Marquina::Marquina(const MarquinaCharacteristicsSystem characteristics_system,
                    const MarquinaCharacteristicsMethod characteristics_method,
-                   const double degeneracy_tolerance)
+                   const double degeneracy_tolerance, const bool use_modified_formula)
     : characteristics_system_(characteristics_system),
       characteristics_method_(characteristics_method),
-      degeneracy_tolerance_(degeneracy_tolerance) {}
+      degeneracy_tolerance_(degeneracy_tolerance),
+      use_modified_formula_(use_modified_formula) {}
 
 Marquina::Marquina(const MarquinaCharacteristicsSystem characteristics_system,
                    const MarquinaCharacteristicsMethod characteristics_method)
@@ -82,6 +83,7 @@ void Marquina::pup(PUP::er& p) {
   p | characteristics_system_;
   p | characteristics_method_;
   p | degeneracy_tolerance_;
+  p | use_modified_formula_;
 }
 
 double Marquina::dg_package_data(
@@ -265,8 +267,12 @@ double Marquina::dg_package_data(
     // For AlwaysNumeric we also disable exceptions so a degenerate geev block
     // (L.R != I) is caught by an explicit biorthonormality check that ERRORs,
     // rather than tripping an FP trap on 1/(L_i.R_i).
-    const ScopedFpeState fpe_scope(not complementary_projection and
-                                   not use_numeric);
+    // Only the NUMERIC (geev) path still needs exceptions disabled, so that a
+    // degenerate block is caught by the explicit biorthonormality check below
+    // rather than by an FP trap. The analytic path keeps them enabled: its
+    // denominators are floored in Characteristics.cpp, so a trap there is a
+    // real bug (this is what surfaced the atmosphere division-by-zero).
+    const ScopedFpeState fpe_scope(not use_numeric);
     if (use_numeric) {
       // Numeric eigenvectors from blaze::geev.  geev returns the eigenpairs in
       // an arbitrary per-point order, so we reorder them into the canonical
@@ -631,6 +637,128 @@ void Marquina::dg_boundary_terms(
     Scalar<DataVector> omega_ext{num_points};
     Scalar<DataVector> phi_int{num_points};
     Scalar<DataVector> phi_ext{num_points};
+    // ------------------------------------------------------------------
+    // MODIFIED Marquina flux formula (Aloy et al. 1999, ApJS 122, 151), as used
+    // by Whisky/GENESIS/Ratpenat for relativistic flows. This is NOT the sided
+    // Donat-Marquina flux with its viscous branch forced on -- that mixes the
+    // two one-sided eigenbases and is inconsistent with the complementary
+    // projection. It is the standard Roe/LLF form written out directly:
+    //
+    //   F = 1/2 (F_L + F_R) - 1/2 sum_p alpha_p (l_p . du) r_p,
+    //   alpha_p = max(|lambda_p^L|, |lambda_p^R|),   du = u_R - u_L
+    //
+    // with the dissipation applied symmetrically in BOTH one-sided bases (each
+    // is a complete decomposition on its own state, so averaging them keeps the
+    // scheme symmetric without inventing an averaged state -- which is exactly
+    // what Marquina-type schemes exist to avoid). More dissipative than the
+    // original, and stable: the original form is exact at t = 0.05 on the
+    // |B|x2 stationary contact and then diverges to rho ~ 130 by t = 1.
+    if (use_modified_formula_) {
+      for (size_t n = 0; n < 9; ++n) {
+        *gsl::at(b_out, n) =
+            0.5 * (*gsl::at(f_int, n) - *gsl::at(f_ext, n));
+      }
+      Scalar<DataVector> projected_jump_int{num_points};
+      Scalar<DataVector> projected_jump_ext{num_points};
+      std::array<DataVector, 9> jump{};
+      std::array<DataVector, 9> reconstructed_int{};
+      std::array<DataVector, 9> reconstructed_ext{};
+      for (size_t n = 0; n < 9; ++n) {
+        gsl::at(jump, n) = *gsl::at(u_ext, n) - *gsl::at(u_int, n);
+        gsl::at(reconstructed_int, n) = DataVector{num_points, 0.0};
+        gsl::at(reconstructed_ext, n) = DataVector{num_points, 0.0};
+      }
+      for (size_t i = 0; i < 9; ++i) {
+        get(projected_jump_int) = 0.0;
+        get(projected_jump_ext) = 0.0;
+        for (size_t n = 0; n < 9; ++n) {
+          get(projected_jump_int) += left_int.get(i, n) * gsl::at(jump, n);
+          get(projected_jump_ext) +=
+              aligned_left_ext.get(i, n) * gsl::at(jump, n);
+        }
+        const DataVector& lambda_int = characteristic_speeds_int.get(i);
+        const DataVector& lambda_ext = aligned_speeds_ext.get(i);
+        DataVector alpha{num_points};
+        for (size_t point = 0; point < num_points; ++point) {
+          alpha[point] = std::max(std::abs(lambda_int[point]),
+                                  std::abs(lambda_ext[point]));
+        }
+        for (size_t n = 0; n < 9; ++n) {
+          const DataVector contribution_int =
+              get(projected_jump_int) *
+              right_characteristic_fields_int.get(i, n);
+          const DataVector contribution_ext =
+              get(projected_jump_ext) * aligned_right_ext.get(i, n);
+          gsl::at(reconstructed_int, n) += contribution_int;
+          gsl::at(reconstructed_ext, n) += contribution_ext;
+          *gsl::at(b_out, n) -=
+              0.25 * alpha * (contribution_int + contribution_ext);
+        }
+      }
+      // The degenerate rows were ZEROED in dg_package_data, so neither one-sided
+      // basis is complete: sum_p r_p l_p != I, and the per-wave dissipation
+      // above misses the degenerate subspace entirely. Dissipate what is left
+      // over, (I - sum_p r_p l_p) du -- the same role the complementary
+      // projection plays for the sided formula. Without it Balsara-1 -- whose
+      // tangential field REVERSES through zero, so B_t -> 0 is degenerate right
+      // at the flip -- is under-dissipated exactly where it needs damping, and
+      // dies in con2prim.
+      //
+      // Use the speed of the DEGENERATE waves themselves, not the global maximum
+      // over all nine. The complement spans exactly the zeroed (degenerate)
+      // subspace, so its signal speed is theirs; damping it at the fast speed
+      // instead put a resolution-independent floor under the error and stalled
+      // convergence (order 0.07 between ref4 and ref5 on Balsara-1, versus 0.43
+      // for the original formula).
+      DataVector complement_speed{num_points, 0.0};
+      for (size_t point = 0; point < num_points; ++point) {
+        bool any_degenerate = false;
+        for (size_t i = 0; i < 9; ++i) {
+          bool left_row_is_zero = true;
+          for (size_t n = 0; n < 9; ++n) {
+            if (left_int.get(i, n)[point] != 0.0) {
+              left_row_is_zero = false;
+              break;
+            }
+          }
+          if (left_row_is_zero) {
+            any_degenerate = true;
+            complement_speed[point] = std::max(
+                complement_speed[point],
+                std::max(std::abs(characteristic_speeds_int.get(i)[point]),
+                         std::abs(aligned_speeds_ext.get(i)[point])));
+          }
+        }
+        // No zeroed rows -> the bases are complete, the complement is zero and
+        // this term is inert; keep the speed at zero rather than the fast speed.
+        if (not any_degenerate) {
+          complement_speed[point] = 0.0;
+        }
+      }
+      // Damp the complement with Lax-Friedrichs at the degenerate waves' own
+      // speed. This is the ONLY variant of the three measured that survives
+      // Balsara-1 at ref5: halving it (0.02827 -> 0.03144 at ref4, ref5 crash)
+      // and upwinding it as the original formula's CPM block does
+      // (0.03075 at ref4, ref5 crash) are both less accurate AND less stable.
+      // The degenerate subspace simply needs this much dissipation to hold
+      // together at high resolution -- see FINDINGS_runs.md sections 35-37 for
+      // the measurements, including the convergence plateau it costs.
+      for (size_t n = 0; n < 9; ++n) {
+        *gsl::at(b_out, n) -=
+            0.25 * complement_speed *
+            ((gsl::at(jump, n) - gsl::at(reconstructed_int, n)) +
+             (gsl::at(jump, n) - gsl::at(reconstructed_ext, n)));
+      }
+
+      if (dg_formulation == dg::Formulation::StrongInertial) {
+        for (size_t n = 0; n < 9; ++n) {
+          *gsl::at(b_out, n) -= *gsl::at(f_int, n);
+        }
+        get(*boundary_correction_tilde_ye) -= get(normal_dot_flux_tilde_ye_int);
+      }
+      return;
+    }
+
     Scalar<DataVector> phi_plus{num_points};
     Scalar<DataVector> phi_minus{num_points};
     for (size_t i = 0; i < 9; ++i) {
@@ -764,6 +892,65 @@ void Marquina::dg_boundary_terms(
           }
           (*gsl::at(b_out, n))[point] += contrib;
         }
+      }
+    }
+
+    // ROBUSTNESS FALLBACK. Marquina uses the eigenbasis AS its flux, so an
+    // ill-conditioned decomposition does not degrade gracefully the way HLLEM's
+    // anti-diffusion does (HLLEM sits on a stable HLL base; a bad eigenvector
+    // there costs accuracy, not validity). Flooring the denominators in
+    // Characteristics.cpp stops the FP trap but does NOT make the eigenvectors
+    // meaningful: with the floors alone Marquina completed the CW |B|x2 test
+    // with rho reaching 77 where the exact solution is bounded by 10.
+    //
+    // So detect an untrustworthy decomposition from what we already have --
+    // non-finite entries, or a biorthonormality diagonal l_i.r_i that has
+    // collapsed for a wave whose left row is not identically zero (rows that ARE
+    // zero were deliberately dropped as degenerate above) -- and fall back to a
+    // plain local Lax-Friedrichs flux at that point, which needs no eigenbasis.
+    // This is a per-point switch: cells where the decomposition is fine are
+    // untouched, so it costs nothing where the physics lives.
+    for (size_t point = 0; point < num_points; ++point) {
+      bool trustworthy = true;
+      for (size_t i = 0; i < 9 and trustworthy; ++i) {
+        double diagonal = 0.0;
+        bool left_row_is_zero = true;
+        for (size_t n = 0; n < 9; ++n) {
+          const double left_entry = left_int.get(i, n)[point];
+          const double right_entry =
+              right_characteristic_fields_int.get(i, n)[point];
+          if (not std::isfinite(left_entry) or not std::isfinite(right_entry)) {
+            trustworthy = false;
+            break;
+          }
+          if (left_entry != 0.0) {
+            left_row_is_zero = false;
+          }
+          diagonal += left_entry * right_entry;
+        }
+        if (not left_row_is_zero and std::abs(diagonal) < 1.0e-8) {
+          trustworthy = false;
+        }
+      }
+      for (size_t n = 0; n < 9 and trustworthy; ++n) {
+        if (not std::isfinite((*gsl::at(b_out, n))[point])) {
+          trustworthy = false;
+        }
+      }
+      if (trustworthy) {
+        continue;
+      }
+      double alpha = 0.0;
+      for (size_t i = 0; i < 9; ++i) {
+        alpha = std::max(
+            alpha, std::max(std::abs(characteristic_speeds_int.get(i)[point]),
+                            std::abs(aligned_speeds_ext.get(i)[point])));
+      }
+      for (size_t n = 0; n < 9; ++n) {
+        (*gsl::at(b_out, n))[point] =
+            0.5 * ((*gsl::at(f_int, n))[point] - (*gsl::at(f_ext, n))[point]) -
+            0.5 * alpha *
+                ((*gsl::at(u_ext, n))[point] - (*gsl::at(u_int, n))[point]);
       }
     }
 
@@ -1099,7 +1286,8 @@ void Marquina::dg_boundary_terms(
 bool operator==(const Marquina& lhs, const Marquina& rhs) {
   return lhs.characteristics_system_ == rhs.characteristics_system_ and
          lhs.characteristics_method_ == rhs.characteristics_method_ and
-         lhs.degeneracy_tolerance_ == rhs.degeneracy_tolerance_;
+         lhs.degeneracy_tolerance_ == rhs.degeneracy_tolerance_ and
+         lhs.use_modified_formula_ == rhs.use_modified_formula_;
 }
 
 bool operator!=(const Marquina& lhs, const Marquina& rhs) {
