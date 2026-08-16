@@ -9,6 +9,7 @@
 
 #pragma once
 #include <array>
+#include <limits>
 #include <cmath>
 #include <tuple>
 
@@ -569,6 +570,125 @@ struct HLLDSolver {
     mask_p = mask_p || hll.failed;
     if (mask_p) ptot = hll.ptot0;
     bool mask_failed = SecantMethod(eq48, ptot);
+    // The secant above is unsafeguarded: it takes an unbounded step, and if that
+    // lands at ptot < 0 it resets to 1e-3 * (initial guess) and usually cannot
+    // recover within nmax. The reference implementations (Elias/hlld.hh and
+    // PLUTO) use the same bare secant and share this failure mode -- it is not
+    // a porting bug, it is simply never exercised on the states where it bites.
+    //
+    // On the stationary-contact CW test it bites badly: at |B| x0.5, x1 and
+    // x8-x32 the secant diverges, mask_failed fires, and HLLD silently returns
+    // its internal HLL flux -- so the contact smears instead of being captured
+    // exactly (see Test_Hlld.cpp, test_hlld_reproduces_a_stationary_contact).
+    //
+    // The residual is smooth and monotone with a single sign change, and the
+    // root sits at the analytically known total pressure (verified to 1e-13 in
+    // that test), which is the ideal case for a BRACKETED method. So when the
+    // secant fails, bracket the root by expanding around the initial guess and
+    // finish with bisection, which cannot leave the bracket and converges
+    // unconditionally. Only if no sign change exists at all do we give up and
+    // fall back to HLL.
+    // Do not trust SecantMethod's own verdict: it returns
+    // (mask_f && mask_x) || nan_mask, so an iteration that stalls in x
+    // (mask_x false) reports SUCCESS no matter how large the residual is.
+    // That is how a diverged root reaches the fan construction unnoticed.
+    // Judge convergence by the residual itself.
+    const double residual_after_secant = std::fabs(eq48(ptot));
+    const double residual_tolerance =
+        1.0e-9 * (1.0 + std::fabs(hll.ptot));
+    if (mask_failed or not(residual_after_secant < residual_tolerance)) {
+      // Two root shapes occur here, and only one of them can be bracketed:
+      //  * at low/moderate field the residual CROSSES zero -- bisection works;
+      //  * at high field it TOUCHES zero from below (f(412) = -10.4,
+      //    f(416.28) = 0, f(420) = -0.41 for the CW state at |B| x8), so no
+      //    sign change exists and any bracketing method fails.
+      // The residual also has a near-pole just below the root, which is what
+      // sends the unsafeguarded secant to infinity in the first place.
+      //
+      // Sample |f| on a logarithmic grid spanning the plausible range of the
+      // total pressure, take the best sample, and refine locally -- by
+      // bisection if the neighbours bracket a sign change, otherwise by
+      // golden-section on |f|. Sampling is immune to both poles and tangency,
+      // and this path only runs when the fast secant has already failed.
+      const double seed = std::max(hll.ptot, 1.0e-30);
+      constexpr int num_samples = 400;
+      const double log_lo = std::log(seed * 1.0e-4);
+      const double log_hi = std::log(seed * 1.0e2);
+      double best_x = ptot;
+      double best_abs_f = std::numeric_limits<double>::max();
+      int best_index = -1;
+      std::array<double, num_samples> xs{};
+      std::array<double, num_samples> fs{};
+      for (int s = 0; s < num_samples; ++s) {
+        const double x =
+            std::exp(log_lo + (log_hi - log_lo) * s / (num_samples - 1));
+        const double fx = eq48(x);
+        xs[static_cast<size_t>(s)] = x;
+        fs[static_cast<size_t>(s)] = fx;
+        if (std::isfinite(fx) and std::fabs(fx) < best_abs_f) {
+          best_abs_f = std::fabs(fx);
+          best_x = x;
+          best_index = s;
+        }
+      }
+      if (best_index >= 0) {
+        const size_t bi = static_cast<size_t>(best_index);
+        double lo = bi > 0 ? xs[bi - 1] : xs[bi];
+        double hi = bi + 1 < num_samples ? xs[bi + 1] : xs[bi];
+        const double f_lo_s = bi > 0 ? fs[bi - 1] : fs[bi];
+        const double f_hi_s = bi + 1 < num_samples ? fs[bi + 1] : fs[bi];
+        if (std::isfinite(f_lo_s) and std::isfinite(f_hi_s) and
+            f_lo_s * f_hi_s < 0.0) {
+          double f_lo = f_lo_s;
+          for (int bisect = 0; bisect < 100; ++bisect) {
+            const double mid = 0.5 * (lo + hi);
+            const double f_mid = eq48(mid);
+            if (f_mid == 0.0 or (hi - lo) < 1.0e-15 * std::fabs(mid)) {
+              lo = mid;
+              hi = mid;
+              break;
+            }
+            if (f_lo * f_mid < 0.0) {
+              hi = mid;
+            } else {
+              lo = mid;
+              f_lo = f_mid;
+            }
+          }
+          best_x = 0.5 * (lo + hi);
+        } else {
+          // Tangential root: minimise |f| by golden section on [lo, hi].
+          constexpr double inv_phi = 0.6180339887498949;
+          double c = hi - inv_phi * (hi - lo);
+          double d = lo + inv_phi * (hi - lo);
+          double fc = std::fabs(eq48(c));
+          double fd = std::fabs(eq48(d));
+          for (int it = 0; it < 200 and (hi - lo) > 1.0e-15 * std::fabs(hi);
+               ++it) {
+            if (fc < fd) {
+              hi = d;
+              d = c;
+              fd = fc;
+              c = hi - inv_phi * (hi - lo);
+              fc = std::fabs(eq48(c));
+            } else {
+              lo = c;
+              c = d;
+              fc = fd;
+              d = lo + inv_phi * (hi - lo);
+              fd = std::fabs(eq48(d));
+            }
+          }
+          best_x = 0.5 * (lo + hi);
+        }
+        const double final_residual = std::fabs(eq48(best_x));
+        if (final_residual < residual_tolerance) {
+          ptot = best_x;
+          eq48(ptot);
+          mask_failed = false;
+        }
+      }
+    }
     rotL.compute_cons(LL, ptot);
     rotR.compute_cons(RR, ptot);
     cd.compute_cons(rotL, rotR, ptot);

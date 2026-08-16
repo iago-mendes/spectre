@@ -32,6 +32,7 @@ class er;
 /// \endcond
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
+
 /*!
  * \brief The HLLD Riemann solver of \cite Mignone2009 (MUB2009).
  *
@@ -141,7 +142,10 @@ class Hlld final : public evolution::BoundaryCorrection {
                  hydro::Tags::LorentzFactor<DataVector>>;
   using dg_package_data_volume_tags =
       tmpl::list<hydro::Tags::GrmhdEquationOfState>;
-  using dg_boundary_terms_volume_tags = tmpl::list<>;
+  // The equation of state is needed in dg_boundary_terms to build the
+  // fast-magnetosonic bounds for the scalar/MHD split (as in Hll and Hllem).
+  using dg_boundary_terms_volume_tags =
+      tmpl::list<hydro::Tags::GrmhdEquationOfState>;
 
   double dg_package_data(
       gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
@@ -258,7 +262,8 @@ class Hlld final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& pressure_ext,
       const Scalar<DataVector>& lorentz_factor_ext,
       const Scalar<DataVector>& specific_internal_energy_ext,
-      dg::Formulation dg_formulation);
+      dg::Formulation dg_formulation,
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
 
  private:
   friend bool operator==(const Hlld& lhs, const Hlld& rhs);
