@@ -109,9 +109,6 @@ double Marquina::dg_package_data(
         packaged_left_eigenvectors,
     const gsl::not_null<tnsr::ij<DataVector, 9, Frame::NoFrame>*>
         packaged_right_eigenvectors,
-    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-        packaged_interface_unit_normal,
-    const gsl::not_null<Scalar<DataVector>*> packaged_metric_flatness,
 
     const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
     const Scalar<DataVector>& tilde_tau,
@@ -126,8 +123,8 @@ double Marquina::dg_package_data(
     const tnsr::IJ<DataVector, 3, Frame::Inertial>& flux_tilde_b,
     const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_phi,
 
-    const Scalar<DataVector>& lapse,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
+    const Scalar<DataVector>& /*lapse*/,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& /*shift*/,
     const tnsr::i<DataVector, 3,
                   Frame::Inertial>& /*spatial_velocity_one_form*/,
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
@@ -207,12 +204,6 @@ double Marquina::dg_package_data(
     unit_normal_covector.get(i) =
         normal_covector.get(i) / get(normal_covector_mag);
   }
-
-  *packaged_interface_unit_normal = unit_normal_covector;
-  // Flatness indicator, matching Hlld: the scalar/MHD split treats the normal
-  // as both covector and raised vector, which holds only in flat space.
-  get(*packaged_metric_flatness) = abs(get(lapse) - 1.0) + abs(get<0>(shift)) +
-                                   abs(get<1>(shift)) + abs(get<2>(shift));
 
   // Zero the (9-wide) packaged characteristic data; the hydro+Ye system fills
   // only the leading 3-speed / 6x6 subset.
@@ -511,8 +502,6 @@ void Marquina::dg_boundary_terms(
         left_characteristic_fields_int,
     const tnsr::ij<DataVector, 9, Frame::NoFrame>&
         right_characteristic_fields_int,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_int,
-    const Scalar<DataVector>& metric_flatness_int,
     const Scalar<DataVector>& tilde_d_ext,
     const Scalar<DataVector>& tilde_ye_ext,
     const Scalar<DataVector>& tilde_tau_ext,
@@ -530,8 +519,6 @@ void Marquina::dg_boundary_terms(
         left_characteristic_fields_ext,
     const tnsr::ij<DataVector, 9, Frame::NoFrame>&
         right_characteristic_fields_ext,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& /*normal_ext*/,
-    const Scalar<DataVector>& metric_flatness_ext,
     dg::Formulation dg_formulation) const {
   if (characteristics_system_ == MarquinaCharacteristicsSystem::Mhd) {
     // 9-wave MHD decomposition.  Conserved-variable order matching the
@@ -761,65 +748,6 @@ void Marquina::dg_boundary_terms(
             0.25 * complement_speed *
             ((gsl::at(jump, n) - gsl::at(reconstructed_int, n)) +
              (gsl::at(jump, n) - gsl::at(reconstructed_ext, n)));
-      }
-
-      // ---------------- SCALAR / MHD SPLIT (Teukolsky MHD Eq. 4.35) ---------
-      // The GLM subsystem (Phi, B_normal) decouples from the MHD variables and
-      // propagates at +/-c. Its 2x2 flux Jacobian is c * [[0,1],[1,0]], whose
-      // absolute value is exactly c * I -- so the correct upwind dissipation for
-      // Phi and B_n is plain light-speed Lax-Friedrichs on each, INDEPENDENT of
-      // the MHD eigenvectors.
-      //
-      // Running these two through the nine-wave MHD decomposition instead is
-      // what broke B^x: the MHD eigenvectors do not preserve the normal field,
-      // so B^x -- which is exactly constant in a 1D Riemann problem -- drifted
-      // by 9.6e-4 on Balsara-1 where HLL, HLLD and HLLEM all hold it to 3e-15.
-      //
-      // So overwrite the GLM part: keep the nine-wave answer only for the
-      // TANGENTIAL field, and recombine G(B^i) = G(B_n) n^i + G(B_t^i), exactly
-      // as Hlld and Hllem do. The decomposition treats n as both covector and
-      // raised vector, so it is applied only on a flat face.
-      const bool flat_face = max(get(metric_flatness_int)) <= 1.0e-12 and
-                             max(get(metric_flatness_ext)) <= 1.0e-12;
-      if (flat_face) {
-        const auto& n_hat = interface_unit_normal_int;
-        DataVector light_speed{num_points, 0.0};
-        for (size_t point = 0; point < num_points; ++point) {
-          light_speed[point] = std::max(
-              std::max(std::abs(
-                           characteristic_speeds_int.get(Mhd::ScalarPlus)[point]),
-                       std::abs(
-                           characteristic_speeds_int.get(Mhd::ScalarMinus)[point])),
-              std::max(std::abs(aligned_speeds_ext.get(Mhd::ScalarPlus)[point]),
-                       std::abs(
-                           aligned_speeds_ext.get(Mhd::ScalarMinus)[point])));
-        }
-        // Divergence-cleaning scalar: light-speed Lax-Friedrichs.
-        get(*boundary_correction_tilde_phi) =
-            0.5 * (get(normal_dot_flux_tilde_phi_int) -
-                   get(normal_dot_flux_tilde_phi_ext)) -
-            0.5 * light_speed *
-                (get(tilde_phi_ext) - get(tilde_phi_int));
-        // Normal field: same scalar treatment, on the normal projection.
-        DataVector bn_int{num_points, 0.0};
-        DataVector bn_ext{num_points, 0.0};
-        DataVector nfbn_int{num_points, 0.0};
-        DataVector nfbn_ext{num_points, 0.0};
-        DataVector gb_normal{num_points, 0.0};
-        for (size_t i = 0; i < 3; ++i) {
-          bn_int += tilde_b_int.get(i) * n_hat.get(i);
-          bn_ext += tilde_b_ext.get(i) * n_hat.get(i);
-          nfbn_int += normal_dot_flux_tilde_b_int.get(i) * n_hat.get(i);
-          nfbn_ext += normal_dot_flux_tilde_b_ext.get(i) * n_hat.get(i);
-          gb_normal += boundary_correction_tilde_b->get(i) * n_hat.get(i);
-        }
-        const DataVector g_bn = 0.5 * (nfbn_int - nfbn_ext) -
-                                0.5 * light_speed * (bn_ext - bn_int);
-        for (size_t i = 0; i < 3; ++i) {
-          // strip the nine-wave normal part, put the scalar one back
-          boundary_correction_tilde_b->get(i) +=
-              (g_bn - gb_normal) * n_hat.get(i);
-        }
       }
 
       if (dg_formulation == dg::Formulation::StrongInertial) {

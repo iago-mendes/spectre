@@ -164,18 +164,6 @@ class Marquina final : public evolution::BoundaryCorrection {
 
   std::unique_ptr<BoundaryCorrection> get_clone() const override;
 
-  /// Unit normal of the interface, needed to split the magnetic field into its
-  /// normal (GLM) and tangential (MHD) parts.
-  struct InterfaceUnitNormal : db::SimpleTag {
-    using type = tnsr::i<DataVector, 3, Frame::Inertial>;
-  };
-  /// Departure of the metric from flat space, |lapse-1| + |shift|. The
-  /// scalar/MHD split assumes flat space (it treats the normal as both a
-  /// covector and a raised vector), so on a curved face we do not apply it.
-  struct MetricFlatness : db::SimpleTag {
-    using type = Scalar<DataVector>;
-  };
-
   using dg_package_field_tags =
       tmpl::list<Tags::TildeD, Tags::TildeYe, Tags::TildeTau,
                  Tags::TildeS<Frame::Inertial>, Tags::TildeB<Frame::Inertial>,
@@ -185,8 +173,7 @@ class Marquina final : public evolution::BoundaryCorrection {
                  ::Tags::NormalDotFlux<Tags::TildeS<Frame::Inertial>>,
                  ::Tags::NormalDotFlux<Tags::TildeB<Frame::Inertial>>,
                  ::Tags::NormalDotFlux<Tags::TildePhi>, CharacteristicSpeeds,
-                 LeftCharacteristicFields, RightCharacteristicFields,
-                 InterfaceUnitNormal, MetricFlatness>;
+                 LeftCharacteristicFields, RightCharacteristicFields>;
 
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
@@ -225,9 +212,6 @@ class Marquina final : public evolution::BoundaryCorrection {
           packaged_left_characteristic_fields,
       gsl::not_null<tnsr::ij<DataVector, 9, Frame::NoFrame>*>
           packaged_right_characteristic_fields,
-      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-          packaged_interface_unit_normal,
-      gsl::not_null<Scalar<DataVector>*> packaged_metric_flatness,
 
       const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
       const Scalar<DataVector>& tilde_tau,
@@ -292,8 +276,6 @@ class Marquina final : public evolution::BoundaryCorrection {
           left_characteristic_fields_int,
       const tnsr::ij<DataVector, 9, Frame::NoFrame>&
           right_characteristic_fields_int,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_int,
-      const Scalar<DataVector>& metric_flatness_int,
       const Scalar<DataVector>& tilde_d_ext,
       const Scalar<DataVector>& tilde_ye_ext,
       const Scalar<DataVector>& tilde_tau_ext,
@@ -313,8 +295,6 @@ class Marquina final : public evolution::BoundaryCorrection {
           left_characteristic_fields_ext,
       const tnsr::ij<DataVector, 9, Frame::NoFrame>&
           right_characteristic_fields_ext,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_ext,
-      const Scalar<DataVector>& metric_flatness_ext,
       dg::Formulation dg_formulation) const;
 
  private:
