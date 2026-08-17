@@ -564,14 +564,46 @@ struct HLLDSolver {
       rotR.update(RR, ptotL);
       return cd.update(rotL, rotR, ptotL);
     };
+    // DEGENERATE CASE: a (near-)uniform interface.
+    //
+    // The equation this solver roots is "the jump in the normal velocity across
+    // the contact vanishes". For u_L == u_R that jump is identically zero for
+    // EVERY trial total pressure, so f == 0, every value is a root, and the
+    // iteration returns wherever it happens to land -- after which the fan is
+    // built from a meaningless p_tot. Measured on a static uniform state with
+    // rho = 10, B = (2.4, 4, 4): the root-find returned p_tot = 5.11 where the
+    // exact value is 19.88, and the resulting flux was off by a factor of ten
+    // in a state where the answer is simply F(u).
+    //
+    // This is why a uniform region -- most of the RW test -- came out as noise
+    // rather than a constant: every interface there is degenerate. The HLL flux
+    // is EXACT whenever Delta u = 0 (its dissipation term carries a factor
+    // Delta u), and HLLD's advantage vanishes smoothly as Delta u -> 0, so
+    // returning it below a relative tolerance is both correct and lossless.
+    {
+      double jump_magnitude = 0.;
+      double state_magnitude = 0.;
+      for (int k = 0; k < NUM; ++k) {
+        jump_magnitude = std::max(jump_magnitude, std::fabs(RR.U[k] - LL.U[k]));
+        state_magnitude = std::max(state_magnitude,
+                                   std::max(std::fabs(LL.U[k]),
+                                            std::fabs(RR.U[k])));
+      }
+      if (jump_magnitude <= 1.0e-12 * std::max(state_magnitude, 1.0)) {
+        return std::make_tuple(hll.F, hll.U);
+      }
+    }
+
     hll.compute_ptot();
     ptot = hll.ptot;
     bool mask_p = LL.U[BBX + dir] * LL.U[BBX + dir] / ptot < 0.01;
     mask_p = mask_p || hll.failed;
     if (mask_p) ptot = hll.ptot0;
     bool mask_failed = SecantMethod(eq48, ptot);
-    // The secant above is unsafeguarded: it takes an unbounded step, and if that
-    // lands at ptot < 0 it resets to 1e-3 * (initial guess) and usually cannot
+    // The secant above is unsafeguarded: it takes an unbounded step, and
+    // if that
+    // lands at ptot < 0 it resets to 1e-3 * (initial guess) and usually
+    // cannot
     // recover within nmax. The reference implementations (Elias/hlld.hh and
     // PLUTO) use the same bare secant and share this failure mode -- it is not
     // a porting bug, it is simply never exercised on the states where it bites.
@@ -610,25 +642,35 @@ struct HLLDSolver {
       // bisection if the neighbours bracket a sign change, otherwise by
       // golden-section on |f|. Sampling is immune to both poles and tangency,
       // and this path only runs when the fast secant has already failed.
+      // Equation 48 has MORE THAN ONE zero. Taking the globally best sample
+      // locks onto whichever one happens to have the smallest |f|, and that is
+      // often a spurious root hundreds of times below the physical pressure
+      // (measured: ptot = 1.57 against an HLL estimate of 657, converged to
+      // residual 1e-16 and passing every admissibility mask, yet producing a
+      // flux far outside the range the physical fluxes can reach). The
+      // physical root is the one near the HLL total pressure, so search
+      // OUTWARD from that seed and keep the first root found on either side.
       const double seed = std::max(hll.ptot, 1.0e-30);
       constexpr int num_samples = 400;
       const double log_lo = std::log(seed * 1.0e-4);
       const double log_hi = std::log(seed * 1.0e2);
       double best_x = ptot;
-      double best_abs_f = std::numeric_limits<double>::max();
       int best_index = -1;
       std::array<double, num_samples> xs{};
       std::array<double, num_samples> fs{};
       for (int s = 0; s < num_samples; ++s) {
         const double x =
             std::exp(log_lo + (log_hi - log_lo) * s / (num_samples - 1));
-        const double fx = eq48(x);
         xs[static_cast<size_t>(s)] = x;
-        fs[static_cast<size_t>(s)] = fx;
-        if (std::isfinite(fx) and std::fabs(fx) < best_abs_f) {
-          best_abs_f = std::fabs(fx);
-          best_x = x;
+        fs[static_cast<size_t>(s)] = eq48(x);
+      }
+      double best_abs_f = std::numeric_limits<double>::max();
+      for (int s = 0; s < num_samples; ++s) {
+        const size_t si = static_cast<size_t>(s);
+        if (std::isfinite(fs[si]) and std::fabs(fs[si]) < best_abs_f) {
+          best_abs_f = std::fabs(fs[si]);
           best_index = s;
+          best_x = xs[si];
         }
       }
       if (best_index >= 0) {
@@ -747,6 +789,33 @@ struct HLLDSolver {
     if (mask5) {
       flux = RR.F;
       cons = RR.U;
+    }
+    // Final admissibility gate. Everything above -- the secant, the sampled
+    // root-find, the wave-fan masks -- can only ever be as trustworthy as the
+    // total pressure it is built on, and equation 48 has several zeros. A
+    // spurious one converges to machine precision and satisfies every mask,
+    // yet yields a flux far outside anything the physical fluxes can produce;
+    // that is what showed up as scattered nonsense in the RW and Balsara-2
+    // profiles, where HLLD was visibly WORSE than HLL rather than sharper.
+    //
+    // So check the answer instead of trusting the path to it: a numerical flux
+    // must lie between the two physical fluxes, widened by the most
+    // dissipation the fan can add, |lambda|_max * |Delta u|. HLL satisfies this
+    // identically (verified over random states in Test_Hlld.cpp), so falling
+    // back to it is always admissible. This makes "in the worst case HLLD
+    // degrades to HLL" a property of the solver rather than a hope.
+    const double max_speed =
+        std::max(std::fabs(LL.lambda), std::fabs(RR.lambda));
+    for (int i = 0; i < NUM; ++i) {
+      const double dissipation = max_speed * std::fabs(RR.U[i] - LL.U[i]);
+      const double lower = std::min(LL.F[i], RR.F[i]) - dissipation;
+      const double upper = std::max(LL.F[i], RR.F[i]) + dissipation;
+      const double tolerance =
+          1.0e-8 * (1.0 + std::fabs(lower) + std::fabs(upper));
+      if (not std::isfinite(flux[i]) or flux[i] < lower - tolerance or
+          flux[i] > upper + tolerance) {
+        return {hll.F, hll.U};
+      }
     }
     return {flux, cons};
   }

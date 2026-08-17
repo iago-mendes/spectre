@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <random>
 #include <string>
 
 #include "DataStructures/TaggedTuple.hpp"
@@ -43,6 +44,155 @@ namespace {
 // This drives the five-wave solver directly, with no simulation, so the debug
 // loop is a fraction of a second. The primitive array layout matches Hlld.cpp's
 // `build` lambda: {rho, eps, W*v_n, W*v_t1, W*v_t2, B_n, B_t1, B_t2, Ye}.
+
+// CONSISTENCY: for identical left and right states the Riemann problem is
+// trivial and ANY consistent solver must return exactly the physical flux
+// F(u) -- no dissipation, no correction. Most of the RW domain is uniform, so a
+// violation here would explain scatter across the whole test rather than just
+// near the waves. Swept over a range of states including v_n != 0, which the
+// stationary-contact test above does not reach.
+//
+// The user's principle for HLLD: in the worst case it should degrade to HLL,
+// which is bounded. Anything far outside the data range is a bug by definition.
+
+// "In the worst case HLLD should behave like HLL." Encode that: for ANY pair of
+// states the numerical flux must lie within the envelope spanned by the two
+// physical fluxes, widened by the largest dissipation the fan can supply,
+// |lambda|_max * |Delta u|. HLL sits inside that envelope by construction, so
+// anything outside it is a bug -- which is how the uniform-state degeneracy and
+// the diverged root-find both showed up as wild scatter in the simulations.
+void test_hlld_flux_stays_within_physical_bounds() {
+  namespace hd = grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail;
+  const ScopedFpeState fpe(false);
+  const double adiabatic_index = 5.0 / 3.0;
+  MAKE_GENERATOR(gen);
+  std::uniform_real_distribution<> rho_dist(0.05, 12.0);
+  std::uniform_real_distribution<> p_dist(0.05, 60.0);
+  std::uniform_real_distribution<> v_dist(-0.6, 0.6);
+  std::uniform_real_distribution<> b_dist(-6.0, 6.0);
+  size_t violations = 0;
+  size_t hll_violations = 0;
+  double worst_excess = 0.0;
+  for (size_t trial = 0; trial < 4000; ++trial) {
+    const double b_n = b_dist(gen);  // normal field is shared by both states
+    const auto draw = [&]() {
+      const double vx = v_dist(gen);
+      const double vy = v_dist(gen);
+      const double vz = v_dist(gen);
+      const double v_sq = vx * vx + vy * vy + vz * vz;
+      const double lorentz = 1.0 / sqrt(std::max(1.0 - v_sq, 1.0e-3));
+      const double rho = rho_dist(gen);
+      return std::array<double, 9>{rho,
+                                   p_dist(gen) /
+                                       ((adiabatic_index - 1.0) * rho),
+                                   lorentz * vx,
+                                   lorentz * vy,
+                                   lorentz * vz,
+                                   b_n,
+                                   b_dist(gen),
+                                   b_dist(gen),
+                                   0.0};
+    };
+    const auto left = draw();
+    const auto right = draw();
+    hd::HLLDSolver<0> solver(left, right, adiabatic_index);
+    const auto [flux, cons] = solver.solve(0.0);
+    const double speed =
+        std::max(std::fabs(solver.LL.lambda), std::fabs(solver.RR.lambda));
+    for (size_t k = 0; k < hd::NUM; ++k) {
+      const double f_lo = std::min(solver.LL.F[k], solver.RR.F[k]);
+      const double f_hi = std::max(solver.LL.F[k], solver.RR.F[k]);
+      const double dissipation =
+          speed * std::fabs(solver.RR.U[k] - solver.LL.U[k]);
+      const double scale =
+          1.0 + std::fabs(f_lo) + std::fabs(f_hi) + dissipation;
+      const double excess =
+          std::max(flux[k] - (f_hi + dissipation),
+                   (f_lo - dissipation) - flux[k]) /
+          scale;
+      const double f_hll = solver.hll.F[k];
+      const double hll_excess =
+          std::max(f_hll - (f_hi + dissipation), (f_lo - dissipation) - f_hll) /
+          scale;
+      if (hll_excess > 1.0e-8) {
+        ++hll_violations;
+      }
+      if (not std::isfinite(flux[k]) or excess > 1.0e-8) {
+        ++violations;
+        worst_excess = std::max(worst_excess, excess);
+        break;
+      }
+    }
+  }
+  Parallel::printf("  HLLD physical-bound violations: %zu / 4000 random state "
+                   "pairs (worst relative excess %.3e); HLL control "
+                   "violations: %zu\n",
+                   violations, worst_excess, hll_violations);
+  CHECK(violations == 0);
+}
+
+void test_hlld_is_consistent_for_uniform_states() {
+  namespace hd = grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail;
+  const ScopedFpeState fpe(false);
+  size_t violations = 0;
+  double worst = 0.0;
+  std::array<double, 9> worst_state{};
+  for (const double v_n : {0.0, 0.2, 0.4, -0.3, 0.7}) {
+    for (const double v_t : {0.0, 0.3, 0.5}) {
+      for (const double b_n : {0.5, 1.0, 2.4, 5.0}) {
+        for (const double b_t : {0.0, 1.0, 1.6, 4.0}) {
+          for (const double rho : {0.1, 1.0, 10.0}) {
+            const double v_sq = v_n * v_n + 2.0 * v_t * v_t;
+            if (v_sq >= 0.95) {
+              continue;
+            }
+            const double lorentz = 1.0 / sqrt(1.0 - v_sq);
+            const double pressure = 1.0;
+            const double adiabatic_index = 5.0 / 3.0;
+            const std::array<double, 9> state{
+                rho,
+                pressure / ((adiabatic_index - 1.0) * rho),
+                lorentz * v_n,
+                lorentz * v_t,
+                lorentz * v_t,
+                b_n,
+                b_t,
+                b_t,
+                0.0};
+            hd::HLLDSolver<0> solver(state, state, adiabatic_index);
+            const auto [flux, cons] = solver.solve(0.0);
+            for (size_t k = 0; k < hd::NUM; ++k) {
+              const double deviation = std::abs(flux[k] - solver.LL.F[k]) /
+                                       (1.0 + std::abs(solver.LL.F[k]));
+              if (deviation > worst) {
+                worst = deviation;
+                worst_state = state;
+              }
+            }
+            if (worst > 1.0e-8 and violations == 0) {
+              ++violations;
+            }
+          }
+        }
+      }
+    }
+  }
+  Parallel::printf(
+      "  HLLD uniform-state consistency: worst relative deviation = %.3e%s\n",
+      worst,
+      worst < 1.0e-8
+          ? ""
+          : "   <-- INCONSISTENT (should be exactly the physical flux)");
+  if (worst >= 1.0e-8) {
+    Parallel::printf(
+        "    worst state: rho=%g eps=%g Wv=(%g,%g,%g) B=(%g,%g,%g)\n",
+                     worst_state[0], worst_state[1], worst_state[2],
+                     worst_state[3], worst_state[4], worst_state[5],
+                     worst_state[6], worst_state[7]);
+  }
+  CHECK(worst < 1.0e-8);
+}
+
 void test_hlld_reproduces_a_stationary_contact() {
   namespace hd = grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail;
   const double adiabatic_index = 5.0 / 3.0;
@@ -86,7 +236,8 @@ void test_hlld_reproduces_a_stationary_contact() {
     }
     double dev_from_hll = 0.0;
     for (size_t k = 0; k < hd::NUM; ++k) {
-      dev_from_hll = std::max(dev_from_hll, std::abs(flux[k] - solver.hll.F[k]));
+      dev_from_hll =
+          std::max(dev_from_hll, std::abs(flux[k] - solver.hll.F[k]));
     }
 
     // The exact total pressure is analytic here: p + b^2/2 with
@@ -119,6 +270,8 @@ namespace helpers = TestHelpers::evolution::dg;
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hlld",
                   "[Unit][GrMhd]") {
   PUPable_reg(grmhd::ValenciaDivClean::BoundaryCorrections::Hlld);
+  test_hlld_is_consistent_for_uniform_states();
+  test_hlld_flux_stays_within_physical_bounds();
   test_hlld_reproduces_a_stationary_contact();
   MAKE_GENERATOR(gen);
 
