@@ -106,12 +106,12 @@ def id_parameters(
     chi_A = np.asarray(target_params["DimensionlessSpinA"])
     r_plus_A = conformal_mass_a * (1.0 + np.sqrt(1 - np.dot(chi_A, chi_A)))
     r_minus_A = conformal_mass_a * (1.0 - np.sqrt(1 - np.dot(chi_A, chi_A)))
-    Omega_A = horizon_rotation_a
+    Omega_A = list(horizon_rotation_a)
     Omega_A[2] += orbital_angular_velocity
     chi_B = np.asarray(target_params["DimensionlessSpinB"])
     r_plus_B = conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_B, chi_B)))
     r_minus_B = conformal_mass_b * (1.0 - np.sqrt(1 - np.dot(chi_B, chi_B)))
-    Omega_B = horizon_rotation_b
+    Omega_B = list(horizon_rotation_b)
     Omega_B[2] += orbital_angular_velocity
     if negative_expansion_bc:
         # For high spins, we need to place the excisions closer to the outer
@@ -137,9 +137,15 @@ def id_parameters(
     cube_b_log_map_strength = 1.0 + 0.15 * np.log(q)
     extra_radial_refinement_l = round(0.3 * np.log(q))
     extra_radial_refinement_p = round(0.9 * np.log(q))
-    assert (
-        polynomial_order + 2 + extra_radial_refinement_p <= 20
-    ), "The polynomial order + extra radial points exceeds the maximum of 20."
+    max_extra_radial_refinement_p = 20 - polynomial_order - 2
+    if extra_radial_refinement_p > max_extra_radial_refinement_p:
+        logger.warning(
+            "Clipping extra radial refinement p from"
+            f" {extra_radial_refinement_p} to"
+            f" {max_extra_radial_refinement_p} because polynomial order"
+            f" {polynomial_order} + 2 + extra radial p must not exceed 20."
+        )
+        extra_radial_refinement_p = max_extra_radial_refinement_p
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
@@ -328,52 +334,82 @@ def generate_id(
             target_params["Eccentricity"] is not None
         ), "For eccentricity control the target eccentricity must be set."
 
-    # Conformal mass guesses from a BBH ID survey (q=1..1e6, neg-exp BC).
-    # Small-BH factor_b interpolates to an isolated-BH plateau for q >> 1.
-    log10q = np.log10(max(target_params["MassA"] / target_params["MassB"], 1.0))
+    # Initial free-data guesses fit from a BBH ID parameter survey covering
+    # q=1..1e6 and chi=0..0.999 with both negative-expansion and zero-
+    # expansion excision BCs. See runs-ai/lisa_bbh_id/initial_guesses/.
+    #
+    # Mass and rotation factors share a parallel structure: the large-BH
+    # factor uses log10(q) (unbounded with q), the small-BH factor uses
+    # (1 - 1/q) (saturates at an isolated-BH plateau as q -> infinity).
+    # The two factors share their q=1, chi=0 limit, so BH-swap symmetry
+    # holds at equal mass.
+    q = max(target_params["MassA"] / target_params["MassB"], 1.0)
+    log10q = np.log10(q)
     if conformal_mass_a is None:
         chi_a_sq = np.dot(
             np.asarray(target_params["DimensionlessSpinA"]),
             np.asarray(target_params["DimensionlessSpinA"]),
         )
         conformal_mass_a = (
-            0.80 + 0.016 * log10q + 0.022 * chi_a_sq
+            0.826 + 0.012 * log10q + 0.021 * chi_a_sq
         ) * target_params["MassA"]
     if conformal_mass_b is None:
         chi_b_sq = np.dot(
             np.asarray(target_params["DimensionlessSpinB"]),
             np.asarray(target_params["DimensionlessSpinB"]),
         )
-        weight = min(1.0, log10q / 3.0)
         conformal_mass_b = (
-            (1.0 - weight) * (0.80 + 0.022 * chi_b_sq)
-            + weight * (0.957 + 0.013 * chi_b_sq)
+            0.826 + 0.134 * (1.0 - 1.0 / q) + 0.021 * chi_b_sq
         ) * target_params["MassB"]
 
-    # Rotation factors: A scales with log10q for chi>0.95; B stays ~0.9.
+    # Horizon rotation: the apparent-horizon boundary condition needs the
+    # rotation Omega of the (conformal) Kerr-Schild horizon, which equals
+    #
+    #     Omega_bar = -chi / (2 * bar_M * (1 + sqrt(1 - chi^2)))
+    #
+    # (the Kerr formula evaluated with the conformal mass bar_M). The
+    # converged Omega deviates from Omega_bar by a BC-dependent factor f
+    # at high spin, so we set
+    #
+    #     Omega = f * Omega_bar.
+    #
+    # f = 1 + chi^2 (alpha + beta_a * g_a(q) + gamma * chi^2) with shared
+    # alpha and gamma between A and B (q=1 limit symmetric in A<->B), and
+    # the q-correction g_A = log10(q) for the large BH, g_B = (1 - 1/q)
+    # for the small BH (saturating). Coefficients are BC-specific.
     if horizon_rotation_a is None:
         chi_a = np.asarray(target_params["DimensionlessSpinA"])
-        rotation_initial_guess_factor = (
-            1.0
-            if np.linalg.norm(chi_a) <= 0.95
-            else min(1.0, 0.83 + 0.017 * log10q)
-        )
+        chi_a_sq = float(np.dot(chi_a, chi_a))
+        if negative_expansion_bc:
+            rotation_initial_guess_factor = 1.0 + chi_a_sq * (
+                0.341 + 0.018 * log10q - 0.496 * chi_a_sq
+            )
+        else:
+            rotation_initial_guess_factor = 1.0 + chi_a_sq * (
+                -0.399 + 0.016 * log10q + 0.234 * chi_a_sq
+            )
         horizon_rotation_a = (
             -rotation_initial_guess_factor
             * 0.5
             * chi_a
-            / (conformal_mass_a * (1.0 + np.sqrt(1 - np.dot(chi_a, chi_a))))
+            / (conformal_mass_a * (1.0 + np.sqrt(1 - chi_a_sq)))
         )
     if horizon_rotation_b is None:
         chi_b = np.asarray(target_params["DimensionlessSpinB"])
-        rotation_initial_guess_factor = (
-            1.0 if np.linalg.norm(chi_b) <= 0.95 else 0.9
-        )
+        chi_b_sq = float(np.dot(chi_b, chi_b))
+        if negative_expansion_bc:
+            rotation_initial_guess_factor = 1.0 + chi_b_sq * (
+                0.341 + 0.074 * (1.0 - 1.0 / q) - 0.496 * chi_b_sq
+            )
+        else:
+            rotation_initial_guess_factor = 1.0 + chi_b_sq * (
+                -0.399 + 0.059 * (1.0 - 1.0 / q) + 0.234 * chi_b_sq
+            )
         horizon_rotation_b = (
             -rotation_initial_guess_factor
             * 0.5
             * chi_b
-            / (conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_b, chi_b))))
+            / (conformal_mass_b * (1.0 + np.sqrt(1 - chi_b_sq)))
         )
 
     # Determine initial data parameters from options

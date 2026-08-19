@@ -1,6 +1,7 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
+import contextlib
 import functools
 import logging
 import os
@@ -14,6 +15,8 @@ import click
 import jinja2
 import jinja2.meta
 import numpy as np
+import rich.console
+import rich.logging
 import yaml
 from rich.pretty import pretty_repr
 
@@ -119,6 +122,37 @@ def _copy_submit_script_template(
     return dest
 
 
+@contextlib.contextmanager
+def _redirect_output_to(out_file: Path):
+    """Redirect Python logger output to a file and yield the file object.
+
+    Used by `schedule()` when `redirect_output=True` to capture the output
+    of a direct (non-scheduler) executable run into a per-run log file
+    instead of inheriting the parent process's stdout/stderr. The yielded
+    file object should also be passed as the `stdout`/`stderr` of any
+    subprocess started inside the context, so its output ends up in the
+    same file.
+
+    The root logger's handlers are saved before the swap and restored on
+    exit, so nested invocations work correctly.
+    """
+    output_log = open(out_file, "a")
+    root_logger = logging.getLogger()
+    saved_handlers = root_logger.handlers[:]
+    try:
+        root_logger.handlers = [
+            rich.logging.RichHandler(
+                console=rich.console.Console(
+                    file=output_log, width=120, force_terminal=False
+                ),
+            )
+        ]
+        yield output_log
+    finally:
+        root_logger.handlers = saved_handlers
+        output_log.close()
+
+
 def schedule(
     input_file_template: Union[str, Path],
     scheduler: Optional[Union[str, Sequence]],
@@ -139,6 +173,7 @@ def schedule(
     force: bool = False,
     validate: Optional[bool] = True,
     profile_with: Optional[str] = None,
+    redirect_output: bool = False,
     extra_params: dict = {},
     **kwargs,
 ) -> Optional[subprocess.CompletedProcess]:
@@ -650,37 +685,57 @@ def schedule(
         env["OMP_NUM_THREADS"] = "1"
         env["OPENBLAS_NUM_THREADS"] = "1"
         env["MKL_NUM_THREADS"] = "1"
-        process = subprocess.Popen(run_command, cwd=run_dir, env=env)
-        # Realtime streaming of _captured_ stdout and stderr to the console
-        # doesn't seem to work reliably, so we just let the process stream
-        # directly to the console and wait for it to complete.
-        process.wait()
-        # Raise errors on non-zero exit codes
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(
-                returncode=process.returncode, cmd=run_command
+        # Optionally redirect both the Python logger and the subprocess
+        # stdio to the per-run log file. Default behavior
+        # (redirect_output=False) is unchanged: both the logger and the
+        # subprocess inherit the parent process's stdout/stderr.
+        redirect_ctx = (
+            _redirect_output_to(out_file)
+            if redirect_output
+            else contextlib.nullcontext(None)
+        )
+        with redirect_ctx as output_log:
+            popen_kwargs = (
+                dict(stdout=output_log, stderr=subprocess.STDOUT)
+                if output_log is not None
+                else {}
             )
-        if profile_with == "hpctoolkit":
-            subprocess.run(
-                ["hpcstruct", "hpctoolkit-measurements"],
-                cwd=run_dir,
-                check=True,
+            process = subprocess.Popen(
+                run_command, cwd=run_dir, env=env, **popen_kwargs
             )
-            subprocess.run(
-                [
-                    "hpcprof",
-                    "-o",
-                    "hpctoolkit-database",
-                    "hpctoolkit-measurements",
-                ],
-                cwd=run_dir,
-                check=True,
-            )
-        # Run the 'Next' entrypoint listed in the input file metadata
-        if metadata and "Next" in metadata:
-            run_next(
-                metadata["Next"], input_file_path=input_file_path, cwd=run_dir
-            )
+            # Realtime streaming of _captured_ stdout and stderr to the
+            # console doesn't seem to work reliably, so we just let the
+            # process stream directly to the console (or to the log file,
+            # if redirected) and wait for it to complete.
+            process.wait()
+            # Raise errors on non-zero exit codes
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode=process.returncode, cmd=run_command
+                )
+            if profile_with == "hpctoolkit":
+                subprocess.run(
+                    ["hpcstruct", "hpctoolkit-measurements"],
+                    cwd=run_dir,
+                    check=True,
+                )
+                subprocess.run(
+                    [
+                        "hpcprof",
+                        "-o",
+                        "hpctoolkit-database",
+                        "hpctoolkit-measurements",
+                    ],
+                    cwd=run_dir,
+                    check=True,
+                )
+            # Run the 'Next' entrypoint listed in the input file metadata
+            if metadata and "Next" in metadata:
+                run_next(
+                    metadata["Next"],
+                    input_file_path=input_file_path,
+                    cwd=run_dir,
+                )
         return process
 
     # Copy executable to segments directory
