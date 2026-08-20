@@ -3,6 +3,8 @@
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hlld.hpp"
 
+#include "Parallel/Printf/Printf.hpp"
+
 #include <array>
 #include <cmath>
 #include <pup.h>
@@ -439,6 +441,28 @@ void Hlld::dg_boundary_terms(
         boundary_correction_tilde_b->get(i)[pt] =
             flat_face ? g_split[pt] : g_plain[pt];
       }
+    }
+  }
+
+  // Periodic diagnostic report. Ratios (not absolute counts) are the signal:
+  // if gate_rejected / fan_attempts is ~0 then the admissibility gate is NOT
+  // responsible for the high-order oscillation excess, and likewise for the
+  // root-find. Printed on a geometric schedule to keep the log small.
+  {
+    auto& diag = hlld_detail::diagnostics();
+    static size_t next_report = 100000;
+    if (diag.fan_attempts > next_report) {
+      Parallel::printf(
+          "HLLD diag: attempts=%zu rootfind_failed=%zu (%.4f%%) "
+          "gate_rejected=%zu (%.4f%%) uniform=%zu\n",
+          diag.fan_attempts, diag.rootfind_failed,
+          100.0 * static_cast<double>(diag.rootfind_failed) /
+              static_cast<double>(std::max<size_t>(diag.fan_attempts, 1)),
+          diag.gate_rejected,
+          100.0 * static_cast<double>(diag.gate_rejected) /
+              static_cast<double>(std::max<size_t>(diag.fan_attempts, 1)),
+          diag.uniform_shortcut);
+      next_report *= 4;
     }
   }
 

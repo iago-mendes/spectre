@@ -11,9 +11,65 @@
 #include <array>
 #include <limits>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <tuple>
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail {
+
+// Diagnostic counters. The oscillation excess of HLLD over HLLEM at high-order
+// reconstruction (7x on ST1/MC) has two candidate causes that only a count can
+// separate: the total-pressure root-find failing more often on the harder
+// interface states that sharper reconstruction produces, and the physical
+// admissibility gate falling back to HLL. Both replace the fan with HLL at
+// isolated interfaces, which is itself a noise source. Counters are per-process
+// and monotonically increasing; ratios are what matter.
+struct Diagnostics {
+  size_t fan_attempts = 0;
+  size_t rootfind_failed = 0;      // secant + sampled search both failed
+  size_t gate_rejected = 0;        // flux outside the physical envelope
+  size_t uniform_shortcut = 0;     // L == R, HLL is exact
+  void reset() { *this = Diagnostics{}; }
+};
+inline Diagnostics& diagnostics() {
+  static Diagnostics d{};
+  return d;
+}
+
+// Gate mode (env HLLD_GATE_MODE): "fallback" (default, current production
+// behaviour: replace the whole flux with HLL), or "clamp" (project only the
+// offending COMPONENT back onto the physical envelope, keeping the rest of the
+// fan). The gate is protective (see above) but it is BINARY, and it fires on
+// 9-44% of interfaces at 2nd order, so neighbouring interfaces can use
+// completely different fluxes. That inhomogeneity is itself a noise source,
+// which is why Radice & Rezzolla (THC, sec. 2 eq. 14) blend smoothly toward
+// Lax-Friedrichs rather than switching. "clamp" is the minimal smooth
+// alternative: same admissibility bound, smallest possible change to the flux.
+// UNTESTED as of this commit -- the comparison runs were staged but not run.
+inline bool gate_clamp() {
+  static const bool v = [] {
+    const char* e = std::getenv("HLLD_GATE_MODE");
+    return e != nullptr and std::string(e) == "clamp";
+  }();
+  return v;
+}
+
+// Diagnostic switch (env var HLLD_DISABLE_GATE=1). The gate fires on 3% of
+// interfaces at 1st order but 9-44% at 2nd order, so it is either causing the
+// high-order oscillation (by flipping neighbouring interfaces between the fan
+// and HLL) or merely reacting to it. Turning it off answers which: if the
+// oscillation gets WORSE the gate is protective, if it gets BETTER the gate is
+// the amplifier. Env var rather than an option so the comparison needs no
+// input-file changes and cannot silently alter production runs.
+// MEASURED (ST1, MonotonisedCentral, N=208): gate off -> oscillation 0.375 vs
+// 0.021 with the gate on, i.e. 18x WORSE. The gate is protective.
+inline bool gate_disabled() {
+  static const bool v = [] {
+    const char* e = std::getenv("HLLD_DISABLE_GATE");
+    return e != nullptr and e[0] == '1';
+  }();
+  return v;
+}
 
 // ideal-gas EOS helpers (Gamma threaded explicitly -- no mutable global state so
 // this is safe to call concurrently).  Match ref_hlld IdealEOS.
@@ -590,10 +646,12 @@ struct HLLDSolver {
                                             std::fabs(RR.U[k])));
       }
       if (jump_magnitude <= 1.0e-12 * std::max(state_magnitude, 1.0)) {
+        ++diagnostics().uniform_shortcut;
         return std::make_tuple(hll.F, hll.U);
       }
     }
 
+    ++diagnostics().fan_attempts;
     hll.compute_ptot();
     ptot = hll.ptot;
     bool mask_p = LL.U[BBX + dir] * LL.U[BBX + dir] / ptot < 0.01;
@@ -744,6 +802,9 @@ struct HLLDSolver {
     mask_failed = mask_failed || ((rotL.lambda - LL.lambda) < -1.e-6);
     mask_failed = mask_failed || ((RR.lambda - rotR.lambda) < -1.e-6);
     mask_failed = mask_failed || rotL.failed || rotR.failed;
+    if (mask_failed) {
+      ++diagnostics().rootfind_failed;
+    }
 
     std::array<double, NUM> flux{}, cons{};
     const bool maskLL = (LL.lambda > ispeed);
@@ -814,6 +875,14 @@ struct HLLDSolver {
           1.0e-8 * (1.0 + std::fabs(lower) + std::fabs(upper));
       if (not std::isfinite(flux[i]) or flux[i] < lower - tolerance or
           flux[i] > upper + tolerance) {
+        ++diagnostics().gate_rejected;
+        if (gate_disabled() and std::isfinite(flux[i])) {
+          continue;  // diagnostic mode: count it but keep the fan flux
+        }
+        if (gate_clamp() and std::isfinite(flux[i])) {
+          flux[i] = std::min(std::max(flux[i], lower), upper);
+          continue;
+        }
         return {hll.F, hll.U};
       }
     }
