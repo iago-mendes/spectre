@@ -29,6 +29,7 @@ constexpr int HLLD_MAX_ITER = 20;
 // and monotonically increasing; ratios are what matter.
 struct Diagnostics {
   size_t fan_attempts = 0;
+  size_t uniform_shortcut = 0;     // L == R, HLL is exact
   size_t rootfind_failed = 0;      // secant + sampled search both failed
   // The single "rejected" counter cannot distinguish the two things that were
   // changed together (the seed, and the in-loop admissibility test), so at
@@ -606,11 +607,36 @@ struct HLLDSolver {
       rotL.fail = not success;                                     // 490
       return fun;
     };
-    // NOTE: an explicit near-uniform shortcut used to sit here. PLUTO has no
-    // counterpart, and it is redundant: on a uniform interface eq. 48 gives
-    // f0 = 0, so PLUTO's `fabs(f0) > 1.e-12` guard (hlld.c:276) skips the root
-    // solver and builds the fan from the seed pressure, which is the right
-    // answer there. We keep that guard and drop the duplicate.
+    // DEGENERATE CASE: a (near-)uniform interface. This has NO PLUTO
+    // counterpart and is a deliberate, measured exception to the port.
+    //
+    // I removed it once on the argument that PLUTO's `fabs(f0) > 1.e-12` guard
+    // (hlld.c:276) already covers it. That was WRONG: the guard only skips the
+    // SECANT, it still assembles the full five-wave fan. PLUTO can afford
+    // that because on an exactly uniform state every one of its intermediate
+    // states collapses onto the same state and the fan is exact. Our fan
+    // carries regularisers PLUTO's does not need at the same places --
+    // `dK = dK + 1.e-12` (CDState::update) and `1/(Sa - Sc + 1.e-12)`
+    // (CDState::compute_cons) -- and those go degenerate as L -> R, so the
+    // assembled flux is noise rather than the uniform flux.
+    //
+    // Measured: removing this block took ST1 at N=416 with FlatPrim from
+    // TV/range 1.00, hi_k 4e-4, L1 1.8e-2 to TV/range 11.7, hi_k 0.36,
+    // L1 2.7e-1. FlatPrim is the worst case precisely because 1st order makes
+    // L and R EXACTLY equal in smooth regions. HLL is exact on a uniform
+    // interface, so returning it is both correct and lossless.
+    {
+      double jump_magnitude = 0.0, state_magnitude = 0.0;
+      for (int k = 0; k < NUM; ++k) {
+        jump_magnitude = std::max(jump_magnitude, std::fabs(RR.U[k] - LL.U[k]));
+        state_magnitude = std::max(
+            state_magnitude, std::max(std::fabs(LL.U[k]), std::fabs(RR.U[k])));
+      }
+      if (jump_magnitude <= 1.0e-12 * std::max(state_magnitude, 1.0)) {
+        ++diagnostics().uniform_shortcut;
+        return std::make_tuple(hll.F, hll.U);
+      }
+    }
     /* --------------------------------------------
        3a. Handle different cases          [PLUTO hlld.c:166-181]
        -------------------------------------------- */

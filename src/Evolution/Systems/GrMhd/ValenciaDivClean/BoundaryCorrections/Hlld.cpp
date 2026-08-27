@@ -458,13 +458,13 @@ void Hlld::dg_boundary_terms(
     static size_t next_report = 100000;
     if (diag.fan_attempts > next_report) {
       Parallel::printf(
-          "HLLD diag: attempts=%zu fellback=%zu (%.4f%%) | seed_failed=%zu "
-          "f0_bad=%zu fstar_abort=%zu iter_exhausted=%zu resid_growing=%zu "
-          "converged=%zu\n",
+          "HLLD diag: attempts=%zu fellback=%zu (%.4f%%) uniform=%zu | "
+          "seed_failed=%zu f0_bad=%zu fstar_abort=%zu iter_exhausted=%zu "
+          "resid_growing=%zu converged=%zu\n",
           diag.fan_attempts, diag.rootfind_failed,
           100.0 * static_cast<double>(diag.rootfind_failed) /
               static_cast<double>(std::max<size_t>(diag.fan_attempts, 1)),
-          diag.seed_failed, diag.f0_bad, diag.fstar_abort,
+          diag.uniform_shortcut, diag.seed_failed, diag.f0_bad, diag.fstar_abort,
           diag.iter_exhausted, diag.resid_growing, diag.converged);
       next_report *= 4;
     }
