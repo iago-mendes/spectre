@@ -30,6 +30,15 @@ constexpr int HLLD_MAX_ITER = 20;
 struct Diagnostics {
   size_t fan_attempts = 0;
   size_t uniform_shortcut = 0;     // L == R, HLL is exact
+  // Which of PLUTO's eight HLLD_Fstar conditions (hlld.c:479-490) rejects a
+  // trial pressure. Counted on every HLLD_Fstar call, so treat as ratios.
+  std::array<size_t, 8> term_fail{};
+  // Seed disagreement: our seed comes from SpECTRE's KastaunEtAl recovery,
+  // PLUTO's from its own ConsToPrim (hlld.c:241-261). HLLState::compute_ptot
+  // is our direct analogue of PLUTO's route, so comparing the two isolates
+  // the ONE remaining accepted divergence without changing behaviour.
+  size_t seed_disagree = 0;        // |p_seed - p_hll| > 10% of p_hll
+  size_t seed_compared = 0;
   size_t rootfind_failed = 0;      // secant + sampled search both failed
   // The single "rejected" counter cannot distinguish the two things that were
   // changed together (the seed, and the in-loop admissibility test), so at
@@ -596,14 +605,25 @@ struct HLLDSolver {
       // PLUTO ASSIGNS here (`=`, not `*=`), discarding the two
       // HLLD_GetRiemannState return values accumulated at hlld.c:444-445; we
       // discard rotL/rotR.failed likewise. Terms 5-6 subsume w < 0 for p > 0.
-      bool success = (cd.vL[dir] - rotL.K[dir]) > -1.e-6;      // PLUTO 479
-      success = success and (rotR.K[dir] - cd.vR[dir]) > -1.e-6;   // 480
-      success = success and (LL.lambda - rotL.v[dir]) < 0.0;       // 482
-      success = success and (RR.lambda - rotR.v[dir]) > 0.0;       // 483
-      success = success and (rotR.rhohb2 - ptotL) > 0.0;           // 485
-      success = success and (rotL.rhohb2 - ptotL) > 0.0;           // 486
-      success = success and (rotL.lambda - LL.lambda) > -1.e-6;    // 487
-      success = success and (RR.lambda - rotR.lambda) > -1.e-6;    // 488
+      // PLUTO uses `*=`, so every term is evaluated -- no short-circuit. We
+      // keep that and additionally record WHICH term rejected, which is pure
+      // instrumentation: the conjunction below is identical either way.
+      const bool cond[8] = {
+          (cd.vL[dir] - rotL.K[dir]) > -1.e-6,      // PLUTO 479
+          (rotR.K[dir] - cd.vR[dir]) > -1.e-6,      // PLUTO 480
+          (LL.lambda - rotL.v[dir]) < 0.0,          // PLUTO 482
+          (RR.lambda - rotR.v[dir]) > 0.0,          // PLUTO 483
+          (rotR.rhohb2 - ptotL) > 0.0,              // PLUTO 485
+          (rotL.rhohb2 - ptotL) > 0.0,              // PLUTO 486
+          (rotL.lambda - LL.lambda) > -1.e-6,       // PLUTO 487
+          (RR.lambda - rotR.lambda) > -1.e-6};      // PLUTO 488
+      bool success = true;
+      for (int c = 0; c < 8; ++c) {
+        if (not cond[c]) {
+          ++diagnostics().term_fail[static_cast<size_t>(c)];
+          success = false;
+        }
+      }
       rotL.fail = not success;                                     // 490
       return fun;
     };
@@ -682,6 +702,15 @@ struct HLLDSolver {
     {
       const double p_seed = seed_from_hll(hll.U);      // PLUTO 3e
       if (std::isfinite(p_seed) and p_seed > 0.0) {
+        // Instrumentation only: how far our KastaunEtAl-based seed sits from
+        // the HLLState::compute_ptot route that mirrors PLUTO's. p0 is still
+        // p_seed regardless, so this cannot alter the solution.
+        if (p0 > 0.0 and std::isfinite(p0)) {
+          ++diagnostics().seed_compared;
+          if (std::fabs(p_seed - p0) > 0.1 * p0) {
+            ++diagnostics().seed_disagree;
+          }
+        }
         p0 = p_seed;
       } else {
         ++diagnostics().seed_failed;
