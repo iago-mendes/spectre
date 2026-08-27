@@ -329,6 +329,19 @@ bool PrimitiveFromConservative<OrderedListOfPrimitiveRecoverySchemes,
 }
 }  // namespace grmhd::ValenciaDivClean
 
+
+// Explicit instantiation for the EOS type held by the HLLD boundary correction,
+// which seeds its total-pressure root-find with SpECTRE's production recovery
+// applied to the HLL average state (PLUTO step 3e). The .tpp defines
+// non-template helpers, so it cannot simply be included there.
+template std::optional<
+    grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PrimitiveRecoveryData>
+grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl::apply<
+    true, EquationsOfState::EquationOfState<true, 3>>(
+    double, double, double, double, double, double, double,
+    const EquationsOfState::EquationOfState<true, 3>&,
+    const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions&);
+
 #define RECOVERY(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define ERROR_ON_FAILURE(data) BOOST_PP_TUPLE_ELEM(1, data)
 

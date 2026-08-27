@@ -17,6 +17,9 @@
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail {
 
+// PLUTO Src/RMHD/hlld.c: "#ifndef HLLD_MAX_ITER / #define HLLD_MAX_ITER 20"
+constexpr int HLLD_MAX_ITER = 20;
+
 // Diagnostic counters. The oscillation excess of HLLD over HLLEM at high-order
 // reconstruction (7x on ST1/MC) has two candidate causes that only a count can
 // separate: the total-pressure root-find failing more often on the harder
@@ -27,8 +30,15 @@ namespace grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail {
 struct Diagnostics {
   size_t fan_attempts = 0;
   size_t rootfind_failed = 0;      // secant + sampled search both failed
-  size_t gate_rejected = 0;        // flux outside the physical envelope
-  size_t uniform_shortcut = 0;     // L == R, HLL is exact
+  // The single "rejected" counter cannot distinguish the two things that were
+  // changed together (the seed, and the in-loop admissibility test), so at
+  // |B| x8-x32 on CW it reported 99.9% without saying why. Split by cause:
+  size_t seed_failed = 0;          // SpECTRE recovery of the HLL average failed
+  size_t f0_bad = 0;               // f(p0) NaN or inadmissible at the seed
+  size_t fstar_abort = 0;          // trial pressure inadmissible mid-iteration
+  size_t iter_exhausted = 0;       // k > 7
+  size_t resid_growing = 0;        // |f| grew after k > 4
+  size_t converged = 0;            // accepted
   void reset() { *this = Diagnostics{}; }
 };
 inline Diagnostics& diagnostics() {
@@ -36,40 +46,7 @@ inline Diagnostics& diagnostics() {
   return d;
 }
 
-// Gate mode (env HLLD_GATE_MODE): "fallback" (default, current production
-// behaviour: replace the whole flux with HLL), or "clamp" (project only the
-// offending COMPONENT back onto the physical envelope, keeping the rest of the
-// fan). The gate is protective (see above) but it is BINARY, and it fires on
-// 9-44% of interfaces at 2nd order, so neighbouring interfaces can use
-// completely different fluxes. That inhomogeneity is itself a noise source,
-// which is why Radice & Rezzolla (THC, sec. 2 eq. 14) blend smoothly toward
-// Lax-Friedrichs rather than switching. "clamp" is the minimal smooth
-// alternative: same admissibility bound, smallest possible change to the flux.
-// UNTESTED as of this commit -- the comparison runs were staged but not run.
-inline bool gate_clamp() {
-  static const bool v = [] {
-    const char* e = std::getenv("HLLD_GATE_MODE");
-    return e != nullptr and std::string(e) == "clamp";
-  }();
-  return v;
-}
 
-// Diagnostic switch (env var HLLD_DISABLE_GATE=1). The gate fires on 3% of
-// interfaces at 1st order but 9-44% at 2nd order, so it is either causing the
-// high-order oscillation (by flipping neighbouring interfaces between the fan
-// and HLL) or merely reacting to it. Turning it off answers which: if the
-// oscillation gets WORSE the gate is protective, if it gets BETTER the gate is
-// the amplifier. Env var rather than an option so the comparison needs no
-// input-file changes and cannot silently alter production runs.
-// MEASURED (ST1, MonotonisedCentral, N=208): gate off -> oscillation 0.375 vs
-// 0.021 with the gate on, i.e. 18x WORSE. The gate is protective.
-inline bool gate_disabled() {
-  static const bool v = [] {
-    const char* e = std::getenv("HLLD_DISABLE_GATE");
-    return e != nullptr and e[0] == '1';
-  }();
-  return v;
-}
 
 // ideal-gas EOS helpers (Gamma threaded explicitly -- no mutable global state so
 // this is safe to call concurrently).  Match ref_hlld IdealEOS.
@@ -90,12 +67,12 @@ constexpr bool RIGHT = false;
 
 template <bool side, int dir>
 struct RecState {
-  enum { RHOB = 0, EPS, WVX, WVY, WVZ, BX, BY, BZ, YE };
+  enum { RHOB = 0, EPS, WVX, WVY, WVZ, BX, BY, BZ };
   std::array<double, NUM> U{}, F{}, R{};
   std::array<double, 4> b{}, u{};
   std::array<double, 2> lambda_all{};
   double gamma{};
-  double lambda{}, b2{}, press{}, rhoh{}, eps_tot{}, lorentzi{}, z2{}, ye{};
+  double lambda{}, b2{}, press{}, rhoh{}, eps_tot{}, lorentzi{}, z2{};
 
   std::array<double, 2> compute_max_characteristicsSR(
       const std::array<double, 9>& P) {
@@ -262,7 +239,6 @@ struct RecState {
     b[3] = (P[BZ] + b[0] * P[WVZ]) * lorentzi;
     press = eos_press(gamma, eps_tot, P[RHOB], P[EPS]);
     rhoh = press + eps_tot + P[RHOB];
-    ye = P[YE];
     U[DENS] = P[RHOB] * u[0];
     const double rhohW = (rhoh + b2) * u[0];
     const double ptot = press + 0.5 * b2;
@@ -289,21 +265,17 @@ struct RecState {
     F[SCX + dir] += ptot;
   }
 
+  // PLUTO 3d, hlld.c:226-238: R = lambda*U - F, with R[MXn] -= press.
+  // PLUTO carries the normal pressure OUTSIDE the flux (sweep->press), so its
+  // R[MXn] -= pL[i] is a separate line; our F already includes ptot in the
+  // normal momentum (F[SCX+dir] += ptot in the constructor above), so the
+  // subtraction is already contained in lambda*U - F and needs no extra term.
+  // This replaces Elias' analytic expansion of the same expression, which I
+  // verified component-by-component to be algebraically identical.
   void compute_jump() {
-    const double lv = lambda - u[1 + dir] * lorentzi;
-    R[DENS] = lv * U[DENS];
-    const double rhW = (rhoh + b2) * u[0];
-    const double blb = b[1 + dir] - lambda * b[0];
-    R[SCX] = lv * rhW * u[1] + b[1] * blb;
-    R[SCY] = lv * rhW * u[2] + b[2] * blb;
-    R[SCZ] = lv * rhW * u[3] + b[3] * blb;
-    const double ptot = press + 0.5 * b2;
-    R[SCX + dir] -= ptot;
-    R[UE] = lv * rhW * u[0] - lambda * ptot + b[0] * blb;
-    R[BBX] = lv * U[BBX] + U[BBX + dir] * u[1] * lorentzi;
-    R[BBY] = lv * U[BBY] + U[BBX + dir] * u[2] * lorentzi;
-    R[BBZ] = lv * U[BBZ] + U[BBX + dir] * u[3] * lorentzi;
-    R[TAUE] = R[UE] - R[DENS];
+    for (int nv = 0; nv < NUM; ++nv) {
+      R[nv] = lambda * U[nv] - F[nv];      // PLUTO 230-231
+    }
   }
 };
 
@@ -321,6 +293,8 @@ struct RotState {
   std::array<double, NUM> U{};
   std::array<double, 3> K{}, v{};
   double eta{}, rhohb2{}, lambda{};
+  // PLUTO Riemann_State::fail (hlld.c:42), set by HLLD_Fstar (hlld.c:490).
+  bool fail{};
   bool failed = false;
 
   template <bool side>
@@ -331,10 +305,11 @@ struct RotState {
     const double A = S.R[SX] - S.lambda * S.R[UE] + ptot * mlambda;
     const double G = S.R[BY] * S.R[BY] + S.R[BZ] * S.R[BZ];
     const double C = S.R[SY] * S.R[BY] + S.R[SZ] * S.R[BZ];
-    const double Q = -A - G + U[BX] * U[BX] * mlambda;
+    // PLUTO's Q (hlld.c:563) appears only inside its MAPLE verification
+    // comment, never in the computation; the dead local that mirrored it here
+    // is gone.
     const double X = U[BX] * (A * S.lambda * U[BX] + C) -
-                     (A + G) * (S.lambda * ptot + S.R[UE]);
-    (void)Q;
+                     (A + G) * (S.lambda * ptot + S.R[UE]);   // Eq. [30], 525
     v[VX] = (U[BX] * (A * U[BX] + C * S.lambda) - (S.R[SX] + ptot) * (G + A));
     v[VY] = (-(A + G - U[BX] * U[BX] * (1.0 - S.lambda * S.lambda)) * S.R[SY] +
              S.R[BY] * (C + U[BX] * (S.lambda * S.R[SX] - S.R[UE])));
@@ -349,9 +324,19 @@ struct RotState {
     const double Ai = 1. / A;
     U[BY] = -(S.R[BY] * (S.lambda * ptot + S.R[UE]) - U[BX] * S.R[SY]) * Ai;
     U[BZ] = -(S.R[BZ] * (S.lambda * ptot + S.R[UE]) - U[BX] * S.R[SZ]) * Ai;
-    double sB = -1.0;
-    if (U[BX] > 0.) sB = 1.0;
-    eta = sgneta * sB * std::sqrt(std::fabs(rhohb2));
+    // PLUTO hlld.c:541: `if (Pv->w < 0.0) return 0;` -- a negative enthalpy
+    // is a failure, not something to take the absolute value of. The old
+    // std::fabs() here silently manufactured a finite eta from an unphysical
+    // state and carried on; PLUTO bails. The flag is read where PLUTO reads
+    // its HLLD_GetRiemannState return value.
+    if (rhohb2 < 0.0) {
+      failed = true;
+      return;
+    }
+    failed = false;
+    double s = -1.0;                                    // PLUTO 577
+    if (U[BX] > 0.) s = 1.0;
+    eta = sgneta * s * std::sqrt(rhohb2);               // PLUTO 578-580: Pv->sw
     const double denom = 1. / (S.lambda * ptot + S.R[UE] + U[BX] * eta);
     K[VX] = (S.R[SX] + ptot + S.R[BX] * eta) * denom;
     K[VY] = (S.R[SY] + S.R[BY] * eta) * denom;
@@ -444,7 +429,7 @@ struct CDState {
 struct HLLState {
   std::array<double, NUM> U{}, F{};
   double gamma{};
-  double ye{}, ptot{}, ptot0{}, b2{};
+  double ptot{}, ptot0{}, b2{};
   static constexpr double c2p_tol = 1.e-12;
   bool failed = false;
 
@@ -557,41 +542,8 @@ struct HLLState {
     const double tmp = bq * bq - 4. * a * cq;
     const double desc = 0.5 * (std::fabs(tmp) + tmp);
     ptot0 = 0.5 * (-bq + std::sqrt(desc)) * lambdai;
-    ye = (RR.lambda * RR.U[DENS] * RR.ye - LL.lambda * LL.U[DENS] * LL.ye +
-          LL.F[DENS] * LL.ye - RR.F[DENS] * RR.ye) *
-         lambdai / U[DENS];
   }
 };
-
-template <typename F_t>
-bool SecantMethod(F_t& f, double& x0) {
-  constexpr int nmax = 20;
-  double x1 = x0 * 1.025;
-  const double xinit = x0;
-  double f0 = f(x0);
-  double f1 = f(x1);
-  const double finit = f0;
-  double delta_f = f1 - f0, delta_x = x1 - x0;
-  bool mask_f = (std::fabs(f1 - f0) > 1.e-12);
-  bool mask_x = (std::fabs(x1 - x0) > 1.e-12 * std::fabs(x0));
-  int nn = 0;
-  while (mask_f && mask_x && (nn < nmax)) {
-    ++nn;
-    f0 = f1;
-    x0 = x1;
-    if (mask_f) x1 -= f1 * delta_x / delta_f;
-    if (x1 < 0.) x1 = 1.e-3 * xinit;
-    f1 = f(x1);
-    delta_f = f1 - f0;
-    delta_x = x1 - x0;
-    mask_f = (std::fabs(f1) > 1.e-12);
-    mask_x = (std::fabs(delta_x) > 1.e-12 * std::fabs(x0));
-  }
-  x0 = x1;
-  const bool nan_mask = (f1 != f1) || (x0 != x0);
-  mask_f = mask_f || (std::fabs(f1) > std::fabs(finit));
-  return (mask_f && mask_x) || nan_mask;
-}
 
 template <int dir>
 struct HLLDSolver {
@@ -613,277 +565,208 @@ struct HLLDSolver {
     hll.gamma = gamma;
   }
 
+  // seed_from_hll maps the HLL average conserved state to a total pressure
+  // (PLUTO step 3e). Returning a non-finite value means "inversion failed",
+  // and we fall back as PLUTO does.
   std::tuple<std::array<double, NUM>, std::array<double, NUM>> solve(
       double ispeed = 0.) {
+    return solve(ispeed, [](const std::array<double, NUM>&) {
+      return std::numeric_limits<double>::quiet_NaN();
+    });
+  }
+
+  template <typename SeedFn>
+  std::tuple<std::array<double, NUM>, std::array<double, NUM>> solve(
+      double ispeed, const SeedFn& seed_from_hll) {
+    // PLUTO's HLLD_Fstar returns the jump in normal velocity across the
+    // contact AND evaluates whether the resulting state is physical, storing
+    // !success in PaL->fail. The iteration then abandons a trial pressure as
+    // soon as it produces an unphysical intermediate state, rather than
+    // discovering it afterwards. PLUTO stores it in PaL->fail; we store it
+    // in rotL.fail, recomputed on every HLLD_Fstar call exactly as PLUTO does.
     auto eq48 = [&](double ptotL) {
       rotL.update(LL, ptotL);
       rotR.update(RR, ptotL);
-      return cd.update(rotL, rotR, ptotL);
+      const double fun = cd.update(rotL, rotR, ptotL);
+      // PLUTO hlld.c:479-490, all eight terms, in PLUTO's order. Mapping:
+      //   PaL->Kx  = rotL.K[dir]      PaL->vx = rotL.v[dir]  (a-state velocity)
+      //   vxcL     = cd.vL[dir]       PaL->w  = rotL.rhohb2
+      //   PaL->Sa  = rotL.lambda      PaL->S  = LL.lambda    (fast speed)
+      // PLUTO ASSIGNS here (`=`, not `*=`), discarding the two
+      // HLLD_GetRiemannState return values accumulated at hlld.c:444-445; we
+      // discard rotL/rotR.failed likewise. Terms 5-6 subsume w < 0 for p > 0.
+      bool success = (cd.vL[dir] - rotL.K[dir]) > -1.e-6;      // PLUTO 479
+      success = success and (rotR.K[dir] - cd.vR[dir]) > -1.e-6;   // 480
+      success = success and (LL.lambda - rotL.v[dir]) < 0.0;       // 482
+      success = success and (RR.lambda - rotR.v[dir]) > 0.0;       // 483
+      success = success and (rotR.rhohb2 - ptotL) > 0.0;           // 485
+      success = success and (rotL.rhohb2 - ptotL) > 0.0;           // 486
+      success = success and (rotL.lambda - LL.lambda) > -1.e-6;    // 487
+      success = success and (RR.lambda - rotR.lambda) > -1.e-6;    // 488
+      rotL.fail = not success;                                     // 490
+      return fun;
     };
-    // DEGENERATE CASE: a (near-)uniform interface.
-    //
-    // The equation this solver roots is "the jump in the normal velocity across
-    // the contact vanishes". For u_L == u_R that jump is identically zero for
-    // EVERY trial total pressure, so f == 0, every value is a root, and the
-    // iteration returns wherever it happens to land -- after which the fan is
-    // built from a meaningless p_tot. Measured on a static uniform state with
-    // rho = 10, B = (2.4, 4, 4): the root-find returned p_tot = 5.11 where the
-    // exact value is 19.88, and the resulting flux was off by a factor of ten
-    // in a state where the answer is simply F(u).
-    //
-    // This is why a uniform region -- most of the RW test -- came out as noise
-    // rather than a constant: every interface there is degenerate. The HLL flux
-    // is EXACT whenever Delta u = 0 (its dissipation term carries a factor
-    // Delta u), and HLLD's advantage vanishes smoothly as Delta u -> 0, so
-    // returning it below a relative tolerance is both correct and lossless.
-    {
-      double jump_magnitude = 0.;
-      double state_magnitude = 0.;
-      for (int k = 0; k < NUM; ++k) {
-        jump_magnitude = std::max(jump_magnitude, std::fabs(RR.U[k] - LL.U[k]));
-        state_magnitude = std::max(state_magnitude,
-                                   std::max(std::fabs(LL.U[k]),
-                                            std::fabs(RR.U[k])));
-      }
-      if (jump_magnitude <= 1.0e-12 * std::max(state_magnitude, 1.0)) {
-        ++diagnostics().uniform_shortcut;
-        return std::make_tuple(hll.F, hll.U);
-      }
+    // NOTE: an explicit near-uniform shortcut used to sit here. PLUTO has no
+    // counterpart, and it is redundant: on a uniform interface eq. 48 gives
+    // f0 = 0, so PLUTO's `fabs(f0) > 1.e-12` guard (hlld.c:276) skips the root
+    // solver and builds the fan from the seed pressure, which is the right
+    // answer there. We keep that guard and drop the duplicate.
+    /* --------------------------------------------
+       3a. Handle different cases          [PLUTO hlld.c:166-181]
+       -------------------------------------------- */
+    // Supersonic interfaces never see the fan at all. PLUTO returns the
+    // upwind physical flux here, before the HLL average is even formed;
+    // ispeed generalises PLUTO's literal 0 to a moving interface.
+    if (LL.lambda >= ispeed) {          // PLUTO 171: SL[i] >= 0.0
+      return {LL.F, LL.U};              // PLUTO 173-174
+    }
+    if (RR.lambda <= ispeed) {          // PLUTO 176: SR[i] <= 0.0
+      return {RR.F, RR.U};              // PLUTO 178-179
     }
 
     ++diagnostics().fan_attempts;
+    // ---------------------------------------------------------------------
+    // Total-pressure root-find, transcribed from PLUTO Src/RMHD/hlld.c steps
+    // 3e-3g, keeping PLUTO's variable names so the two can be diffed directly:
+    // p0/f0 previous iterate, p/f current, dp the secant step, k the counter,
+    // switch_to_hll the fallback flag, HLLD_MAX_ITER the cap.
+    //
+    // Two things here replaced code inherited from Elias' reference:
+    //
+    //  * the SEED. PLUTO uses the total pressure of the HLL AVERAGE STATE from
+    //    its PRODUCTION conservative-to-primitive inversion. Ours used a
+    //    bespoke 15-step fixed point that was 36-44% off on the CW test at low
+    //    magnetisation, and no 7-iteration secant can recover from that. The
+    //    caller now supplies the seed (see Hlld.cpp) using SpECTRE's own
+    //    recovery scheme, which is the equivalent of "use the production
+    //    inversion" and keeps the EOS out of this header.
+    //
+    //  * the CONVERGENCE TEST. The reference is vectorised, so its masks are
+    //    SIMD lane predicates and it requires mask_f AND mask_x; PLUTO accepts
+    //    EITHER |dp| < 1e-5 p OR |f| < 1e-6, and that difference alone made us
+    //    declare failure where PLUTO converges.
+    //
+    // On failure we do exactly what PLUTO does -- take the HLL flux. We do NOT
+    // search for another root; that idea, and why it is dangerous (eq.48 has
+    // several roots plus poles, and the wrong branch gives a superluminal
+    // contact), is recorded in meetings/BACKLOG.md as experiment B.
+    // ---------------------------------------------------------------------
     hll.compute_ptot();
-    ptot = hll.ptot;
-    bool mask_p = LL.U[BBX + dir] * LL.U[BBX + dir] / ptot < 0.01;
-    mask_p = mask_p || hll.failed;
-    if (mask_p) ptot = hll.ptot0;
-    bool mask_failed = SecantMethod(eq48, ptot);
-    // The secant above is unsafeguarded: it takes an unbounded step, and
-    // if that
-    // lands at ptot < 0 it resets to 1e-3 * (initial guess) and usually
-    // cannot
-    // recover within nmax. The reference implementations (Elias/hlld.hh and
-    // PLUTO) use the same bare secant and share this failure mode -- it is not
-    // a porting bug, it is simply never exercised on the states where it bites.
-    //
-    // On the stationary-contact CW test it bites badly: at |B| x0.5, x1 and
-    // x8-x32 the secant diverges, mask_failed fires, and HLLD silently returns
-    // its internal HLL flux -- so the contact smears instead of being captured
-    // exactly (see Test_Hlld.cpp, test_hlld_reproduces_a_stationary_contact).
-    //
-    // The residual is smooth and monotone with a single sign change, and the
-    // root sits at the analytically known total pressure (verified to 1e-13 in
-    // that test), which is the ideal case for a BRACKETED method. So when the
-    // secant fails, bracket the root by expanding around the initial guess and
-    // finish with bisection, which cannot leave the bracket and converges
-    // unconditionally. Only if no sign change exists at all do we give up and
-    // fall back to HLL.
-    // Do not trust SecantMethod's own verdict: it returns
-    // (mask_f && mask_x) || nan_mask, so an iteration that stalls in x
-    // (mask_x false) reports SUCCESS no matter how large the residual is.
-    // That is how a diverged root reaches the fan construction unnoticed.
-    // Judge convergence by the residual itself.
-    const double residual_after_secant = std::fabs(eq48(ptot));
-    const double residual_tolerance =
-        1.0e-9 * (1.0 + std::fabs(hll.ptot));
-    if (mask_failed or not(residual_after_secant < residual_tolerance)) {
-      // Two root shapes occur here, and only one of them can be bracketed:
-      //  * at low/moderate field the residual CROSSES zero -- bisection works;
-      //  * at high field it TOUCHES zero from below (f(412) = -10.4,
-      //    f(416.28) = 0, f(420) = -0.41 for the CW state at |B| x8), so no
-      //    sign change exists and any bracketing method fails.
-      // The residual also has a near-pole just below the root, which is what
-      // sends the unsafeguarded secant to infinity in the first place.
-      //
-      // Sample |f| on a logarithmic grid spanning the plausible range of the
-      // total pressure, take the best sample, and refine locally -- by
-      // bisection if the neighbours bracket a sign change, otherwise by
-      // golden-section on |f|. Sampling is immune to both poles and tangency,
-      // and this path only runs when the fast secant has already failed.
-      // Equation 48 has MORE THAN ONE zero. Taking the globally best sample
-      // locks onto whichever one happens to have the smallest |f|, and that is
-      // often a spurious root hundreds of times below the physical pressure
-      // (measured: ptot = 1.57 against an HLL estimate of 657, converged to
-      // residual 1e-16 and passing every admissibility mask, yet producing a
-      // flux far outside the range the physical fluxes can reach). The
-      // physical root is the one near the HLL total pressure, so search
-      // OUTWARD from that seed and keep the first root found on either side.
-      const double seed = std::max(hll.ptot, 1.0e-30);
-      constexpr int num_samples = 400;
-      const double log_lo = std::log(seed * 1.0e-4);
-      const double log_hi = std::log(seed * 1.0e2);
-      double best_x = ptot;
-      int best_index = -1;
-      std::array<double, num_samples> xs{};
-      std::array<double, num_samples> fs{};
-      for (int s = 0; s < num_samples; ++s) {
-        const double x =
-            std::exp(log_lo + (log_hi - log_lo) * s / (num_samples - 1));
-        xs[static_cast<size_t>(s)] = x;
-        fs[static_cast<size_t>(s)] = eq48(x);
-      }
-      double best_abs_f = std::numeric_limits<double>::max();
-      for (int s = 0; s < num_samples; ++s) {
-        const size_t si = static_cast<size_t>(s);
-        if (std::isfinite(fs[si]) and std::fabs(fs[si]) < best_abs_f) {
-          best_abs_f = std::fabs(fs[si]);
-          best_index = s;
-          best_x = xs[si];
-        }
-      }
-      if (best_index >= 0) {
-        const size_t bi = static_cast<size_t>(best_index);
-        double lo = bi > 0 ? xs[bi - 1] : xs[bi];
-        double hi = bi + 1 < num_samples ? xs[bi + 1] : xs[bi];
-        const double f_lo_s = bi > 0 ? fs[bi - 1] : fs[bi];
-        const double f_hi_s = bi + 1 < num_samples ? fs[bi + 1] : fs[bi];
-        if (std::isfinite(f_lo_s) and std::isfinite(f_hi_s) and
-            f_lo_s * f_hi_s < 0.0) {
-          double f_lo = f_lo_s;
-          for (int bisect = 0; bisect < 100; ++bisect) {
-            const double mid = 0.5 * (lo + hi);
-            const double f_mid = eq48(mid);
-            if (f_mid == 0.0 or (hi - lo) < 1.0e-15 * std::fabs(mid)) {
-              lo = mid;
-              hi = mid;
-              break;
-            }
-            if (f_lo * f_mid < 0.0) {
-              hi = mid;
-            } else {
-              lo = mid;
-              f_lo = f_mid;
-            }
-          }
-          best_x = 0.5 * (lo + hi);
-        } else {
-          // Tangential root: minimise |f| by golden section on [lo, hi].
-          constexpr double inv_phi = 0.6180339887498949;
-          double c = hi - inv_phi * (hi - lo);
-          double d = lo + inv_phi * (hi - lo);
-          double fc = std::fabs(eq48(c));
-          double fd = std::fabs(eq48(d));
-          for (int it = 0; it < 200 and (hi - lo) > 1.0e-15 * std::fabs(hi);
-               ++it) {
-            if (fc < fd) {
-              hi = d;
-              d = c;
-              fd = fc;
-              c = hi - inv_phi * (hi - lo);
-              fc = std::fabs(eq48(c));
-            } else {
-              lo = c;
-              c = d;
-              fc = fd;
-              d = lo + inv_phi * (hi - lo);
-              fd = std::fabs(eq48(d));
-            }
-          }
-          best_x = 0.5 * (lo + hi);
-        }
-        const double final_residual = std::fabs(eq48(best_x));
-        if (final_residual < residual_tolerance) {
-          ptot = best_x;
-          eq48(ptot);
-          mask_failed = false;
+    double p0 = hll.ptot;
+    {
+      const double p_seed = seed_from_hll(hll.U);      // PLUTO 3e
+      if (std::isfinite(p_seed) and p_seed > 0.0) {
+        p0 = p_seed;
+      } else {
+        ++diagnostics().seed_failed;
+        if (LL.U[BBX + dir] * LL.U[BBX + dir] / p0 < 0.01 or hll.failed) {
+          p0 = hll.ptot0;                              // PLUTO's B -> 0 branch
         }
       }
     }
-    rotL.compute_cons(LL, ptot);
-    rotR.compute_cons(RR, ptot);
-    cd.compute_cons(rotL, rotR, ptot);
-    mask_failed = mask_failed || hll.failed;
-    mask_failed = mask_failed || ((cd.vL[dir] - rotL.K[dir]) < -1.e-6);
-    mask_failed = mask_failed || ((rotR.K[dir] - cd.vR[dir]) < -1.e-6);
-    mask_failed = mask_failed || ((rotL.lambda - rotL.v[dir]) > 0.0);
-    mask_failed = mask_failed || ((rotR.lambda - rotR.v[dir]) < 0.0);
-    mask_failed = mask_failed || ((rotL.rhohb2 - ptot) < 0.0);
-    mask_failed = mask_failed || ((rotR.rhohb2 - ptot) < 0.0);
-    mask_failed = mask_failed || ((rotL.lambda - LL.lambda) < -1.e-6);
-    mask_failed = mask_failed || ((RR.lambda - rotR.lambda) < -1.e-6);
-    mask_failed = mask_failed || rotL.failed || rotR.failed;
-    if (mask_failed) {
-      ++diagnostics().rootfind_failed;
+    const double pguess = p0;
+    (void)pguess;
+    bool switch_to_hll = false;
+    double p = p0;
+    double f0 = eq48(p0);                              // PLUTO 3f
+    if (f0 != f0 or rotL.fail) {
+      switch_to_hll = true;
+      ++diagnostics().f0_bad;
     }
+    int k = 0;                                         // PLUTO 3g
+    if (std::fabs(f0) > 1.e-12 and not switch_to_hll) {
+      p = 1.025 * p0;
+      double f = f0;
+      for (k = 1; k < HLLD_MAX_ITER; ++k) {
+        f = eq48(p);
+        if (f != f or rotL.fail or (k > 7) or
+            (std::fabs(f) > std::fabs(f0) and k > 4)) {
+          auto& dg = diagnostics();
+          if (f != f or rotL.fail) {
+            ++dg.fstar_abort;
+          } else if (k > 7) {
+            ++dg.iter_exhausted;
+          } else {
+            ++dg.resid_growing;
+          }
+          switch_to_hll = true;
+          break;
+        }
+        const double dp = (p - p0) / (f - f0) * f;
+        p0 = p;
+        f0 = f;
+        p -= dp;
+        if (p < 0.0) {
+          p = 1.e-6;
+        }
+        if (std::fabs(dp) < 1.e-5 * p or std::fabs(f) < 1.e-6) {
+          break;
+        }
+      }
+    } else {
+      p = p0;
+    }
+    ptot = p;
 
-    std::array<double, NUM> flux{}, cons{};
-    const bool maskLL = (LL.lambda > ispeed);
-    const bool maskrotL = (rotL.lambda > ispeed - 1.e-6);
-    const bool maskCD = (cd.lambda > ispeed);
-    const bool maskrotR = (rotR.lambda > ispeed + 1.e-6);
-    const bool maskRR = (RR.lambda > ispeed);
-    const bool mask1 = (!maskLL) && maskrotL;
-    const bool mask2 = (!maskrotL) && maskCD;
-    const bool mask3 = (!maskCD) && maskrotR;
-    const bool mask4 = (!maskrotR) && maskRR;
-    const bool mask5 = (!maskRR);
-    if (mask1)
-      for (int i = 0; i < NUM; ++i) {
-        flux[i] = LL.F[i] + LL.lambda * (rotL.U[i] - LL.U[i]);
-        cons[i] = rotL.U[i];
-      }
-    if (mask2)
-      for (int i = 0; i < NUM; ++i) {
-        flux[i] = LL.F[i] + LL.lambda * (rotL.U[i] - LL.U[i]) +
-                  rotL.lambda * (cd.UL[i] - rotL.U[i]);
-        cons[i] = cd.UL[i];
-      }
-    if (mask3)
-      for (int i = 0; i < NUM; ++i) {
-        flux[i] = RR.F[i] + RR.lambda * (rotR.U[i] - RR.U[i]) +
-                  rotR.lambda * (cd.UR[i] - rotR.U[i]);
-        cons[i] = cd.UR[i];
-      }
-    if (mask4) {
-      for (int i = 0; i < NUM; ++i)
-        flux[i] = RR.F[i] + RR.lambda * (rotR.U[i] - RR.U[i]);
-      cons = rotR.U;
-    }
-    if (mask_failed) {
-      flux = hll.F;
-      cons = hll.U;
-    }
-    if (maskLL) {
-      flux = LL.F;
-      cons = LL.U;
-    }
-    if (mask5) {
-      flux = RR.F;
-      cons = RR.U;
-    }
-    // Final admissibility gate. Everything above -- the secant, the sampled
-    // root-find, the wave-fan masks -- can only ever be as trustworthy as the
-    // total pressure it is built on, and equation 48 has several zeros. A
-    // spurious one converges to machine precision and satisfies every mask,
-    // yet yields a flux far outside anything the physical fluxes can produce;
-    // that is what showed up as scattered nonsense in the RW and Balsara-2
-    // profiles, where HLLD was visibly WORSE than HLL rather than sharper.
+    /* ----  too many iter ? --> use HLL ----      [PLUTO hlld.c:303-315] */
+    // rotL.fail carries the verdict of the LAST HLLD_Fstar call, exactly as
+    // PLUTO's PaL.fail does. PLUTO does NOT re-evaluate Fstar at the final p,
+    // so neither do we -- the a/c states are rebuilt at p below instead, via
+    // HLLD_GetAState / HLLD_GetCState, which is what PLUTO does too.
     //
-    // So check the answer instead of trusting the path to it: a numerical flux
-    // must lie between the two physical fluxes, widened by the most
-    // dissipation the fan can add, |lambda|_max * |Delta u|. HLL satisfies this
-    // identically (verified over random states in Test_Hlld.cpp), so falling
-    // back to it is always admissible. This makes "in the worst case HLLD
-    // degrades to HLL" a property of the solver rather than a hope.
-    const double max_speed =
-        std::max(std::fabs(LL.lambda), std::fabs(RR.lambda));
-    for (int i = 0; i < NUM; ++i) {
-      const double dissipation = max_speed * std::fabs(RR.U[i] - LL.U[i]);
-      const double lower = std::min(LL.F[i], RR.F[i]) - dissipation;
-      const double upper = std::max(LL.F[i], RR.F[i]) + dissipation;
-      const double tolerance =
-          1.0e-8 * (1.0 + std::fabs(lower) + std::fabs(upper));
-      if (not std::isfinite(flux[i]) or flux[i] < lower - tolerance or
-          flux[i] > upper + tolerance) {
-        ++diagnostics().gate_rejected;
-        if (gate_disabled() and std::isfinite(flux[i])) {
-          continue;  // diagnostic mode: count it but keep the fan flux
+    // An admissibility gate on the assembled flux used to sit at the end of
+    // this function. It is gone: PLUTO has no counterpart, and experiment 1b
+    // measured the identical test against PLUTO's own fan (hlld.c:321-353) --
+    // PLUTO violates the envelope on up to 22% of interfaces while remaining
+    // stable and accurate, so the condition is not a physical requirement and
+    // the gate manufactured spurious fallbacks. PLUTO's whole fallback policy
+    // is these two lines.
+    if (rotL.fail) {                            // PLUTO 305
+      switch_to_hll = true;
+    }
+    if (switch_to_hll) {                        // PLUTO 306
+      ++diagnostics().rootfind_failed;          // PLUTO 308-310 COUNT_FAILURES
+      return {hll.F, hll.U};                    // PLUTO 312-314
+    }
+    ++diagnostics().converged;
+
+    /* -- ok, solution should be reliable --       [PLUTO hlld.c:317-406] */
+    // PLUTO branches with plain if/else on Sa and Sc; the mask ladder that
+    // used to be here came from Elias' DataVector-vectorised reference, where
+    // branching is impossible. This solver is scalar, so PLUTO's control flow
+    // ports directly. ispeed generalises PLUTO's literal 0 to a moving
+    // interface (SpECTRE infrastructure); ispeed == 0 reproduces PLUTO.
+    std::array<double, NUM> flux{}, cons{};
+    if (rotL.lambda >= ispeed - 1.e-6) {          // PLUTO 359: PaL.Sa >= -1.e-6
+      rotL.compute_cons(LL, ptot);                // PLUTO 361: HLLD_GetAState
+      for (int i = 0; i < NUM; ++i) {             // PLUTO 365-367
+        flux[i] = LL.F[i] + LL.lambda * (rotL.U[i] - LL.U[i]);
+      }
+      cons = rotL.U;
+    } else if (rotR.lambda <= ispeed + 1.e-6) {   // PLUTO 370: PaR.Sa <= 1.e-6
+      rotR.compute_cons(RR, ptot);                // PLUTO 372
+      for (int i = 0; i < NUM; ++i) {             // PLUTO 376-378
+        flux[i] = RR.F[i] + RR.lambda * (rotR.U[i] - RR.U[i]);
+      }
+      cons = rotR.U;
+    } else {                                      // PLUTO 381
+      // HLLD_GetCState calls HLLD_GetAState on both sides internally
+      // (PLUTO 634-635, 676, 681), so both a-states are rebuilt first here.
+      rotL.compute_cons(LL, ptot);
+      rotR.compute_cons(RR, ptot);
+      cd.compute_cons(rotL, rotR, ptot);          // PLUTO 383: HLLD_GetCState
+      if (cd.lambda > ispeed) {                   // PLUTO 384: Sc > 0.0
+        for (int i = 0; i < NUM; ++i) {           // PLUTO 389-392
+          flux[i] = LL.F[i] + LL.lambda * (rotL.U[i] - LL.U[i]) +
+                    rotL.lambda * (cd.UL[i] - rotL.U[i]);
         }
-        if (gate_clamp() and std::isfinite(flux[i])) {
-          flux[i] = std::min(std::max(flux[i], lower), upper);
-          continue;
+        cons = cd.UL;
+      } else {                                    // PLUTO 395
+        for (int i = 0; i < NUM; ++i) {           // PLUTO 400-403
+          flux[i] = RR.F[i] + RR.lambda * (rotR.U[i] - RR.U[i]) +
+                    rotR.lambda * (cd.UR[i] - rotR.U[i]);
         }
-        return {hll.F, hll.U};
+        cons = cd.UR;
       }
     }
     return {flux, cons};

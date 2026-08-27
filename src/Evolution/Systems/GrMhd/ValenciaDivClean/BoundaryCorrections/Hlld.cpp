@@ -3,6 +3,10 @@
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hlld.hpp"
 
+#include <string>
+
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAl.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOptions.hpp"
 #include "Parallel/Printf/Printf.hpp"
 
 #include <array>
@@ -444,24 +448,24 @@ void Hlld::dg_boundary_terms(
     }
   }
 
-  // Periodic diagnostic report. Ratios (not absolute counts) are the signal:
-  // if gate_rejected / fan_attempts is ~0 then the admissibility gate is NOT
-  // responsible for the high-order oscillation excess, and likewise for the
-  // root-find. Printed on a geometric schedule to keep the log small.
+  // Periodic diagnostic report on a geometric schedule to keep the log small.
+  // Ratios (not absolute counts) are the signal: rootfind_failed/fan_attempts
+  // is our fallback-to-HLL rate, directly comparable to PLUTO's
+  // COUNT_FAILURES totfail/totzones (hlld.c:103-110, 308-310), and the split
+  // counters say WHICH of PLUTO's four exit conditions (hlld.c:285) fired.
   {
     auto& diag = hlld_detail::diagnostics();
     static size_t next_report = 100000;
     if (diag.fan_attempts > next_report) {
       Parallel::printf(
-          "HLLD diag: attempts=%zu rootfind_failed=%zu (%.4f%%) "
-          "gate_rejected=%zu (%.4f%%) uniform=%zu\n",
+          "HLLD diag: attempts=%zu fellback=%zu (%.4f%%) | seed_failed=%zu "
+          "f0_bad=%zu fstar_abort=%zu iter_exhausted=%zu resid_growing=%zu "
+          "converged=%zu\n",
           diag.fan_attempts, diag.rootfind_failed,
           100.0 * static_cast<double>(diag.rootfind_failed) /
               static_cast<double>(std::max<size_t>(diag.fan_attempts, 1)),
-          diag.gate_rejected,
-          100.0 * static_cast<double>(diag.gate_rejected) /
-              static_cast<double>(std::max<size_t>(diag.fan_attempts, 1)),
-          diag.uniform_shortcut);
+          diag.seed_failed, diag.f0_bad, diag.fstar_abort,
+          diag.iter_exhausted, diag.resid_growing, diag.converged);
       next_report *= 4;
     }
   }
@@ -510,8 +514,7 @@ void Hlld::dg_boundary_terms(
                                    lorentz * proj(vel, 2),
                                    proj(bfield, 0),
                                    proj(bfield, 1),
-                                   proj(bfield, 2),
-                                   0.0};
+                                   proj(bfield, 2)};
     };
     const auto p_int_arr =
         build(rest_mass_density_int, specific_internal_energy_int,
@@ -519,8 +522,43 @@ void Hlld::dg_boundary_terms(
     const auto p_ext_arr =
         build(rest_mass_density_ext, specific_internal_energy_ext,
               spatial_velocity_ext, tilde_b_ext, lorentz_factor_ext);
-    const auto [flux, cons] =
-        hd::HLLDSolver<0>(p_int_arr, p_ext_arr, gamma).solve(0.0);
+    // PLUTO step 3e seeds the total-pressure root-find with the total pressure
+    // of the HLL AVERAGE STATE, taken from its production conservative-to-
+    // primitive inversion. The equivalent here is SpECTRE's own recovery
+    // scheme, used pointwise on the HLL average -- rather than an inversion
+    // written specially for HLLD, which is what this replaces.
+    const auto seed_from_hll = [&equation_of_state](
+                                   const std::array<double, hd::NUM>& u) {
+      const double tilde_d = u[hd::DENS];
+      const double tilde_tau = u[hd::TAUE];
+      if (not(tilde_d > 0.0) or not std::isfinite(tilde_tau)) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      const double s_sq = u[hd::SCX] * u[hd::SCX] + u[hd::SCY] * u[hd::SCY] +
+                          u[hd::SCZ] * u[hd::SCZ];
+      const double b_sq = u[hd::BBX] * u[hd::BBX] + u[hd::BBY] * u[hd::BBY] +
+                          u[hd::BBZ] * u[hd::BBZ];
+      const double s_dot_b = u[hd::SCX] * u[hd::BBX] + u[hd::SCY] * u[hd::BBY] +
+                             u[hd::SCZ] * u[hd::BBZ];
+      const auto recovered = grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::
+          KastaunEtAl::apply<true>(
+              1.0e-8, tilde_tau, s_sq, s_dot_b, b_sq, tilde_d, 0.0,
+              equation_of_state,
+              grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions{});
+      if (not recovered.has_value()) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      // PLUTO HLLD_TotalPressure: p_gas + 0.5 (B^2 (1 - v^2) + (v.B)^2)
+      const double w = recovered->lorentz_factor;
+      const double v_sq = 1.0 - 1.0 / (w * w);
+      const double rho_h_w_sq = recovered->rho_h_w_squared;
+      const double v_dot_b =
+          rho_h_w_sq > 0.0 ? s_dot_b / (rho_h_w_sq + b_sq) : 0.0;
+      return recovered->pressure +
+             0.5 * (b_sq * (1.0 - v_sq) + v_dot_b * v_dot_b);
+    };
+    const auto [flux, cons] = hd::HLLDSolver<0>(p_int_arr, p_ext_arr, gamma)
+                                  .solve(0.0, seed_from_hll);
     bool all_finite = true;
     for (size_t k = 0; k < hd::NUM; ++k) {
       all_finite = all_finite and std::isfinite(flux[k]);
