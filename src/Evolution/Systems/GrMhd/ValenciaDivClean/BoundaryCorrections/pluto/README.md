@@ -48,7 +48,17 @@ output_log.c  rmhd_energy_solve.c  rmhd_pressure_fix.c  set_indexes.c  tools.c
    Each is marked `/* SPECTRE-MOD */` at the definition site.
    *Verified*: 8 threads solving concurrently all reproduce the reference flux.
 
-3. **`definitions.h`**: `COUNT_FAILURES` and `ENABLE_HLLEM` removed (both were
+3. **`Where()` guarded against a NULL grid** (`debug_tools.c`). PLUTO's
+   `ConsToPrim` legitimately fails on some states and falls back internally
+   (`PRESSURE_FIX`), calling `Where(i, NULL)` on the way to report which zone.
+   `Where` dereferences a `static Grid*` that is only set by an earlier
+   `Where(i, grid)` registration call -- which never happens here, because we
+   embed PLUTO without a Grid. Every evolution segfaulted the first time
+   `ConsToPrim` failed. The guard returns early instead; the function is purely
+   diagnostic. Also made `_Thread_local`. NOTE this path is NOT reached by the
+   unit test, whose interface states are clean -- only by real evolutions.
+
+4. **`definitions.h`**: `COUNT_FAILURES` and `ENABLE_HLLEM` removed (both were
    our additions). `COUNT_FAILURES` made `RiemannCheck` write `riemann_check.dat`
    from every process every step, which is unacceptable inside SpECTRE.
 

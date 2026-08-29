@@ -566,7 +566,8 @@ void Where (int i, Grid *grid)
 {
   int    ii=0, jj=0, kk=0;
   double x1, x2, x3;
-  static Grid *grid_copy;
+  /* SPECTRE-MOD: _Thread_local (SpECTRE calls PLUTO from many threads). */
+  static _Thread_local Grid *grid_copy;
 
 /* --------------------------------------------------
     Keep a local copy of grid for subsequent calls
@@ -576,6 +577,15 @@ void Where (int i, Grid *grid)
     grid_copy = grid;
     return;
   }
+
+/* SPECTRE-MOD: SpECTRE embeds PLUTO without a Grid, so no grid is ever
+   registered and grid_copy stays NULL. Where() is purely diagnostic -- it
+   reports which zone a failure occurred in -- and must not dereference a grid
+   that does not exist. This path IS reached in normal operation: PLUTO's
+   ConsToPrim fails on some states and falls back internally (PRESSURE_FIX),
+   calling Where() on the way. Without this guard every evolution segfaults
+   the first time that happens. */
+  if (grid_copy == NULL) return;
 
   #ifdef CH_SPACEDIM
    if (g_intStage < 0) return; /* HOT FIX used by CHOMBO
