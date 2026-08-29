@@ -6,7 +6,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <limits>
+#include <thread>
 #include <vector>
 
 #include "DataStructures/DataVector.hpp"
@@ -84,10 +86,79 @@ void test_matches_reference_pluto() {
   }
 }
 
+// Regression guard for the bug that made every A2 evolution wrong: PLUTO keeps
+// lazily-allocated function statics (hll_speed.c's SL/SR scratch, mappers.c's
+// enthalpy buffer, arrays.c's allocation registry, ...). SpECTRE runs Charm++
+// in SMP mode, so unless every one of them is _Thread_local, worker threads
+// race and the HLL wave speeds come out garbage. The symptom was NOT a crash:
+// it was a plausible-looking, slightly smeared profile and ~19 MB of
+// "RMHD_EnergySolve() failed" per run.
+//
+// The test must give each thread a DIFFERENT state. An earlier version handed
+// every thread the same state, which cannot detect these races at all --
+// racing threads simply write identical values. Verified to have real
+// discriminating power: reverting just the hll_speed.c fix makes this report
+// deviations up to 1e-1.
+void test_thread_safety() {
+  const ScopedFpeState fpe_off(false);
+  constexpr int num_threads = 8;
+  constexpr int npts = 169;
+  const auto make_state = [](int seed, std::vector<double>* l,
+                             std::vector<double>* r) {
+    std::mt19937 gen(static_cast<unsigned>(seed) + 1u);
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    std::array<double, 8> sl{}, sr{};
+    sl[0] = 0.5 + dist(gen); sr[0] = 0.5 + dist(gen);
+    for (size_t k = 1; k < 4; ++k) {
+      sl[k] = -0.3 + 0.6 * dist(gen); sr[k] = -0.3 + 0.6 * dist(gen);
+    }
+    sl[4] = -1.0 + 2.0 * dist(gen); sr[4] = sl[4];   // normal B is continuous
+    for (size_t k = 5; k < 7; ++k) {
+      sl[k] = -1.0 + 2.0 * dist(gen); sr[k] = -1.0 + 2.0 * dist(gen);
+    }
+    sl[7] = 0.5 + dist(gen); sr[7] = 0.5 + dist(gen);
+    l->resize(npts * 8); r->resize(npts * 8);
+    for (int i = 0; i < npts; ++i) {
+      for (size_t k = 0; k < 8; ++k) {
+        (*l)[static_cast<size_t>(i) * 8 + k] = gsl::at(sl, k);
+        (*r)[static_cast<size_t>(i) * 8 + k] = gsl::at(sr, k);
+      }
+    }
+  };
+  // single-threaded reference, one per distinct state
+  std::vector<std::vector<double>> reference(num_threads);
+  for (int t = 0; t < num_threads; ++t) {
+    std::vector<double> l, r, f(npts * 8), pr(npts);
+    make_state(t, &l, &r);
+    pluto_hlld_flux(npts, l.data(), r.data(), 5.0 / 3.0, f.data(), pr.data());
+    reference[static_cast<size_t>(t)] = f;
+  }
+  std::vector<double> worst(num_threads, 0.0);
+  std::vector<std::thread> threads;
+  for (int t = 0; t < num_threads; ++t) {
+    threads.emplace_back([t, &reference, &worst, &make_state]() {
+      std::vector<double> l, r, f(npts * 8), pr(npts);
+      make_state(t, &l, &r);
+      pluto_hlld_flux(npts, l.data(), r.data(), 5.0 / 3.0, f.data(), pr.data());
+      double w = 0.0;
+      for (size_t i = 0; i < f.size(); ++i) {
+        const double ref = reference[static_cast<size_t>(t)][i];
+        w = std::max(w, std::abs(f[i] - ref) / (1.0 + std::abs(ref)));
+      }
+      worst[static_cast<size_t>(t)] = w;
+    });
+  }
+  for (auto& th : threads) { th.join(); }
+  for (int t = 0; t < num_threads; ++t) {
+    CHECK(worst[static_cast<size_t>(t)] == 0.0);
+  }
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.PlutoHlld",
                   "[Unit][GrMhd]") {
   PUPable_reg(grmhd::ValenciaDivClean::BoundaryCorrections::PlutoHlld);
   test_matches_reference_pluto();
+  test_thread_safety();
 
   MAKE_GENERATOR(gen);
   using system = grmhd::ValenciaDivClean::System;
