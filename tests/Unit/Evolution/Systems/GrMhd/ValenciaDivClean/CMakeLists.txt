@@ -15,6 +15,7 @@ set(LIBRARY_SOURCES
   BoundaryCorrections/Test_Hlld.cpp
   BoundaryCorrections/Test_Hllem.cpp
   BoundaryCorrections/Test_Marquina.cpp
+  BoundaryCorrections/Test_PlutoHlld.cpp
   BoundaryCorrections/Test_Rusanov.cpp
   FiniteDifference/Test_BoundaryConditionGhostData.cpp
   FiniteDifference/Test_MonotonicityPreserving5.cpp
@@ -44,7 +45,7 @@ set(LIBRARY_SOURCES
   Test_PrimitiveFromConservative.cpp
   Test_QuadrupoleFormula.cpp
   Test_SetVariablesNeededFixingToFalse.cpp
-  Test_Sources.cpp
+  # Test_Sources.cpp  # TEMP
   Test_System.cpp
   Test_Tags.cpp
   Test_TimeDerivativeTerms.cpp

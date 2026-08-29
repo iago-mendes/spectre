@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <random>
 #include <string>
+#include <vector>
 
 #include "DataStructures/TaggedTuple.hpp"
 #include "Evolution/BoundaryCorrection.hpp"
@@ -129,6 +130,84 @@ void test_hlld_flux_stays_within_physical_bounds() {
                    "violations: %zu\n",
                    violations, worst_excess, hll_violations);
   CHECK(violations == 0);
+}
+
+
+// Print the fan's internal state for ST1's initial discontinuity, so it can be
+// diffed against PLUTO on the SAME interface. At t=0 this is the only
+// non-trivial interface in the problem, and both codes see identical L/R
+// states, so any disagreement in p_tot or in the returned flux is a pure
+// solver difference with no grid, reconstruction or time-stepping involved.
+void print_st1_interface() {
+  namespace hd = grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail;
+  const ScopedFpeState fpe(false);
+  const double gamma = 2.0;
+  // ST1: rho, p, v, B  ->  RecState order {rho, eps, W*v, B, Ye}
+  // eps = p / ((gamma-1) rho);  v = 0 so W = 1.
+  const std::array<double, 9> L{1.0, 1.0, 0.0, 0.0, 0.0, 0.5, 1.0, 0.0, 0.0};
+  const std::array<double, 9> R{0.125, 0.8, 0.0, 0.0, 0.0, 0.5, -1.0, 0.0, 0.0};
+  hd::HLLDSolver<0> solver(L, R, gamma);
+  const auto [flux, cons] = solver.solve(0.0);
+  Parallel::printf("\nST1_INTERFACE ptot=%.12e\n", solver.ptot);
+  Parallel::printf("ST1_INTERFACE SL=%.12e SR=%.12e\n", solver.LL.lambda,
+                   solver.RR.lambda);
+  Parallel::printf("ST1_INTERFACE SaL=%.12e SaR=%.12e\n", solver.rotL.lambda,
+                   solver.rotR.lambda);
+  Parallel::printf("ST1_INTERFACE Sc=%.12e\n", solver.cd.lambda);
+  const char* nm[9] = {"DENS","UE","SCX","SCY","SCZ","BBX","BBY","BBZ","TAUE"};
+  for (int k = 0; k < hd::NUM; ++k) {
+    Parallel::printf("ST1_INTERFACE F[%s]=%.12e\n", nm[k], flux[k]);
+  }
+}
+
+
+// CROSS-FEED: replay the interfaces where our fan VIOLATES the eigenvalue
+// ordering condition, harvested with a stride from a live ST1/MC run.
+//
+// The fact to explain: PLUTO applies the identical test with the identical
+// -1e-6 tolerance and trips it 0 times in 479,000 interfaces, while ours trips
+// 5.9-7.3% with margins of -0.24 to -0.66 (gross, not marginal). Same test,
+// same threshold => the intermediate states must differ. This dumps every
+// intermediate quantity so the diverging one can be identified.
+void cross_feed_rejecting_interfaces() {
+  namespace hd = grmhd::ValenciaDivClean::BoundaryCorrections::hlld_detail;
+  const ScopedFpeState fpe(false);
+  struct Case {
+    std::array<double, 9> L, R;
+    double gamma, margin_live;
+  };
+  const std::vector<Case> cases{
+    { {0.14144639981, 1.090120013, -0.097337664655, -0.17023198691, -3.7138819808e-17, -0.5, -0.99355335659, -1.6164023593e-19, 0.0}, {0.13322319991, 1.8089098954, -0.18771551264, -0.35365879822, 1.1266466057e-17, -0.5, -0.9967766783, 1.270872461e-18, 0.0}, 2.0, -0.661129174 },
+    { {0.14527872061, 1.3082109199, -0.1275654427, -0.21367938788, 6.9983201079e-18, -0.5, -0.99569259657, -2.4537438026e-19, 0.0}, {0.13520605705, 2.1666158882, -0.19535586181, -0.36015026123, 5.0824508267e-17, -0.5, -0.99816782484, 9.9840411244e-18, 0.0}, 2.0, -0.571248164 },
+    { {0.14798898412, 1.537470819, -0.15820314491, -0.25398133836, 3.2737306599e-17, -0.5, -0.99699976541, -9.4940012974e-18, 0.0}, {0.13855704343, 2.4019331516, -0.20081770874, -0.37307747733, 4.4818594598e-17, -0.5, -0.99954753744, -8.3766742297e-18, 0.0}, 2.0, -0.509464391 },
+    { {0.15136987611, 1.7438437369, -0.18652386526, -0.29248674227, -4.5791795351e-18, -0.5, -0.99325824606, 3.9848200248e-18, 0.0}, {0.15975161071, 2.2636923971, -0.20464942837, -0.38998583854, -4.5791795351e-18, -0.5, -0.94774311134, 2.9326536328e-19, 0.0}, 2.0, -0.434575037 },
+    { {0.15643116694, 1.9007627574, -0.21101794232, -0.33722461542, -2.5551423592e-17, -0.5, -0.97904479917, 8.8580643513e-18, 0.0}, {0.16911424014, 2.167829688, -0.21101794232, -0.43572219558, -2.2564683322e-17, -0.5, -0.92762513487, -7.9095018147e-18, 0.0}, 2.0, -0.387350779 },
+    { {0.15938504396, 1.9599281222, -0.21011136893, -0.35321845835, 3.267909332e-17, -0.5, -0.96610524785, -5.6818387149e-18, 0.0}, {0.17966611515, 2.1120744947, -0.21011136893, -0.43452004278, 6.5580375545e-17, -0.5, -0.89441677401, -2.1582874475e-18, 0.0}, 2.0, -0.368596387 },
+    { {0.1649166354, 2.014168784, -0.21226566681, -0.38777534771, 4.2371862521e-19, -0.5, -0.93126354948, 3.6438175402e-18, 0.0}, {0.19450317965, 2.0344955928, -0.20478224297, -0.45026792299, -3.8975005202e-17, -0.5, -0.848882527, 2.6484028851e-17, 0.0}, 2.0, -0.337144394 },
+    { {0.17024711583, 2.0343772998, -0.21673210154, -0.42083098184, -4.0827208962e-17, -0.5, -0.88462020622, -1.0955232094e-17, 0.0}, {0.20829476959, 1.9776006865, -0.20964691369, -0.46550333982, 5.4063730581e-17, -0.5, -0.80613265216, -6.8227014062e-18, 0.0}, 2.0, -0.310417131 },
+    { {0.17575515345, 2.0412748306, -0.22356735787, -0.45314195404, 1.1456182711e-17, -0.5, -0.83068739661, 5.5581935123e-21, 0.0}, {0.22094494843, 1.9308730338, -0.22065683831, -0.4804525916, -6.5806156041e-17, -0.5, -0.76496602147, -3.9547900958e-18, 0.0}, 2.0, -0.288461168 },
+    { {0.18156387666, 2.0355210651, -0.23260533517, -0.48508335188, -7.1964548654e-17, -0.5, -0.77316758811, 4.5146849304e-17, 0.0}, {0.23256205218, 1.8896158596, -0.23022008547, -0.49511301164, -1.4471711699e-16, -0.5, -0.7249350929, 2.0257337817e-17, 0.0}, 2.0, -0.270517943 },
+    { {0.18639752995, 2.0212929916, -0.24067354417, -0.50739309067, 3.2929049924e-17, -0.5, -0.7308356355, -6.8777979203e-18, 0.0}, {0.24051382936, 1.8609710989, -0.23499355334, -0.50739309067, 4.5276015912e-16, -0.5, -0.69745912084, -3.4467182595e-18, 0.0}, 2.0, -0.259111947 },
+    { {0.19439004296, 1.9801032901, -0.25323166885, -0.53458098212, -5.6995257386e-17, -0.5, -0.68767291069, 1.9179776884e-17, 0.0}, {0.24853324001, 1.8236136642, -0.2443126362, -0.53458098212, 1.5342308365e-17, -0.5, -0.67260600736, 2.9626358631e-18, 0.0}, 2.0, -0.242984448 },
+  };
+  Parallel::printf(
+      "\n idx  margin_live   margin_now       ptot        SL        SR"
+      "       SaL       SaR        Sc       K_L       K_R      vcL     |K_L|\n");
+  for (size_t c = 0; c < cases.size(); ++c) {
+    const auto& k = cases[c];
+    hd::HLLDSolver<0> s(k.L, k.R, k.gamma);
+    const auto [flux, cons] = s.solve(0.0);
+    const double margin = s.cd.vL[0] - s.rotL.K[0];
+    const double knorm = std::sqrt(s.rotL.K[0] * s.rotL.K[0] +
+                                   s.rotL.K[1] * s.rotL.K[1] +
+                                   s.rotL.K[2] * s.rotL.K[2]);
+    Parallel::printf(
+        "%4zu %12.4e %12.4e %10.5f %9.5f %9.5f %9.5f %9.5f %9.5f %9.5f %9.5f "
+        "%8.5f %9.5f\n",
+        c + 1, k.margin_live, margin, s.ptot, s.LL.lambda, s.RR.lambda,
+        s.rotL.lambda, s.rotR.lambda, s.cd.lambda, s.rotL.K[0], s.rotR.K[0],
+        s.cd.vL[0], knorm);
+  }
 }
 
 void test_hlld_is_consistent_for_uniform_states() {
@@ -270,6 +349,8 @@ namespace helpers = TestHelpers::evolution::dg;
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hlld",
                   "[Unit][GrMhd]") {
   PUPable_reg(grmhd::ValenciaDivClean::BoundaryCorrections::Hlld);
+  print_st1_interface();
+  cross_feed_rejecting_interfaces();
   test_hlld_is_consistent_for_uniform_states();
   test_hlld_flux_stays_within_physical_bounds();
   test_hlld_reproduces_a_stationary_contact();
