@@ -45,8 +45,27 @@ output_log.c  rmhd_energy_solve.c  rmhd_pressure_fix.c  set_indexes.c  tools.c
    - `hlld.c`: `static double Sc, Bx;` and `static double **Uhll, **Fhll, **Vhll;`
    - `globals.h` + `pluto.h`: `VXn/VXt/VXb`, `MXn/MXt/MXb`, `BXn/BXt/BXb`,
      `g_maxRiemannIter`, `NMAX_POINT`, `g_gamma`
+   - **and every lazily-allocated function static in the other vendored
+     files**: `hll_speed.c` (`sl_min/sl_max/sr_min/sr_max`), `mappers.c` (`h`),
+     `eigenv.c` (`tmp`), `math_root_finders.c`, `arrays.c` (the whole
+     allocation registry and its counters), `tools.c`, `debug_tools.c`,
+     `output_log.c` -- 21 in total.
    Each is marked `/* SPECTRE-MOD */` at the definition site.
-   *Verified*: 8 threads solving concurrently all reproduce the reference flux.
+
+   **This is the single most important modification.** Missing just the four in
+   `hll_speed.c` made every SpECTRE evolution wrong: worker threads raced on
+   the HLL wave-speed buffers, so SL/SR were garbage, the HLL average state was
+   unphysical, and PLUTO's `ConsToPrim` recovered a negative pressure on
+   essentially every interface (~19 MB of `RMHD_EnergySolve() failed` per run).
+   The result still looked plausible -- a smeared but not obviously broken
+   profile, 2.9x the reference L1 -- which is what makes it dangerous.
+
+   *Verifying this needs care.* A concurrency test in which every thread solves
+   the SAME state cannot detect these races: racing threads write identical
+   values. The test must give each thread a DIFFERENT state and compare against
+   that state's own single-threaded answer. With the shared statics restored,
+   such a test reports deviations up to 1e-1; with them thread-local, exactly
+   zero. See `scratchpad/race_test.cpp`.
 
 3. **`Where()` guarded against a NULL grid** (`debug_tools.c`). PLUTO's
    `ConsToPrim` legitimately fails on some states and falls back internally

@@ -16,7 +16,7 @@
 #include <sys/types.h>
 
 static FILE *g_flog;
-static char log_file_name[512];
+/*SPECTRE-MOD*/ static _Thread_local char log_file_name[512];
 
 static void Particles_Log (Data *, timeStep *, Grid *);
 
@@ -428,7 +428,7 @@ char *IndentString()
  *
  *********************************************************************** */
 { 
-  static char str[64];
+  /*SPECTRE-MOD*/ static _Thread_local char str[64];
 
   if      (g_stepNumber < 10)     sprintf (str,"%7s"," "); 
   else if (g_stepNumber < 100)    sprintf (str,"%8s"," ");

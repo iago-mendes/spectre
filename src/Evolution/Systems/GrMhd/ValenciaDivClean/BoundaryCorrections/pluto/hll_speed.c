@@ -29,8 +29,8 @@ void HLL_Speed (const State *stateL, const State *stateR,
  *********************************************************************** */
 {
   int    i, err;
-  static double *sl_min, *sl_max;
-  static double *sr_min, *sr_max;
+  /*SPECTRE-MOD*/ static _Thread_local double *sl_min, *sl_max;
+  /*SPECTRE-MOD*/ static _Thread_local double *sr_min, *sr_max;
 
   if (sl_min == NULL){
     sl_min = ARRAY_1D(NMAX_POINT, double);

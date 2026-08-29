@@ -539,7 +539,7 @@ void SwapEndian (void *x, const int nbytes)
  *********************************************************************** */
 {
   int k;
-  static char Swapped[16];
+  /*SPECTRE-MOD*/ static _Thread_local char Swapped[16];
   char *c;
 
   c = (char *) x;
@@ -603,7 +603,7 @@ void WriteAsciiFile (char *fname, double *q, int nvar)
  *********************************************************************** */
 {
   int n;
-  static char old_file[64] = "\0";
+  /*SPECTRE-MOD*/ static _Thread_local char old_file[64] = "\0";
   FILE *fp;
   
 /* --------------------------------------------------------

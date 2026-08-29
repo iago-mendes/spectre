@@ -36,18 +36,18 @@
 #define ARRAYS_DEBUG  NO
 
 #define NMAX_ARRAYS    2048
-static char *p1_list[NMAX_ARRAYS];
-static char **p2_list[NMAX_ARRAYS];
-static char ***p3_list[NMAX_ARRAYS];
-static char ****p4_list[NMAX_ARRAYS];
-static char ***pb_list[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local char *p1_list[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local char **p2_list[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local char ***p3_list[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local char ****p4_list[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local char ***pb_list[NMAX_ARRAYS];
 
-static int p1_count=0;
-static int p2_count=0;
-static int p3_count=0;
-static int p4_count=0;
-static int pb_count=0;
-static int pb_nrl[NMAX_ARRAYS], pb_ncl[NMAX_ARRAYS], pb_ndl[NMAX_ARRAYS];
+/*SPECTRE-MOD*/ static _Thread_local int p1_count=0;
+/*SPECTRE-MOD*/ static _Thread_local int p2_count=0;
+/*SPECTRE-MOD*/ static _Thread_local int p3_count=0;
+/*SPECTRE-MOD*/ static _Thread_local int p4_count=0;
+/*SPECTRE-MOD*/ static _Thread_local int pb_count=0;
+/*SPECTRE-MOD*/ static _Thread_local int pb_nrl[NMAX_ARRAYS], pb_ncl[NMAX_ARRAYS], pb_ndl[NMAX_ARRAYS];
 
 /* ********************************************************************* */
 char *Array1D (int nx, size_t dsize)

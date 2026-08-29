@@ -544,7 +544,7 @@ void Trace (double xx)
  *
  *********************************************************************** */
 {
-  static int ik;
+  /*SPECTRE-MOD*/ static _Thread_local int ik;
 
   printLog ("Trace ------> %f ,  %d\n", xx, ++ik);
 }

@@ -341,7 +341,7 @@ void Broyden(double x[], int n, int *check,
 {
   int i, its, j, k, restrt, sing, skip;
   double den, f, fold, stpmax, sum, temp, test; 
-  static double *c, *d, *fvcold, *g, *p, **qt, **r, *s, *t, *w, *xold, *fguess;
+  /*SPECTRE-MOD*/ static _Thread_local double *c, *d, *fvcold, *g, *p, **qt, **r, *s, *t, *w, *xold, *fguess;
   
   if (g == NULL){
            

@@ -401,7 +401,7 @@ simplify(f);
   double la[4], lB[4], fa[4], fB[4];
   double phi[4];
   double s, Ru[10], col[NFLX];
-  static double **tmp;
+  /*SPECTRE-MOD*/ static _Thread_local double **tmp;
 
 #if DEBUG_MODE == YES
 q[RHO] = 1.7;

@@ -52,7 +52,7 @@ void PrimToCons (double **uprim, double **ucons, int beg, int end)
   double  vx1, vx2, vx3;
   double  g, g2, wt;
   double  *u, *v;
-  static double *h;
+  /*SPECTRE-MOD*/ static _Thread_local double *h;
   #if EOS == IDEAL
   double gmmr = g_gamma/(g_gamma - 1.0);
   #endif
