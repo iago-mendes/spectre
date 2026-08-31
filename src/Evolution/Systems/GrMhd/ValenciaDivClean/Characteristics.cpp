@@ -3,6 +3,11 @@
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
 
+// BB1 diagnostic (opt-in via SPECTRE_QUARTIC_DIAG=1); see
+// runs-ai/mhd_marquina/meetings/2026-09-03/plan.md Task BB.
+#include <cstdio>
+#include <cstdlib>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -841,6 +846,41 @@ void characteristic_speeds_mhd(
       }
     }
 
+    // ---- BB1 diagnostic -------------------------------------------------
+    // When the slow-root verification fails we want the state that produced
+    // it, not an inference from initial data: the failure appears mid-evolution
+    // on states we cannot guess. Set SPECTRE_QUARTIC_DIAG=1 to dump every
+    // failing point and CONTINUE (so one run yields many samples); unset, the
+    // ASSERT below behaves exactly as before.
+    const bool slow_roots_bad =
+        not (std::abs(evaluate_quartic(slow_minus[point], point)) <
+                 10.0 * tolerance and
+             std::abs(evaluate_quartic(slow_plus[point], point)) <
+                 10.0 * tolerance);
+    static const bool quartic_diag =
+        std::getenv("SPECTRE_QUARTIC_DIAG") != nullptr;
+    if (slow_roots_bad and quartic_diag) {
+      // One line per failing point. Everything needed to rebuild the quartic
+      // and rerun the reduced-quadratic reconstruction offline.
+      fprintf(stderr,
+              "QUARTIC_DIAG cs2=%.17g vn=%.17g W=%.17g Bn=%.17g Bdv=%.17g "
+              "B2=%.17g b2=%.17g c0=%.17g c1=%.17g c2=%.17g c3=%.17g "
+              "fastm=%.17g fastp=%.17g alfm=%.17g alfp=%.17g "
+              "slowm=%.17g slowp=%.17g Qm=%.17g Qp=%.17g\n",
+              get(sound_speed_squared)[point], vn[point],
+              get(lorentz_factor)[point], get(normal_magnetic_field)[point],
+              get(magnetic_field_dot_spatial_velocity)[point],
+              get(magnetic_field_squared)[point],
+              get(comoving_magnetic_field_squared)[point],
+              c0[point], c1[point], c2[point], c3[point],
+              fast_minus[point], fast_plus[point],
+              alfven_minus[point], alfven_plus[point],
+              slow_minus[point], slow_plus[point],
+              evaluate_quartic(slow_minus[point], point),
+              evaluate_quartic(slow_plus[point], point));
+      continue;  // keep going so a single run samples the whole failure set
+    }
+    // ---- end BB1 diagnostic ---------------------------------------------
     ASSERT(std::abs(evaluate_quartic(slow_minus[point], point)) <
                    10.0 * tolerance and
                std::abs(evaluate_quartic(slow_plus[point], point)) <
