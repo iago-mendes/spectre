@@ -497,6 +497,7 @@ def control_id(
     negative_expansion_bc: bool = True,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    disabled_constraints: List[str] = [],
 ):
     """Control BBH physical parameters.
 
@@ -568,6 +569,12 @@ def control_id(
         False)
       convergence_test_tolerance: Tolerance for convergence tests. (Default:
         1e-5)
+      disabled_constraints: Names of step-size constraints to switch off, any
+        of 'mass' (mass step <= 20% of the current mass), 'com' (x_A > 0) and
+        'spin' (effective spin < 1). Temporary, for assessing which constraints
+        are still needed now that the Newton system is non-dimensionalized.
+        Every constraint's alpha is logged whether or not it is enabled.
+        (default: none disabled)
     """
 
     assert (
@@ -936,25 +943,37 @@ def control_id(
         # all constraints are satisfied, then apply it to the full step. This
         # preserves the Broyden-learned coupling direction; only the magnitude
         # is reduced. Each constraint provides an independent analytical alpha;
-        # the minimum is taken.
+        # the minimum over the *enabled* ones is taken.
+        #
+        # Every constraint's own alpha is recorded in 'alpha_by_constraint'
+        # whether or not it is enabled, and all of them are logged. Only the
+        # binding constraint used to be reported, which hid the fact that a
+        # constraint can be active without being the smallest -- in particular
+        # the mass constraint, being evaluated first and feeding its reduced
+        # step into the spin limit below, can mask the spin constraint.
         alpha = 1.0
-        limiting_constraints = []
+        alpha_by_constraint = {}
+
+        def constraint_enabled(name):
+            return name not in disabled_constraints
 
         # Constraint 1: mass step <= max_rel_step * current_mass (linear)
         max_rel_step = 0.2
+        alpha_mass = 1.0
         for mass_key in ["MassA", "MassB"]:
             if mass_key not in control_params:
                 continue
             idx = param_index_map[mass_key]
             if abs(Delta_u[idx]) > max_rel_step * abs(u[idx]):
-                alpha_mass = max_rel_step * abs(u[idx]) / abs(Delta_u[idx])
-                if alpha_mass < alpha:
-                    alpha = alpha_mass
-                    limiting_constraints = [mass_key]
-                elif alpha_mass == alpha:
-                    limiting_constraints.append(mass_key)
+                alpha_mass = min(
+                    alpha_mass, max_rel_step * abs(u[idx]) / abs(Delta_u[idx])
+                )
+        alpha_by_constraint["mass"] = alpha_mass
+        if constraint_enabled("mass"):
+            alpha = min(alpha, alpha_mass)
 
         # Constraint 2: xA = Newtonian_x_A + center_of_mass_offset > 0 (linear)
+        alpha_com = 1.0
         if "CenterOfMass" in control_params:
             prev_xA = (
                 Newtonian_x_A + u[param_index_map["center_of_mass_offset"]]
@@ -962,12 +981,10 @@ def control_id(
             delta_xA = Delta_u[param_index_map["center_of_mass_offset"]]
             eps_xa = 1.0e-10
             if prev_xA + delta_xA < eps_xa:
-                alpha_xa = (eps_xa - prev_xA) / delta_xA
-                if alpha_xa < alpha:
-                    alpha = alpha_xa
-                    limiting_constraints = ["CenterOfMass"]
-                elif alpha_xa == alpha:
-                    limiting_constraints.append("CenterOfMass")
+                alpha_com = (eps_xa - prev_xA) / delta_xA
+        alpha_by_constraint["com"] = alpha_com
+        if constraint_enabled("com"):
+            alpha = min(alpha, alpha_com)
 
         # Constraint 3: effective spin < 1 (quadratic, per BH)
         # ||eff_spin|| = 2 * S * M * ||omega|| where S = 1 + sqrt(1 - chi^2).
@@ -975,6 +992,7 @@ def control_id(
         # the largest alpha_rot on the rotation such that the product stays
         # below 1 - eps_spin. This is a quadratic in alpha_rot.
         eps_spin = 1.0e-4
+        alpha_spin_all = 1.0
         for mass_key, spin_key in zip(
             ["MassA", "MassB"],
             ["DimensionlessSpinA", "DimensionlessSpinB"],
@@ -1017,12 +1035,29 @@ def control_id(
                 else:
                     alpha_spin = (2.0 * c) / (-b - np.sqrt(discriminant))
             alpha_spin = max(0.0, min(alpha_spin, 1.0))
-            if alpha_spin < alpha:
-                alpha = alpha_spin
-                limiting_constraints = [spin_key]
-            elif alpha_spin == alpha:
-                limiting_constraints.append(spin_key)
+            alpha_spin_all = min(alpha_spin_all, alpha_spin)
+        alpha_by_constraint["spin"] = alpha_spin_all
+        if constraint_enabled("spin"):
+            alpha = min(alpha, alpha_spin_all)
 
+        # Report every constraint, not just the binding one, so that a
+        # constraint which is active but not the smallest is still visible.
+        active = {k: v for k, v in alpha_by_constraint.items() if v < 1.0}
+        binding = [
+            k
+            for k, v in alpha_by_constraint.items()
+            if constraint_enabled(k) and v <= alpha
+        ]
+        logger.info(
+            "Constraint alphas: "
+            + ", ".join(
+                f"{k}={v:.6f}"
+                + ("" if constraint_enabled(k) else " [DISABLED]")
+                for k, v in alpha_by_constraint.items()
+            )
+            + f". Active (alpha<1): {sorted(active) or 'none'}."
+            + f" Applied alpha = {alpha:.6f}, binding: {binding or 'none'}."
+        )
         if alpha < 1.0:
             eff_spin_after = {
                 sk: (
@@ -1051,7 +1086,7 @@ def control_id(
             }
             logger.warning(
                 f"Backtracking alpha = {alpha:.6f} (limited by"
-                f" {limiting_constraints}). Preserving Broyden direction."
+                f" {binding}). Preserving Broyden direction."
                 + (
                     f" Effective spins after scaling: {eff_spin_after}."
                     if eff_spin_after

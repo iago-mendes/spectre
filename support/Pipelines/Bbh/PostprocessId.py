@@ -48,6 +48,7 @@ def postprocess_id(
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    disabled_constraints: List[str] = [],
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -88,6 +89,9 @@ def postprocess_id(
       control_delay: Numer of iterations before control of delayed parameters
         starts. See ControlId.py for details.
       control_params: List of parameters to control. See ControlId.py
+      disabled_constraints: Step-size constraints to switch off in the
+        control loop, any of 'mass', 'com' and 'spin'. Temporary; see
+        ControlId.py. (default: none disabled)
         for details.
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
@@ -179,6 +183,7 @@ def postprocess_id(
             negative_expansion_bc=negative_expansion_bc,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
+            disabled_constraints=disabled_constraints,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
