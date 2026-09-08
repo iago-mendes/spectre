@@ -411,12 +411,54 @@ def control_scales(
     that the Jacobian accumulated by Broyden keeps a single consistent meaning
     across iterations.
 
+    The same rule extends to the hyperbolic controls: E_ADM and J^z_ADM are
+    divided by their targets, and their knobs (the initial radial expansion
+    velocity and orbital angular velocity) by their own initial magnitudes.
+
     Returns (u_scale, f_scale), both length num_params, such that the
     dimensionless free data is u / u_scale and the dimensionless residual is
     F / f_scale.
     """
     u_scale = np.ones(num_params)
     f_scale = np.ones(num_params)
+
+    def set_scale(param_key, free_data_key):
+        """Scale one control/residual pair, ignoring unusable magnitudes.
+
+        Looks the indices up lazily: 'param_index_map' only contains the
+        quantities actually being controlled, so a bound run has no entry for
+        the hyperbolic free data and must not be indexed with it.
+        """
+        if param_key not in control_params:
+            return
+        if (
+            param_key not in param_index_map
+            or free_data_key not in param_index_map
+        ):
+            return
+        idx = param_index_map[param_key]
+        u_value = u[param_index_map[free_data_key]]
+        f_value = target_params.get(param_key)
+        if u_value and np.isfinite(u_value):
+            u_scale[idx] = abs(u_value)
+        if f_value and np.isfinite(f_value):
+            f_scale[idx] = abs(f_value)
+
+    # Hyperbolic encounters control two more quantities, E_ADM and J^z_ADM, via
+    # the initial radial expansion velocity and orbital angular velocity. The
+    # same rule applies: divide each control by its natural magnitude and each
+    # residual by its target. Without this the Jacobian's largest entry is
+    # d(J^z_ADM)/d(Omega_0) = eta D^2, so cond(J0) grows as D^2 -- measured on
+    # the 2025 paper's runs as 6.5e2, 2.5e3, 1.6e4 and 2.5e5 at D = 50, 100,
+    # 250 and 1000. Scaling both pairs makes it D-independent, at 18 to 88.
+    #
+    # The residual conditioning that remains is physical rather than a units
+    # artefact: E_ADM ~ M + eta adot_0^2 D^2 / 2 depends on adot_0 only
+    # quadratically, so d(E_ADM)/d(adot_0), once scaled, is 2 (E* - M) / E*,
+    # which is small for a weakly hyperbolic encounter.
+    set_scale("AdmMass", "radial_expansion_velocity")
+    set_scale("AdmAngularMomentumZ", "orbital_angular_velocity")
+
     for mass_key, spin_key in zip(
         ["MassA", "MassB"], ["DimensionlessSpinA", "DimensionlessSpinB"]
     ):
@@ -848,9 +890,7 @@ def control_id(
         )
 
         # Update the free parameters using a quasi-Newton-Raphson method
-        Delta_u = (
-            -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
-        )
+        Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
         if delay_asymptotic_control:
             Delta_u[delayed_indices] = 0.0
 
