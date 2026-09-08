@@ -20,6 +20,12 @@ DEFAULT_RESIDUAL_TOLERANCE = 1.0e-4
 DEFAULT_MAX_ITERATIONS = 30
 DEFAULT_CONTROL_DELAY = 2
 DEFAULT_CONVERGENCE_TEST_TOLERANCE = 1.0e-5
+# Skip the Broyden update when the measured residual moved less than this
+# fraction of what the Jacobian predicted; see 'broyden_safeguard' in
+# 'control_id'. Chosen from the recorded runs of the rescaled-Jacobian
+# experiment: the one pathological iteration sits at 0.0045 while every
+# converged run stays above 0.19, so 0.1 has ~20x margin below and ~2x above.
+BROYDEN_MIN_RESPONSE = 0.1
 P_MAX_CONVERGENCE = 12
 
 # Free data choices associated with each physical parameter
@@ -498,6 +504,7 @@ def control_id(
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     disabled_constraints: List[str] = [],
+    broyden_safeguard: bool = False,
 ):
     """Control BBH physical parameters.
 
@@ -567,6 +574,12 @@ def control_id(
         selects the polynomial order for the control loop, and a post-control
         test checks that the selected resolution was appropriate. (Default:
         False)
+      broyden_safeguard: Use the least-change secant form of the Broyden
+        update, 'J += outer(y - J s, s) / (s . s)', and skip it when the
+        measured residual moved less than 'BROYDEN_MIN_RESPONSE' of what the
+        Jacobian predicted. Off by default so that existing runs reproduce
+        exactly; see experiments/rescaled_jacobian/HIGH_SPIN_FAILURES.md.
+        (Default: False)
       convergence_test_tolerance: Tolerance for convergence tests. (Default:
         1e-5)
       disabled_constraints: Names of step-size constraints to switch off, any
@@ -1098,6 +1111,7 @@ def control_id(
         u += Delta_u
 
         # Compute residual and check stopping condition
+        F_previous = np.array(F, copy=True)
         F = Residual(u)
         current_residual = np.max(np.abs(F))
         if current_residual < best_residual:
@@ -1108,10 +1122,90 @@ def control_id(
 
         # Update the Jacobian using Broyden's method, in scaled variables so
         # that no single control can dominate the update.
+        #
+        # Broyden's "good" update is the least-change secant update: the
+        # smallest (Frobenius) correction to J satisfying the secant equation
+        # J_new s = y, with s the step taken and y the observed change in the
+        # residual. That is
+        #
+        #     J += outer(y - J s, s) / (s . s)
+        #
+        # The historical form below uses 'F' alone as the numerator, which is
+        # the same thing *only when the full Newton step is taken*: then
+        # J s = -F_previous, so y - J s = F - F_previous + F_previous = F. Once
+        # a step-size constraint reduces the step to s = alpha s_full we have
+        # J s = -alpha F_previous and the correct numerator is
+        # F - (1 - alpha) F_previous instead, so the shortcut enforces a secant
+        # condition that is simply wrong. Measured over the 121 recorded
+        # iterations of the rescaled-Jacobian experiment: for the 96 undamped
+        # steps the stored Jacobian satisfies the secant equation to roundoff,
+        # while for the 25 damped ones it misses it by a median of 34% and by up
+        # to a factor of 49, injecting corrections of up to 7.6 ||J|| into runs
+        # that were otherwise healthy.
+        #
+        # WHY THIS IS OFF BY DEFAULT -- read before enabling it. The algebra
+        # above is exact and the defect in the historical form is real, but it
+        # explains none of the failures we set out to fix:
+        #   * Incidence is low. Over the 112-run paper survey only 20 of 1101
+        #     iterations (1.8%), in 8 runs, take a damped step at all, and every
+        #     one of those runs converged anyway.
+        #   * It does not touch our open failures. At the iteration where
+        #     Spin0.9999 and q=1/chi_A=0.999 actually break down, alpha = 1, so
+        #     the two forms are identical there.
+        #   * The skip rule's premise was refuted. It was justified as a guard
+        #     against a measurement noise floor, from a chi_A residual sitting
+        #     pinned at 9.75e-5. A convergence test then measured the actual
+        #     discretization error in that quantity at P = 8 as 2.0e-7, i.e.
+        #     ~500x smaller: the residual was real and resolvable, and the loop
+        #     simply failed to reduce it. There is no noise floor to guard
+        #     against in that case.
+        #   * It has never run on the cluster. Every job carrying it was
+        #     cancelled before starting, so the safeguarded path is covered
+        #     only by the unit tests in the companion analysis repo
+        #     (experiments/rescaled_jacobian/test_broyden_safeguard.py).
+        # Kept, default-off, so the algebra is not rediscovered from scratch;
+        # do not enable it in production without new evidence.
         scaled_Delta_u = Delta_u / u_scale
-        J += np.outer(F / f_scale, scaled_Delta_u) / np.dot(
-            scaled_Delta_u, scaled_Delta_u
-        )
+        s_dot_s = np.dot(scaled_Delta_u, scaled_Delta_u)
+        if broyden_safeguard:
+            y = (F - F_previous) / f_scale
+            predicted = np.dot(J, scaled_Delta_u)
+            secant_defect = y - predicted
+            response = np.linalg.norm(y) / max(
+                np.linalg.norm(predicted), 1e-300
+            )
+            # Noise-aware update criterion. The injected correction has norm
+            # ||y - J s|| / ||s||, so when the measurement stops responding to
+            # the step -- because it has hit its own discretization/noise floor
+            # -- the update writes that noise into the Jacobian at full
+            # strength. NOTE: the case that motivated this test turned out not
+            # to be noise-limited (see the caveats above); the threshold is
+            # calibrated on recorded runs, not derived, and is unvalidated on
+            # the cluster. This is the same role played by the curvature test
+            # (skip if <s, y> < eps ||s||^2) that safeguards symmetric
+            # quasi-Newton updates, and by the requirement that a
+            # finite-difference step exceed the noise floor of the function
+            # being differenced; here the test is that the observed response be
+            # a non-negligible fraction of the predicted one.
+            if response < BROYDEN_MIN_RESPONSE:
+                logger.warning(
+                    "Skipping the Broyden update: the measured residual moved"
+                    f" {response:.2e} of what the Jacobian predicted"
+                    f" (||y|| = {np.linalg.norm(y):.2e},"
+                    f" ||J s|| = {np.linalg.norm(predicted):.2e},"
+                    f" threshold {BROYDEN_MIN_RESPONSE:g}). The secant pair"
+                    " carries no derivative information, so updating would"
+                    " write measurement noise into the Jacobian."
+                )
+            else:
+                J += np.outer(secant_defect, scaled_Delta_u) / s_dot_s
+                logger.info(
+                    f"Broyden update: response {response:.3f}, injected"
+                    " |dJ|/|J| ="
+                    f" {np.linalg.norm(secant_defect) / np.sqrt(s_dot_s) / np.linalg.norm(J):.3f}."
+                )
+        else:
+            J += np.outer(F / f_scale, scaled_Delta_u) / s_dot_s
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Jacobian", jacobian_legend, 0

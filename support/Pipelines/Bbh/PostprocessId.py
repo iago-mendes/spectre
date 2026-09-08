@@ -48,6 +48,7 @@ def postprocess_id(
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    broyden_safeguard: bool = False,
     disabled_constraints: List[str] = [],
     **scheduler_kwargs,
 ):
@@ -101,6 +102,8 @@ def postprocess_id(
         test selects the polynomial order for the control loop, and a
         post-control test checks the resolution was appropriate.
         (Default: False)
+      broyden_safeguard: Use the least-change secant form of the Broyden
+        update and skip it on uninformative secant pairs. See ControlId.py.
       convergence_test_tolerance: Tolerance for convergence tests.
         (Default: 1e-5)
     """
@@ -183,6 +186,7 @@ def postprocess_id(
             negative_expansion_bc=negative_expansion_bc,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
+            broyden_safeguard=broyden_safeguard,
             disabled_constraints=disabled_constraints,
         )
         id_run_dir = last_control_run_dir
