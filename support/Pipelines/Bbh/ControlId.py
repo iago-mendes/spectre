@@ -550,9 +550,14 @@ def control_id(
       max_iterations: Maximum of iterations allowed. Note: each iteration is
         very expensive as it needs to solve an entire initial data problem.
         (Default: 30)
-      control_delay: Number of iterations before control of delayed parameters
-        starts. We have found that delaying the control of asymptotic quantities
-        (ADM mass, ADM momenta, and center of mass) helps convergence.
+      control_delay: Minimum number of iterations before control of the delayed
+        parameters starts. We have found that delaying the control of asymptotic
+        quantities (ADM mass, ADM momenta, and center of mass) helps
+        convergence. Control of them begins on the first iteration that is both
+        past this minimum and has a maximum horizon-parameter residual below
+        5e-3. Both conditions are needed: the residual condition alone lets the
+        asymptotic controls switch on at iteration 1 whenever the initial guess
+        is already good, which is not the documented behaviour of this option.
         (Default: 2)
       refinement_level: h-refinement used in control loop.
       polynomial_order: p-refinement used in control loop.
@@ -881,12 +886,45 @@ def control_id(
                 )
             )
         )
-        if max_horizon_residual < 5.0e-3:
+        # Release the asymptotic controls only once the horizon parameters have
+        # settled *and* a minimum number of iterations have passed. The residual
+        # threshold alone is not enough: when the initial guess is already good
+        # the horizon residual can be below the threshold at the very first
+        # iteration, so the asymptotic controls switch on immediately, before
+        # the Broyden Jacobian has learned anything about them.
+        # 'control_delay' used to provide exactly this minimum and had silently
+        # become unused, leaving only the residual condition; both apply again.
+        #
+        # NOTE ON MOTIVATION, so it is not re-derived. This was prompted by the
+        # 2025 paper's Spin0.9999 case, whose CoM residual grows from 1e-4 to
+        # 1e-1 over twelve iterations. That hypothesis was tested and REFUTED:
+        # rerunning the case with this fix active -- its log confirms the
+        # asymptotic controls were held back two iterations -- reproduced the
+        # pre-fix residuals to seven significant figures. Early asymptotic
+        # control is therefore *not* the cause of that divergence, which is
+        # still unexplained. This change stands on its own as a correctness fix
+        # (a documented option should not be dead code), not as a fix for
+        # Spin0.9999. See, in the companion analysis repo,
+        # runs-ai/lisa_bbh_id/experiments/rescaled_jacobian/HIGH_SPIN_FAILURES.md
+        horizon_settled = max_horizon_residual < 5.0e-3
+        past_min_iterations = iteration > control_delay
+        if horizon_settled and past_min_iterations:
             delay_asymptotic_control = False
+        if delay_asymptotic_control:
+            holding = []
+            if not horizon_settled:
+                holding.append("horizon residual")
+            if not past_min_iterations:
+                holding.append(f"iteration <= control_delay ({control_delay})")
+            reason = (
+                " Delaying control of asymptotic parameters"
+                f" ({', '.join(holding)})."
+            )
+        else:
+            reason = " Not delaying control of asymptotic parameters."
         logger.info(
             f"Max residual of horizon parameters = {max_horizon_residual:e}."
-            f" {'Delaying' if delay_asymptotic_control else 'Not delaying'}"
-            " control of asymptotic parameters."
+            + reason
         )
 
         # Update the free parameters using a quasi-Newton-Raphson method
