@@ -275,6 +275,46 @@ std::vector<std::array<size_t, two_to_the(VolumeDim)>> corners_from_two_maps(
     gsl::at(corners_for_block1, vci.local_corner_number()) =
         vci.local_corner_number();
   }
+  // Tolerance for deciding that two mapped corners coincide.
+  //
+  // A fixed absolute tolerance only works while the blocks have sizes of order
+  // unity. In a binary-compact-object domain with a large mass ratio the blocks
+  // around the small object shrink like 1/q: at q ~ 1e6 the shell around object
+  // B has an outer radius of a few times 1e-6, so *distinct* corners of those
+  // blocks are separated by less than the historical 1e-6 threshold and get
+  // identified with one another. The resulting corner numbering is wrong, and
+  // the blocks silently come out with external boundaries where they should
+  // have neighbors.
+  //
+  // So scale the tolerance with the size of the two blocks being compared, and
+  // cap it at the historical 1e-6 so that domains whose blocks are of order
+  // unity -- every production domain -- are completely unaffected. The extent
+  // is the largest edge-to-edge coordinate span of either block, not a distance
+  // from the origin: object B sits at |x| ~ D while being ~1/q across.
+  double block_extent = 0.0;
+  for (size_t j = 0; j < VolumeDim; j++) {
+    double min_coord[2] = {std::numeric_limits<double>::max(),
+                           std::numeric_limits<double>::max()};
+    double max_coord[2] = {std::numeric_limits<double>::lowest(),
+                           std::numeric_limits<double>::lowest()};
+    for (VolumeCornerIterator<VolumeDim> vci{}; vci; ++vci) {
+      const tnsr::I<double, VolumeDim, Frame::BlockLogical> logical_corner{
+          vci.coords_of_corner()};
+      const double c1 = (*map1)(logical_corner).get(j);
+      const double c2 = (*map2)(logical_corner).get(j);
+      min_coord[0] = std::min(min_coord[0], c1);
+      max_coord[0] = std::max(max_coord[0], c1);
+      min_coord[1] = std::min(min_coord[1], c2);
+      max_coord[1] = std::max(max_coord[1], c2);
+    }
+    block_extent = std::max(
+        block_extent,
+        std::max(max_coord[0] - min_coord[0], max_coord[1] - min_coord[1]));
+  }
+  // A degenerate (zero-extent) pair of maps keeps the historical tolerance
+  // rather than a tolerance of zero, which would match nothing at all.
+  const double corner_tolerance =
+      block_extent > 0.0 ? std::min(1.0e-6, 1.0e-3 * block_extent) : 1.0e-6;
   // Fill corners_for_block2 based off which corners are shared with map1.
   for (VolumeCornerIterator<VolumeDim> vci_map2{}; vci_map2; ++vci_map2) {
     const auto mapped_coords2 =
@@ -298,13 +338,7 @@ std::vector<std::array<size_t, two_to_the(VolumeDim)>> corners_from_two_maps(
       }
       // If true, then the mapped_coords lie on top of one another.
       // This corner of map2 is assigned the same number as that of map1.
-      if (max_separation < 1.0e-6) {
-        // Note: Ideally the threshold would depend on and be proportional
-        // to the map size, but for simplicity we assume that maps have sizes
-        // that are of order unity. If you are using maps that have sizes
-        // that are much smaller, this threshold (1e-6) will create situations
-        // where adjacent corners are incorrectly determined. If you are using
-        // very small maps please watch out for this.
+      if (max_separation < corner_tolerance) {
         gsl::at(corners_for_block2, vci_map2.local_corner_number()) =
             vci_map1.local_corner_number();
         break;
