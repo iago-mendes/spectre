@@ -288,10 +288,25 @@ std::vector<std::array<size_t, two_to_the(VolumeDim)>> corners_from_two_maps(
   //
   // So scale the tolerance with the size of the two blocks being compared, and
   // cap it at the historical 1e-6 so that domains whose blocks are of order
-  // unity -- every production domain -- are completely unaffected. The extent
-  // is the largest edge-to-edge coordinate span of either block, not a distance
-  // from the origin: object B sits at |x| ~ D while being ~1/q across.
-  double block_extent = 0.0;
+  // unity -- every production domain -- are completely unaffected. Each block's
+  // extent is its largest edge-to-edge coordinate span, not a distance from the
+  // origin: object B sits at |x| ~ D while being ~1/q across.
+  //
+  // Use the SMALLER of the two blocks' extents. A false match is created when
+  // two *distinct* corners of one block fall within the tolerance of each
+  // other, so the tolerance has to be small compared with the smallest block in
+  // the pair. Taking the larger extent leaves the tolerance at the historical
+  // 1e-6 for exactly the pair that matters in a high-mass-ratio binary -- the
+  // tiny shell around object B against the cube that surrounds it, which spans
+  // O(separation) -- and that pair then mismatches: the shell's excision-side
+  // corners are identified with the cube's inner corners, the shell is glued to
+  // the cube inside out, and its outer face is left as an external boundary
+  // with no boundary condition.
+  //
+  // True matches are exact (separation 0 up to roundoff, which scales with the
+  // coordinate magnitude and not with the block size), so shrinking the
+  // tolerance never breaks a legitimate match.
+  std::array<double, 2> block_extents{{0.0, 0.0}};
   for (size_t j = 0; j < VolumeDim; j++) {
     double min_coord[2] = {std::numeric_limits<double>::max(),
                            std::numeric_limits<double>::max()};
@@ -307,10 +322,10 @@ std::vector<std::array<size_t, two_to_the(VolumeDim)>> corners_from_two_maps(
       min_coord[1] = std::min(min_coord[1], c2);
       max_coord[1] = std::max(max_coord[1], c2);
     }
-    block_extent = std::max(
-        block_extent,
-        std::max(max_coord[0] - min_coord[0], max_coord[1] - min_coord[1]));
+    block_extents[0] = std::max(block_extents[0], max_coord[0] - min_coord[0]);
+    block_extents[1] = std::max(block_extents[1], max_coord[1] - min_coord[1]);
   }
+  const double block_extent = std::min(block_extents[0], block_extents[1]);
   // A degenerate (zero-extent) pair of maps keeps the historical tolerance
   // rather than a tolerance of zero, which would match nothing at all.
   const double corner_tolerance =
