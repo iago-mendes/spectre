@@ -1,0 +1,464 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include <limits>
+#include <memory>
+#include <optional>
+
+#include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Evolution/BoundaryCorrection.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
+#include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
+#include "Options/String.hpp"
+#include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
+#include "PointwiseFunctions/Hydro/Tags.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Serialization/CharmPupable.hpp"
+#include "Utilities/TMPL.hpp"
+
+/// \cond
+class DataVector;
+namespace gsl {
+template <typename T>
+class not_null;
+}  // namespace gsl
+namespace PUP {
+class er;
+}  // namespace PUP
+namespace Options {
+class Option;
+template <typename T>
+struct create_from_yaml;
+}  // namespace Options
+/// \endcond
+
+namespace grmhd::ValenciaDivClean::BoundaryCorrections {
+/// Which intermediate waves the HLLEM anti-diffusion restores on top of HLL.
+/// This is the central knob of the solver: Mattia & Mignone (2022) show (their
+/// Fig 13) that for the Kelvin-Helmholtz instability restoring contact+slow
+/// resolves the secondary vortices while contact+Alfven smooths them out.
+enum class HllemWaves {
+  /// Only the contact/entropy wave (HLLC-like).
+  Contact,
+  /// Contact + the two Alfven (rotational) waves.
+  ContactAlfven,
+  /// Contact + the two slow-magnetosonic waves.
+  ContactSlow,
+  /// All five fluid internal waves (contact + 2 Alfven + 2 slow).
+  All,
+  /// Contact + 2 Alfven + 2 fast, EXCLUDING the slow waves. This is the
+  /// SpECTRE analog of M&M's "5-wave" HLLEM (contact + Alfven) -- here the two
+  /// fast waves are also restored via their eigenvectors, because in the GLM
+  /// system the outermost (HLL) waves are the divergence-cleaning modes at the
+  /// light speed, so the fast waves are interior to the HLL fan (unlike M&M,
+  /// where the HLL bounds ARE the fast speeds). "7 waves" = 2 GLM (outer) +
+  /// 2 fast + 2 Alfven + contact.
+  ContactAlfvenFast,
+  /// All seven interior waves (contact + 2 Alfven + 2 slow + 2 fast); only the
+  /// two GLM/divergence waves remain as the outer HLL bounds. "9 waves" -- the
+  /// most complete HLLEM, enabled by having the full Teukolsky characteristic
+  /// decomposition (M&M cannot afford the fast/slow eigenvectors).
+  AllWithFast,
+  /// No waves at all: the anti-diffusion is switched off and the solver is the
+  /// plain HLL flux. `restored_wave_indices` returns an empty list, so the
+  /// whole per-wave block is a no-op and `dg_boundary_terms` returns the HLL
+  /// baseline it has already built.
+  ///
+  /// This is not a convenience setting, it is a CONSISTENCY CHECK. HLL is
+  /// identically HLLEM with every Einfeldt coefficient \f$\delta_k\f$ set to
+  /// zero -- an identity in all nine components, for an arbitrary invertible
+  /// eigenvector matrix \f$R\f$ and arbitrary \f$\lambda_\pm\f$, \f$U\f$,
+  /// \f$F\f$, with no state, no eigensystem and no equation of state entering
+  /// it -- so `None` MUST reproduce `Hll`. If it does not, the anti-diffusion
+  /// implementation is wrong, and that is the finding, not the tolerance.
+  ///
+  /// The reproduction is CLOSE BUT NOT BITWISE, and the single permitted
+  /// difference is in the outer bounds rather than in the flux formula: `Hll`
+  /// builds its MHD bounds two-sidedly from the two sides' own fast speeds,
+  /// while `Hllem` uses the three-sided envelope that also carries the averaged
+  /// interface state,
+  /// \f$\max(0,\lambda_+(\bar{Q}),\lambda_+^{\rm int},
+  /// -\lambda_-^{\rm ext})\f$. That envelope can only widen the fan, so
+  /// HLLEM-`None` is SLIGHTLY MORE DISSIPATIVE than `Hll`, never less.
+  /// Everything else is shared: the same scalar/MHD split (GLM subsystem at
+  /// \f$\pm c\f$, MHD variables at the fast-magnetosonic bounds) and the same
+  /// HLL formula. A deviation of the opposite sign, or one larger than the
+  /// envelope difference accounts for, is a bug. Pinned down in
+  /// `Test_Hllem.cpp`, `test_no_restored_waves_reduces_to_hll`.
+  ///
+  /// `UseComplementaryProjection` has no effect here. The complement fallback
+  /// fires only at points where a RESTORED wave was dropped, and with no
+  /// restored waves no point is ever flagged, so `None` is the HLL flux with
+  /// the projection either on or off.
+  None,
+  /// ONLY the two slow-magnetosonic waves, `MhdSpeed` 3 and 5. No contact, no
+  /// Alfven, no fast.
+  ///
+  /// This is the MINIMAL REPRODUCER for the Del Zanna jet failure, and that is
+  /// the whole reason it exists. A wave-restoration ladder on that problem ran
+  /// `Hll`, `None`, `Contact` and `ContactAlfven` to completion while
+  /// `ContactSlow` and `All` both failed at the same time and bitwise
+  /// identically to each other -- so restoring the slow pair is NECESSARY AND
+  /// SUFFICIENT for the failure. `ContactSlow` is contact PLUS slow and so
+  /// does not isolate the slow pair; this value does.
+  ///
+  /// It is a DIAGNOSTIC configuration, not a production one. Restoring the
+  /// slow waves while leaving the contact fully diffused is not a solver
+  /// anybody would choose; it is the one-variable experiment.
+  Slow,
+  /// ONLY the two Alfven (rotational) waves, `MhdSpeed` 2 and 6. No contact,
+  /// no slow, no fast.
+  ///
+  /// The companion to `Slow`, and the direct test of a belief the ladder so
+  /// far has only inferred: that on a problem whose field is purely axial the
+  /// Alfven waves are INERT. With \f$B_n = 0\f$ on a face, the Alfven speeds
+  /// collapse onto the entropy speed \f$v_n\f$, and the `DegeneracyTolerance`
+  /// speed-gap guard in `dg_boundary_terms` drops both waves at every such
+  /// point, so the anti-diffusion is whatever it would have been without them.
+  /// If that is right, `Alfven` must be indistinguishable from `None` on such
+  /// a state, exactly as `ContactAlfven` was observed to be bitwise identical
+  /// to `Contact`. Where \f$B_n \neq 0\f$ the two waves are restored
+  /// normally and this is an ordinary (if unusual) wave set.
+  ///
+  /// MEASURED in `Test_Hllem.cpp`, and the result is stronger and less
+  /// flattering to the framing above: \f$B_n = 0\f$ is Anton et al.'s Type I
+  /// degeneracy, in which \f$\lambda_a^\pm = \lambda_s^\pm =
+  /// \lambda_e\f$, so the guard drops the SLOW pair there too. On such a
+  /// face `Slow`, `Alfven`, `ContactSlow`, `ContactAlfven` and `All` all
+  /// collapse to `Contact`, bit for bit. Nothing is special about the Alfven
+  /// waves in that configuration, and the jet's slow-wave failure therefore
+  /// cannot be occurring on faces where \f$B_n = 0\f$.
+  Alfven
+};
+std::ostream& operator<<(std::ostream& os, HllemWaves waves);
+
+/*!
+ * \brief The HLLEM Riemann solver (Einfeldt-Munz-Roe-Sjogreen 1991; Dumbser &
+ * Balsara 2016) for the GRMHD GLM-Valencia system.
+ *
+ * HLLEM starts from the diffusive two-wave HLL flux and adds an anti-diffusive
+ * correction that restores selected intermediate waves via the characteristic
+ * decomposition,
+ * \f{align*}{
+ *   G_\text{HLLEM} = G_\text{HLL}
+ *     - \frac{\lambda_+\lambda_-}{\lambda_+-\lambda_-}
+ *       \sum_{k\in\text{restored}} \delta_k\,(\ell_k\cdot\Delta U)\,r_k ,
+ * \f}
+ * where \f$r_k,\ell_k\f$ are the right/left eigenvectors of wave \f$k\f$,
+ * \f$\Delta U=U_\text{ext}-U_\text{int}\f$, and \f$\delta_k\f$ is the Einfeldt
+ * anti-diffusion coefficient. Unlike HLLC/HLLD (which reconstruct the fan
+ * nonlinearly and cannot restore slow waves), HLLEM restores any wave for which
+ * an eigenvector is available -- including the slow modes -- which is why it is
+ * the natural vehicle for the slow-mode Kelvin-Helmholtz test.
+ *
+ * This uses the (compact, corrected) GRMHD eigenvectors of
+ * `grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd`, so its quality is
+ * a direct function of the eigenvector quality -- the point of the comparison
+ * against classical (Anile/Komissarov/Anton) HLLEM. The eigensystem is
+ * evaluated at the arithmetic-average state so the flux is conservative. Each
+ * restored wave carries its own Einfeldt coefficient and is skipped where it
+ * leaves the HLL fan or collapses onto a neighbour (its analytic eigenvector is
+ * then ill-conditioned) -- matching PLUTO's per-wave HLLEM. As a consequence,
+ * where the slow/Alfven modes sit on the contact (e.g. the weakly magnetized 2D
+ * Kelvin-Helmholtz test) they are dropped and HLLEM reduces to HLL, exactly the
+ * behaviour reported by M&M; a field strong enough to separate the slow modes
+ * is needed to see them restored. The optional complementary projection
+ * (`UseComplementaryProjection`) that would instead restore the collapsed
+ * subspace as a block is disabled by default because it removes the dissipation
+ * that stabilizes those transverse modes at sharp shears (see its help string).
+ * The fan is reconstructed assuming flat space (the regime of the relativistic
+ * M&M tests) with an HLL fallback for curved backgrounds and non-finite
+ * results.
+ */
+class Hllem final : public evolution::BoundaryCorrection {
+ public:
+  struct LargestOutgoingCharSpeed : db::SimpleTag {
+    using type = Scalar<DataVector>;
+  };
+  struct LargestIngoingCharSpeed : db::SimpleTag {
+    using type = Scalar<DataVector>;
+  };
+  /// @{
+  /// The fast-magnetosonic signal speeds of THIS side, packaged exactly as
+  /// `Hll` and `PlutoHlld` package theirs. `dg_boundary_terms` takes the outer
+  /// MHD bounds from these two sides together with the averaged interface
+  /// state, so the bound can no longer sit inside the true signal range.
+  struct FastOutgoingCharSpeed : db::SimpleTag {
+    using type = Scalar<DataVector>;
+  };
+  struct FastIngoingCharSpeed : db::SimpleTag {
+    using type = Scalar<DataVector>;
+  };
+  /// @}
+  struct InterfaceUnitNormal : db::SimpleTag {
+    using type = tnsr::i<DataVector, 3, Frame::Inertial>;
+  };
+  struct MetricFlatness : db::SimpleTag {
+    using type = Scalar<DataVector>;
+  };
+
+  struct WavesToRestore {
+    using type = HllemWaves;
+    static constexpr Options::String help = {
+        "Which intermediate waves the anti-diffusion restores: Contact, "
+        "ContactAlfven, ContactSlow, All, ContactAlfvenFast, AllWithFast, "
+        "None, Slow, or Alfven. None switches the anti-diffusion off entirely, "
+        "which makes this solver the plain HLL flux (up to Hllem's slightly "
+        "wider three-sided outer bounds, so it is marginally MORE dissipative "
+        "than Hll and never less); it is the consistency check that HLLEM "
+        "reduces to HLL, not a production setting. Slow and Alfven restore ONE "
+        "pair each and nothing else -- the slow pair and the Alfven pair -- "
+        "and are likewise diagnostic settings, isolating a single restored "
+        "wave pair rather than adding it on top of the contact."};
+  };
+  struct DegeneracyTolerance {
+    static constexpr Options::String help = {
+        "Speed-gap below which neighbouring waves are treated as degenerate "
+        "and "
+        "handled by the complementary projection."};
+    using type = double;
+  };
+  struct UseComplementaryProjection {
+    static constexpr Options::String help = {
+        "If true, at points where a restored wave collapses onto a neighbour "
+        "(its individual analytic eigenvector is ill-conditioned) restore the "
+        "whole fluid subspace as one block via the complement of the "
+        "well-conditioned fast eigenvectors, instead of dropping the wave (HLL "
+        "there). Composes with WavesToRestore. WARNING: unlike Marquina (whose "
+        "complement is upwind/dissipative), the HLLEM block complement removes "
+        "the numerical dissipation from the collapsed slow/Alfven transverse "
+        "modes, which is unstable at sharp relativistic shear layers -- leave "
+        "false and rely on the per-wave path (which matches PLUTO's HLLEM)."};
+    using type = bool;
+  };
+  struct MagneticFieldMagnitudeForHydro {
+    static constexpr Options::String help = {
+        "When the magnetic field is below this value we use the hydro "
+        "characteristic speeds."};
+    using type = double;
+  };
+  struct LightSpeedDensityCutoff {
+    static constexpr Options::String help = {
+        "When the density is below this value we just use the light speed for "
+        "the characteristic speeds."};
+    using type = double;
+  };
+  using options =
+      tmpl::list<WavesToRestore, UseComplementaryProjection,
+                 DegeneracyTolerance, MagneticFieldMagnitudeForHydro,
+                 LightSpeedDensityCutoff>;
+  static constexpr Options::String help = {
+      "Computes the HLLEM boundary correction term for the GRMHD system."};
+
+  Hllem() = default;
+  Hllem(const Hllem&) = default;
+  Hllem& operator=(const Hllem&) = default;
+  Hllem(Hllem&&) = default;
+  Hllem& operator=(Hllem&&) = default;
+  ~Hllem() override = default;
+
+  Hllem(HllemWaves waves_to_restore, bool use_complementary_projection,
+        double degeneracy_tolerance, double magnetic_field_magnitude_for_hydro,
+        double light_speed_density_cutoff);
+
+  /// \cond
+  explicit Hllem(CkMigrateMessage* /*unused*/);
+  using PUP::able::register_constructor;
+  WRAPPED_PUPable_decl_template(Hllem);  // NOLINT
+  /// \endcond
+  void pup(PUP::er& p) override;  // NOLINT
+
+  std::unique_ptr<BoundaryCorrection> get_clone() const override;
+
+  using dg_package_field_tags = tmpl::list<
+      Tags::TildeD, Tags::TildeYe, Tags::TildeTau,
+      Tags::TildeS<Frame::Inertial>, Tags::TildeB<Frame::Inertial>,
+      Tags::TildePhi, ::Tags::NormalDotFlux<Tags::TildeD>,
+      ::Tags::NormalDotFlux<Tags::TildeYe>,
+      ::Tags::NormalDotFlux<Tags::TildeTau>,
+      ::Tags::NormalDotFlux<Tags::TildeS<Frame::Inertial>>,
+      ::Tags::NormalDotFlux<Tags::TildeB<Frame::Inertial>>,
+      ::Tags::NormalDotFlux<Tags::TildePhi>, LargestOutgoingCharSpeed,
+      LargestIngoingCharSpeed, FastOutgoingCharSpeed, FastIngoingCharSpeed,
+      InterfaceUnitNormal, MetricFlatness,
+      hydro::Tags::RestMassDensity<DataVector>,
+      hydro::Tags::SpatialVelocity<DataVector, 3>,
+      hydro::Tags::Pressure<DataVector>, hydro::Tags::LorentzFactor<DataVector>,
+      hydro::Tags::SpecificInternalEnergy<DataVector>>;
+  using dg_package_data_temporary_tags = tmpl::list<
+      gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
+  using dg_package_data_primitive_tags =
+      tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
+                 hydro::Tags::ElectronFraction<DataVector>,
+                 hydro::Tags::Temperature<DataVector>,
+                 hydro::Tags::SpatialVelocity<DataVector, 3>,
+                 hydro::Tags::SpecificInternalEnergy<DataVector>,
+                 hydro::Tags::Pressure<DataVector>,
+                 hydro::Tags::LorentzFactor<DataVector>>;
+  using dg_package_data_volume_tags =
+      tmpl::list<hydro::Tags::GrmhdEquationOfState>;
+  // The equation of state is needed in dg_boundary_terms to build the
+  // eigensystem at the averaged interface state.
+  using dg_boundary_terms_volume_tags =
+      tmpl::list<hydro::Tags::GrmhdEquationOfState>;
+
+  double dg_package_data(
+      gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
+      gsl::not_null<Scalar<DataVector>*> packaged_tilde_ye,
+      gsl::not_null<Scalar<DataVector>*> packaged_tilde_tau,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> packaged_tilde_s,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> packaged_tilde_b,
+      gsl::not_null<Scalar<DataVector>*> packaged_tilde_phi,
+      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_d,
+      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_ye,
+      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_tau,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_s,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_b,
+      gsl::not_null<Scalar<DataVector>*> packaged_normal_dot_flux_tilde_phi,
+      gsl::not_null<Scalar<DataVector>*> packaged_largest_outgoing_char_speed,
+      gsl::not_null<Scalar<DataVector>*> packaged_largest_ingoing_char_speed,
+      gsl::not_null<Scalar<DataVector>*> packaged_fast_outgoing_char_speed,
+      gsl::not_null<Scalar<DataVector>*> packaged_fast_ingoing_char_speed,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          packaged_interface_unit_normal,
+      gsl::not_null<Scalar<DataVector>*> packaged_metric_flatness,
+      gsl::not_null<Scalar<DataVector>*> packaged_rest_mass_density,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+          packaged_spatial_velocity,
+      gsl::not_null<Scalar<DataVector>*> packaged_pressure,
+      gsl::not_null<Scalar<DataVector>*> packaged_lorentz_factor,
+      gsl::not_null<Scalar<DataVector>*> packaged_specific_internal_energy,
+
+      const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
+      const Scalar<DataVector>& tilde_tau,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
+      const Scalar<DataVector>& tilde_phi,
+
+      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_d,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_ye,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_tau,
+      const tnsr::Ij<DataVector, 3, Frame::Inertial>& flux_tilde_s,
+      const tnsr::IJ<DataVector, 3, Frame::Inertial>& flux_tilde_b,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& flux_tilde_phi,
+
+      const Scalar<DataVector>& lapse,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
+
+      const Scalar<DataVector>& rest_mass_density,
+      const Scalar<DataVector>& electron_fraction,
+      const Scalar<DataVector>& temperature,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+      const Scalar<DataVector>& specific_internal_energy,
+      const Scalar<DataVector>& pressure,
+      const Scalar<DataVector>& lorentz_factor,
+
+      const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
+      const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
+      /*mesh_velocity*/,
+      const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state)
+      const;
+
+  void dg_boundary_terms(
+      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_d,
+      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_ye,
+      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_tau,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          boundary_correction_tilde_s,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+          boundary_correction_tilde_b,
+      gsl::not_null<Scalar<DataVector>*> boundary_correction_tilde_phi,
+      const Scalar<DataVector>& tilde_d_int,
+      const Scalar<DataVector>& tilde_ye_int,
+      const Scalar<DataVector>& tilde_tau_int,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_int,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_int,
+      const Scalar<DataVector>& tilde_phi_int,
+      const Scalar<DataVector>& normal_dot_flux_tilde_d_int,
+      const Scalar<DataVector>& normal_dot_flux_tilde_ye_int,
+      const Scalar<DataVector>& normal_dot_flux_tilde_tau_int,
+      const tnsr::i<DataVector, 3, Frame::Inertial>&
+          normal_dot_flux_tilde_s_int,
+      const tnsr::I<DataVector, 3, Frame::Inertial>&
+          normal_dot_flux_tilde_b_int,
+      const Scalar<DataVector>& normal_dot_flux_tilde_phi_int,
+      const Scalar<DataVector>& largest_outgoing_char_speed_int,
+      const Scalar<DataVector>& largest_ingoing_char_speed_int,
+      const Scalar<DataVector>& fast_outgoing_char_speed_int,
+      const Scalar<DataVector>& fast_ingoing_char_speed_int,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_int,
+      const Scalar<DataVector>& metric_flatness_int,
+      const Scalar<DataVector>& rest_mass_density_int,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_int,
+      const Scalar<DataVector>& pressure_int,
+      const Scalar<DataVector>& lorentz_factor_int,
+      const Scalar<DataVector>& specific_internal_energy_int,
+      const Scalar<DataVector>& tilde_d_ext,
+      const Scalar<DataVector>& tilde_ye_ext,
+      const Scalar<DataVector>& tilde_tau_ext,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s_ext,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b_ext,
+      const Scalar<DataVector>& tilde_phi_ext,
+      const Scalar<DataVector>& normal_dot_flux_tilde_d_ext,
+      const Scalar<DataVector>& normal_dot_flux_tilde_ye_ext,
+      const Scalar<DataVector>& normal_dot_flux_tilde_tau_ext,
+      const tnsr::i<DataVector, 3, Frame::Inertial>&
+          normal_dot_flux_tilde_s_ext,
+      const tnsr::I<DataVector, 3, Frame::Inertial>&
+          normal_dot_flux_tilde_b_ext,
+      const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
+      const Scalar<DataVector>& largest_outgoing_char_speed_ext,
+      const Scalar<DataVector>& largest_ingoing_char_speed_ext,
+      const Scalar<DataVector>& fast_outgoing_char_speed_ext,
+      const Scalar<DataVector>& fast_ingoing_char_speed_ext,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_ext,
+      const Scalar<DataVector>& metric_flatness_ext,
+      const Scalar<DataVector>& rest_mass_density_ext,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_ext,
+      const Scalar<DataVector>& pressure_ext,
+      const Scalar<DataVector>& lorentz_factor_ext,
+      const Scalar<DataVector>& specific_internal_energy_ext,
+      dg::Formulation dg_formulation,
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state)
+      const;
+
+ private:
+  friend bool operator==(const Hllem& lhs, const Hllem& rhs);
+
+  HllemWaves waves_to_restore_{HllemWaves::All};
+  bool use_complementary_projection_{false};
+  double degeneracy_tolerance_{std::numeric_limits<double>::signaling_NaN()};
+  double magnetic_field_magnitude_for_hydro_{
+      std::numeric_limits<double>::signaling_NaN()};
+  double light_speed_density_cutoff_{
+      std::numeric_limits<double>::signaling_NaN()};
+};
+bool operator!=(const Hllem& lhs, const Hllem& rhs);
+}  // namespace grmhd::ValenciaDivClean::BoundaryCorrections
+
+/// \cond
+template <>
+struct Options::create_from_yaml<
+    grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves> {
+  template <typename Metavariables>
+  static grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves create(
+      const Options::Option& options) {
+    return create<void>(options);
+  }
+};
+template <>
+grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves
+Options::create_from_yaml<
+    grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves>::
+    create<void>(const Options::Option& options);
+/// \endcond
