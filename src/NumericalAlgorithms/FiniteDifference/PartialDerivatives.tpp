@@ -222,7 +222,8 @@ void partial_derivatives(
                           DerivativeFrame>& inverse_jacobian,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (volume_mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (volume_mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(volume_mesh.quadrature(2))) {
       cartoon_partial_derivatives<DerivativeTags>(
           d_volume_vars, volume_vars, ghost_cell_vars, volume_mesh,
           number_of_variables, fd_order, inverse_jacobian, inertial_coords);

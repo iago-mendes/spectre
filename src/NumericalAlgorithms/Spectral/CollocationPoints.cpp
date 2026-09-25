@@ -34,6 +34,8 @@ template const DataVector&
 template const DataVector&
     collocation_points<Basis::Cartoon, Quadrature::SphericalSymmetry>(size_t);
 template const DataVector&
+    collocation_points<Basis::Cartoon, Quadrature::TranslationalSymmetry>(size_t);
+template const DataVector&
     collocation_points<Basis::Chebyshev, Quadrature::Gauss>(size_t);
 template const DataVector&
     collocation_points<Basis::Chebyshev, Quadrature::GaussLobatto>(size_t);

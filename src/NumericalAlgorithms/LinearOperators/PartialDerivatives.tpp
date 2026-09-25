@@ -718,7 +718,8 @@ void partial_derivatives(
                           DerivativeFrame>& inverse_jacobian,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       cartoon_partial_derivatives(du, u, mesh, inverse_jacobian,
                                   inertial_coords);
     } else {
@@ -792,7 +793,8 @@ void partial_derivative(
                           DerivativeFrame>& inverse_jacobian,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       cartoon_partial_derivative(du, u, mesh, inverse_jacobian,
                                  inertial_coords);
     } else {
@@ -815,7 +817,8 @@ auto partial_derivative(
         Tensor<DataVector, SymmList, IndexList>, Dim, UpLo::Lo,
         DerivativeFrame> {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       return cartoon_partial_derivative(u, mesh, inverse_jacobian,
                                         inertial_coords);
     } else {

@@ -60,6 +60,8 @@ template const DataVector&
 template const DataVector&
     quadrature_weights<Basis::Cartoon, Quadrature::SphericalSymmetry>(size_t);
 template const DataVector&
+    quadrature_weights<Basis::Cartoon, Quadrature::TranslationalSymmetry>(size_t);
+template const DataVector&
     quadrature_weights<Basis::Chebyshev, Quadrature::Gauss>(size_t);
 template const DataVector&
     quadrature_weights<Basis::Chebyshev, Quadrature::GaussLobatto>(size_t);
