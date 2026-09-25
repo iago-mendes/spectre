@@ -976,3 +976,67 @@ def temperature(
     inv_spatial_metric,
 ):
     return interior_temperature
+
+
+def specific_internal_energy(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    interior_rest_mass_density,
+    interior_electron_fraction,
+    interior_specific_internal_energy,
+    interior_spatial_velocity,
+    interior_magnetic_field,
+    interior_lorentz_factor,
+    interior_pressure,
+    interior_temperature,
+    shift,
+    lapse,
+    inv_spatial_metric,
+):
+    return interior_specific_internal_energy
+
+
+def pressure(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    interior_rest_mass_density,
+    interior_electron_fraction,
+    interior_specific_internal_energy,
+    interior_spatial_velocity,
+    interior_magnetic_field,
+    interior_lorentz_factor,
+    interior_pressure,
+    interior_temperature,
+    shift,
+    lapse,
+    inv_spatial_metric,
+):
+    return interior_pressure
+
+
+def lorentz_factor(
+    face_mesh_velocity,
+    outward_directed_normal_covector,
+    outward_directed_normal_vector,
+    interior_rest_mass_density,
+    interior_electron_fraction,
+    interior_specific_internal_energy,
+    interior_spatial_velocity,
+    interior_magnetic_field,
+    interior_lorentz_factor,
+    interior_pressure,
+    interior_temperature,
+    shift,
+    lapse,
+    inv_spatial_metric,
+):
+    return _exterior_lorentz_factor(
+        _exterior_spatial_velocity(
+            outward_directed_normal_covector,
+            outward_directed_normal_vector,
+            interior_spatial_velocity,
+        ),
+        _spatial_metric(inv_spatial_metric),
+    )
