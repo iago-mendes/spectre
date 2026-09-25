@@ -6,23 +6,37 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <optional>
+#include <sstream>
+#include <string>
 #include <type_traits>
 
+#include "Characteristics.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
+#include "DataStructures/Tensor/EagerMath/OrthonormalOneform.hpp"
+#include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Expressions/AddSubtract.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Fluxes.hpp"
 #include "Framework/Pypp.hpp"
 #include "Framework/SetupLocalPythonEnvironment.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
+#include "Helpers/DataStructures/RandomUnitNormal.hpp"
 #include "Helpers/Domain/DomainTestHelpers.hpp"
 #include "Helpers/PointwiseFunctions/GeneralRelativity/TestHelpers.hpp"
 #include "Helpers/PointwiseFunctions/Hydro/TestHelpers.hpp"
@@ -35,10 +49,18 @@
 #include "PointwiseFunctions/Hydro/SpecificEnthalpy.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Literals.hpp"
 #include "Utilities/TMPL.hpp"
 
+// Quad-precision reference implementation for MHD characteristic speeds
+
 namespace {
+
+namespace quad_ref = grmhd::ValenciaDivClean::TestHelpers::quad_precision;
+namespace asymptotic_speeds =
+    grmhd::ValenciaDivClean::TestHelpers::asymptotic_magnetosonic_speeds;
 
 // This namespace is meant to hold straightforward implementations of the
 // expressions used in the GRMHD characteristics that are not optimized for
@@ -812,6 +834,149 @@ void run_hydro_characteristic_benchmarks(const bool enable) {
   };
 }
 
+void test_hydro_analytic_eigenvectors(const DataVector& used_for_size) {
+  // Emily's eigensystem + biorthonormality checks for the analytic hydro+Ye
+  // eigenvectors, using the standardized characteristic_eigenvectors_hydro
+  // (tnsr::ij/IJ modes and projectors) and the chars_mhd characteristic
+  // interfaces.
+  MAKE_GENERATOR(generator);
+  const auto nn_gen = make_not_null(&generator);
+
+  const auto spatial_metric =
+      TestHelpers::gr::random_spatial_metric<3>(nn_gen, used_for_size);
+  const auto lorentz_factor =
+      TestHelpers::hydro::random_lorentz_factor(nn_gen, used_for_size);
+  const auto spatial_velocity = TestHelpers::hydro::random_velocity(
+      nn_gen, lorentz_factor, spatial_metric);
+  const auto rest_mass_density =
+      TestHelpers::hydro::random_density(nn_gen, used_for_size);
+  const auto specific_internal_energy =
+      TestHelpers::hydro::random_specific_internal_energy(nn_gen,
+                                                          used_for_size);
+  const auto electron_fraction =
+      TestHelpers::hydro::random_electron_fraction(nn_gen, used_for_size);
+
+  const auto equation_of_state_2d =
+      EquationsOfState::IdealFluid<true>(1.5, 0.0);
+  const auto equation_of_state_3d = equation_of_state_2d.promote_to_3d_eos();
+  const auto pressure = equation_of_state_3d->pressure_from_density_and_energy(
+      rest_mass_density, specific_internal_energy, electron_fraction);
+  const auto specific_enthalpy = hydro::relativistic_specific_enthalpy(
+      rest_mass_density, specific_internal_energy, pressure);
+  const auto& inv_spatial_metric =
+      determinant_and_inverse(spatial_metric).second;
+
+  constexpr size_t matrix_size = 6;
+  const size_t num_points = used_for_size.size();
+
+  for (const auto& direction : Direction<3>::all_directions()) {
+    const auto unit_normal = unit_basis_form(direction, inv_spatial_metric);
+
+    // Analytic eigenvectors in the standardized modes/projectors layout.
+    tnsr::ij<DataVector, matrix_size> characteristic_modes{num_points};
+    tnsr::IJ<DataVector, matrix_size> characteristic_projectors{num_points};
+    grmhd::ValenciaDivClean::characteristic_eigenvectors_hydro(
+        make_not_null(&characteristic_modes),
+        make_not_null(&characteristic_projectors), spatial_velocity,
+        rest_mass_density, specific_internal_energy, specific_enthalpy,
+        electron_fraction, lorentz_factor, unit_normal, spatial_metric,
+        *equation_of_state_3d);
+
+    // Analytic speeds, assembled in the HydroVectorR ordering: four degenerate
+    // normal-velocity modes, then lambda+, lambda-.
+    tnsr::i<DataVector, 3> hydro_speeds{num_points};
+    grmhd::ValenciaDivClean::characteristic_speeds_hydro(
+        make_not_null(&hydro_speeds), spatial_velocity, rest_mass_density,
+        specific_internal_energy, electron_fraction, lorentz_factor,
+        specific_enthalpy, spatial_metric, unit_normal, *equation_of_state_3d);
+    tnsr::i<DataVector, matrix_size> eigenvalues{num_points};
+    for (size_t i = 0; i < 4; ++i) {
+      eigenvalues.get(i) = hydro_speeds.get(
+          grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity);
+    }
+    eigenvalues.get(grmhd::ValenciaDivClean::HydroVectorR::Rplus) =
+        hydro_speeds.get(grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus);
+    eigenvalues.get(grmhd::ValenciaDivClean::HydroVectorR::Rminus) =
+        hydro_speeds.get(grmhd::ValenciaDivClean::HydroSpeed::LambdaMinus);
+
+    // Characteristic matrix to check the eigensystem relations.
+    tnsr::iJ<DataVector, matrix_size> characteristic_matrix{num_points};
+    grmhd::ValenciaDivClean::flux_jacobian_hydro(
+        make_not_null(&characteristic_matrix), spatial_velocity,
+        rest_mass_density, specific_internal_energy, electron_fraction,
+        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+        unit_normal, *equation_of_state_3d);
+
+    constexpr double tolerance = 1e-10;
+
+    // Eigensystem relation A.R = y R and L.A = y L, scaled by the (non-unit)
+    // eigenvector norms.
+    for (size_t i = 0; i < matrix_size; ++i) {
+      const Scalar<DataVector> eigenvalue{};
+      const tnsr::i<DataVector, matrix_size> right_eigenvector{};
+      const tnsr::I<DataVector, matrix_size> left_eigenvector{};
+      make_const_view(make_not_null(&get(eigenvalue)), eigenvalues.get(i), 0,
+                      num_points);
+      for (size_t k = 0; k < matrix_size; ++k) {
+        make_const_view(make_not_null(&right_eigenvector.get(k)),
+                        characteristic_modes.get(i, k), 0, num_points);
+        make_const_view(make_not_null(&left_eigenvector.get(k)),
+                        characteristic_projectors.get(i, k), 0, num_points);
+      }
+      const Scalar<DataVector> right_residual =
+          magnitude(tenex::evaluate<ti::k>(
+              characteristic_matrix(ti::k, ti::J) * right_eigenvector(ti::j) -
+              eigenvalue() * right_eigenvector(ti::k)));
+      const Scalar<DataVector> right_norm = magnitude(right_eigenvector);
+      const Scalar<DataVector> left_residual = magnitude(tenex::evaluate<ti::K>(
+          left_eigenvector(ti::J) * characteristic_matrix(ti::j, ti::K) -
+          eigenvalue() * left_eigenvector(ti::K)));
+      const Scalar<DataVector> left_norm = magnitude(left_eigenvector);
+
+      double max_scaled_error = 0.0;
+      for (size_t point = 0; point < num_points; ++point) {
+        const double r_scale = std::max(1.0, std::abs(get(right_norm)[point]));
+        const double l_scale = std::max(1.0, std::abs(get(left_norm)[point]));
+        max_scaled_error = std::max(
+            max_scaled_error, std::abs(get(right_residual)[point]) / r_scale);
+        max_scaled_error = std::max(
+            max_scaled_error, std::abs(get(left_residual)[point]) / l_scale);
+      }
+      CHECK(max_scaled_error < tolerance);
+    }
+
+    // Biorthonormality: L_i . R_j = delta_ij (scaled by the vector norms).
+    for (size_t i = 0; i < matrix_size; ++i) {
+      const tnsr::I<DataVector, matrix_size> left_eigenvector{};
+      for (size_t k = 0; k < matrix_size; ++k) {
+        make_const_view(make_not_null(&left_eigenvector.get(k)),
+                        characteristic_projectors.get(i, k), 0, num_points);
+      }
+      const Scalar<DataVector> left_norm = magnitude(left_eigenvector);
+      for (size_t j = 0; j < matrix_size; ++j) {
+        const tnsr::i<DataVector, matrix_size> right_eigenvector{};
+        for (size_t k = 0; k < matrix_size; ++k) {
+          make_const_view(make_not_null(&right_eigenvector.get(k)),
+                          characteristic_modes.get(j, k), 0, num_points);
+        }
+        const Scalar<DataVector> right_norm = magnitude(right_eigenvector);
+        const Scalar<DataVector> dot_ij =
+            tenex::evaluate(left_eigenvector(ti::J) * right_eigenvector(ti::j));
+        const double target = (i == j ? 1.0 : 0.0);
+        double max_scaled_error = 0.0;
+        for (size_t point = 0; point < num_points; ++point) {
+          const double err = std::abs(get(dot_ij)[point] - target);
+          const double scale =
+              std::max(1.0, std::abs(get(left_norm)[point]) *
+                                std::abs(get(right_norm)[point]));
+          max_scaled_error = std::max(max_scaled_error, err / scale);
+        }
+        CHECK(max_scaled_error < tolerance);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
@@ -826,6 +991,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   test_with_normal_along_coordinate_axes(dv);
   test_hydro_characteristic_speed(dv);
   test_hydro_numerical_characteristics(dv);
+  test_hydro_analytic_eigenvectors(dv);
   test_hydro_characteristics_match_unoptimized_version(dv);
 
   // Disable benchmark by default
