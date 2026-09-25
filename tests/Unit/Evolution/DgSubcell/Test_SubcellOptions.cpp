@@ -279,6 +279,65 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.SubcellOptions",
     CHECK(alg::found(mixed_opts_with_user.only_dg_block_ids(), size_t{1}));
     CHECK(alg::found(mixed_opts_with_user.only_dg_block_ids(), size_t{2}));
   }
+
+  INFO("Every Cartoon topology supports subcell");
+  {
+    // A Cartoon collapsed direction carries one grid point and no subcell
+    // splitting, so it never obstructs the hybrid scheme; the two-dimensional
+    // slice it leaves behind is what is refined.  This section exists because
+    // `CartoonTranslational` was omitted from `topology_supports_subcell` when
+    // it was added to the `domain::Topology` enum: every `CartoonRectangle`
+    // block was then silently pushed onto `only_dg_block_ids_` and
+    // `AlwaysUseSubcells: true` in the input file was never read.  Nothing
+    // errored -- the runs completed on the DG grid and looked like data.
+    struct CartoonCreator : public DomainCreator<3> {
+      Domain<3> create_domain() const override {
+        std::vector<Block<3>> blocks;
+        blocks.emplace_back(nullptr, 0, DirectionMap<3, BlockNeighbors<3>>{},
+                            "Sphere", domain::topologies::cartoon_sphere);
+        blocks.emplace_back(nullptr, 1, DirectionMap<3, BlockNeighbors<3>>{},
+                            "SphereInner",
+                            domain::topologies::cartoon_sphere_inner);
+        blocks.emplace_back(nullptr, 2, DirectionMap<3, BlockNeighbors<3>>{},
+                            "Cylinder", domain::topologies::cartoon_cylinder);
+        blocks.emplace_back(nullptr, 3, DirectionMap<3, BlockNeighbors<3>>{},
+                            "CylinderInner",
+                            domain::topologies::cartoon_cylinder_inner);
+        blocks.emplace_back(nullptr, 4, DirectionMap<3, BlockNeighbors<3>>{},
+                            "Rectangle", domain::topologies::cartoon_rectangle);
+        return Domain<3>{std::move(blocks)};
+      }
+      std::vector<DirectionMap<
+          3, std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>>>
+      external_boundary_conditions() const override {
+        return {};
+      }
+      std::vector<std::string> block_names() const override {
+        return {"Sphere", "SphereInner", "Cylinder", "CylinderInner",
+                "Rectangle"};
+      }
+      std::vector<std::array<size_t, 3>> initial_extents() const override {
+        return {};
+      }
+      std::vector<std::array<size_t, 3>> initial_refinement_levels()
+          const override {
+        return {};
+      }
+    };
+    const CartoonCreator cartoon_creator{};
+    const SubcellOptions cartoon_opts{
+        SubcellOptions{4.0, 1_st, 1.0e-3, 1.0e-4, false, false,
+                       fd::ReconstructionMethod::DimByDim, false, std::nullopt,
+                       ::fd::DerivativeOrder::Two, 1, 1, 1},
+        cartoon_creator};
+    CHECK(cartoon_opts.only_dg_block_ids().empty());
+    // Spelled out block by block so a failure names the topology that
+    // regressed rather than only the size of the list.
+    for (size_t block_id = 0; block_id < 5; ++block_id) {
+      CAPTURE(block_id);
+      CHECK_FALSE(alg::found(cartoon_opts.only_dg_block_ids(), block_id));
+    }
+  }
 }
 }  // namespace
 }  // namespace evolution::dg::subcell

@@ -234,8 +234,14 @@ void reconstruction_matrix(const double eps) {
 }
 
 void test_cartoon_matrices() {
+  // TranslationalSymmetry is included deliberately: it dispatches to its own
+  // `reconstruction_matrix_impl` instantiation, whose guard has to list it by
+  // name.  A quadrature the guard omits falls through to the generic path and
+  // ERRORs with "Cannot get coefficients for a mesh with only '1' points".
   for (const auto quad : {Spectral::Quadrature::SphericalSymmetry,
-                          Spectral::Quadrature::AxialSymmetry}) {
+                          Spectral::Quadrature::AxialSymmetry,
+                          Spectral::Quadrature::TranslationalSymmetry}) {
+    CAPTURE(quad);
     // projection_matrix for a Cartoon dimension returns a 1x1 identity matrix.
     const Mesh<1> cartoon_mesh{1, Spectral::Basis::Cartoon, quad};
     const Matrix& proj_mat =

@@ -71,7 +71,8 @@ bool topology_supports_subcell(const domain::Topology topology) {
   return topology == domain::Topology::I1 or
          topology == domain::Topology::B1Radial or
          topology == domain::Topology::CartoonSphere or
-         topology == domain::Topology::CartoonCylinder;
+         topology == domain::Topology::CartoonCylinder or
+         topology == domain::Topology::CartoonTranslational;
 }
 
 template <size_t Dim>

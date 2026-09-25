@@ -47,7 +47,9 @@ const Matrix& projection_matrix(const Mesh<1>& dg_mesh,
   ASSERT(subcell_quadrature == Spectral::Quadrature::FaceCentered or
              subcell_quadrature == Spectral::Quadrature::CellCentered or
              subcell_quadrature == Spectral::Quadrature::AxialSymmetry or
-             subcell_quadrature == Spectral::Quadrature::SphericalSymmetry,
+             subcell_quadrature == Spectral::Quadrature::SphericalSymmetry or
+             subcell_quadrature ==
+                 Spectral::Quadrature::TranslationalSymmetry,
          "subcell_quadrature option in projection_matrix should be "
          "FaceCentered, CellCentered, or a Cartoon quadrature, but got "
              << subcell_quadrature);
@@ -264,7 +266,8 @@ template <Spectral::Quadrature QuadratureType, size_t NumDgGridPoints1d,
 Matrix reconstruction_matrix_cache_impl_helper(
     const Index<Dim>& subcell_extents) {
   if constexpr (QuadratureType == Spectral::Quadrature::SphericalSymmetry or
-                QuadratureType == Spectral::Quadrature::AxialSymmetry) {
+                QuadratureType == Spectral::Quadrature::AxialSymmetry or
+                QuadratureType == Spectral::Quadrature::TranslationalSymmetry) {
     ASSERT(Dim == 1,
            "Cartoon basis should never be the first basis: only a mesh slice "
            "should get here, got Dim = "
@@ -400,8 +403,37 @@ const Matrix& reconstruction_matrix(const Mesh<Dim>& dg_mesh,
           std::make_index_sequence<
               Spectral::maximum_number_of_points<Spectral::Basis::Legendre> +
               1>{});
+    // Every Cartoon collapsed direction holds a single point, so its
+    // reconstruction matrix is the 1x1 identity whichever quadrature the
+    // helper is stamped out for.  Each nevertheless dispatches to its own
+    // instantiation rather than borrowing another's: the helper's guard is
+    // then the thing that has to list the quadrature, and a quadrature it
+    // does not list falls through to the generic path and ERRORs on "Cannot
+    // get coefficients for a mesh with only '1' points" instead of working by
+    // accident.
     case Spectral::Quadrature::AxialSymmetry:
-      [[fallthrough]];
+      ASSERT(Dim == 1,
+             "Cartoon basis should only be used with DimByDim reconstruction, "
+             "so only a mesh slice "
+             "should get here, got Dim = "
+                 << Dim);
+      return reconstruction_matrix_impl<Spectral::Quadrature::AxialSymmetry>(
+          dg_mesh, subcell_extents,
+          std::make_index_sequence<
+              Spectral::maximum_number_of_points<Spectral::Basis::Cartoon> +
+              1>{});
+    case Spectral::Quadrature::TranslationalSymmetry:
+      ASSERT(Dim == 1,
+             "Cartoon basis should only be used with DimByDim reconstruction, "
+             "so only a mesh slice "
+             "should get here, got Dim = "
+                 << Dim);
+      return reconstruction_matrix_impl<
+          Spectral::Quadrature::TranslationalSymmetry>(
+          dg_mesh, subcell_extents,
+          std::make_index_sequence<
+              Spectral::maximum_number_of_points<Spectral::Basis::Cartoon> +
+              1>{});
     case Spectral::Quadrature::SphericalSymmetry:
       ASSERT(Dim == 1,
              "Cartoon basis should only be used with DimByDim reconstruction, "

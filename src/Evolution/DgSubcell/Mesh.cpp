@@ -33,8 +33,11 @@ template <size_t Dim>
 void verify_subcell_mesh(const Mesh<Dim>& subcell_mesh, const bool neighbor) {
   const std::string neighbor_str = neighbor ? " neighbor" : "";
   if constexpr (Dim == 3) {
-    if (subcell_mesh.quadrature(2) == Spectral::Quadrature::AxialSymmetry) {
-      // Checking for spherical symmetry
+    if (subcell_mesh.quadrature(2) == Spectral::Quadrature::AxialSymmetry or
+        subcell_mesh.quadrature(2) ==
+            Spectral::Quadrature::TranslationalSymmetry) {
+      // Axial and translational symmetry both collapse exactly one trailing
+      // dimension, leaving a 2-D non-Cartoon slice that must be isotropic.
       ASSERT(
           subcell_mesh.basis(2) == Spectral::Basis::Cartoon and
               subcell_mesh.basis(0) != Spectral::Basis::Cartoon,
@@ -51,7 +54,8 @@ void verify_subcell_mesh(const Mesh<Dim>& subcell_mesh, const bool neighbor) {
                  << subcell_mesh);
     } else if (subcell_mesh.quadrature(2) ==
                Spectral::Quadrature::SphericalSymmetry) {
-      // Checking for axial symmetry
+      // Spherical symmetry collapses two dimensions, so only the first is
+      // left to be a real basis.
       ASSERT(
           subcell_mesh.slice_away(0) ==
               Mesh<2>(1, Spectral::Basis::Cartoon,
@@ -157,7 +161,11 @@ Mesh<Dim> mesh(const Mesh<Dim>& dg_mesh) {
            Spectral::Basis::Cartoon},
           {Spectral::Quadrature::CellCentered,
            Spectral::Quadrature::CellCentered,
-           Spectral::Quadrature::AxialSymmetry}};
+           // Carry the DG mesh's own Cartoon quadrature across. Hardcoding
+           // AxialSymmetry here silently converts a translational Cartoon
+           // into an axial one, which then picks up radius weighting it must
+           // not have.
+           dg_mesh.quadrature(2)}};
     }
   }
   return Mesh<Dim>{extents, Spectral::Basis::FiniteDifference,
@@ -223,7 +231,7 @@ Mesh<Dim> dg_mesh(const Mesh<Dim>& subcell_mesh, const Spectral::Basis basis,
       return Mesh<3>{
           extents,
           {basis, basis, Spectral::Basis::Cartoon},
-          {quadrature, quadrature, Spectral::Quadrature::AxialSymmetry}};
+          {quadrature, quadrature, subcell_mesh.quadrature(2)}};
     }
   }
   return Mesh<Dim>{extents, basis, quadrature};

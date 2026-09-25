@@ -179,6 +179,30 @@ void test_cartoon_mesh() {
     CHECK(evolution::dg::subcell::fd::mesh(dg_axial) == subcell_axial);
     CHECK(evolution::dg::subcell::fd::dg_mesh(subcell_axial, BasisType,
                                               QuadratureType) == dg_axial);
+
+    // Translationally symmetric: like the axial case, but the collapsed
+    // direction carries no radius weighting.  The DG mesh's own Cartoon
+    // quadrature must survive the round trip -- hardcoding AxialSymmetry here
+    // silently turns a translational collapse into an axial one, which then
+    // picks up geometric source terms it must not have.
+    const Mesh<3> dg_translational{
+        {{i, i, 1}},
+        {BasisType, BasisType, Spectral::Basis::Cartoon},
+        {QuadratureType, QuadratureType,
+         Spectral::Quadrature::TranslationalSymmetry}};
+    const Mesh<3> subcell_translational{
+        {{2 * i - 1, 2 * i - 1, 1}},
+        {Spectral::Basis::FiniteDifference, Spectral::Basis::FiniteDifference,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::CellCentered, Spectral::Quadrature::CellCentered,
+         Spectral::Quadrature::TranslationalSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(dg_translational) ==
+          subcell_translational);
+    CHECK(evolution::dg::subcell::fd::mesh(dg_translational).quadrature(2) !=
+          Spectral::Quadrature::AxialSymmetry);
+    CHECK(evolution::dg::subcell::fd::dg_mesh(subcell_translational, BasisType,
+                                              QuadratureType) ==
+          dg_translational);
   }
   // mesh(): unsupported bases return the uninitialized sentinel rather than
   // asserting, since subcell is never used on such elements.
