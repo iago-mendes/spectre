@@ -643,6 +643,12 @@ void test_enforce_h_refinement_topology_restrictions() {
                 domain::topologies::cartoon_cylinder);
         check_h(flags_3d, std::array{first_flag, second_flag, stay},
                 domain::topologies::cartoon_cylinder_inner);
+        // A translational Cartoon collapses z exactly as an axial one does:
+        // one grid point, nothing to split or join.  Without it in either
+        // list, `enforce_h_refinement_topology_restrictions` trips its ASSERT
+        // in Debug and silently h-refines the collapsed direction in Release.
+        check_h(flags_3d, std::array{first_flag, second_flag, stay},
+                domain::topologies::cartoon_rectangle);
       }
     }
   }
@@ -696,6 +702,8 @@ void test_enforce_p_refinement_topology_restrictions() {
                 domain::topologies::cartoon_cylinder);
         check_p(flags_3d, std::array{first_flag, second_flag, stay},
                 domain::topologies::cartoon_cylinder_inner);
+        check_p(flags_3d, std::array{first_flag, second_flag, stay},
+                domain::topologies::cartoon_rectangle);
       }
     }
   }

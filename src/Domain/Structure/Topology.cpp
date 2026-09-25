@@ -36,6 +36,8 @@ std::ostream& operator<<(std::ostream& os, const Topology topology) {
       return os << "CartoonSphere";
     case Topology::CartoonCylinder:
       return os << "CartoonCylinder";
+    case Topology::CartoonTranslational:
+      return os << "CartoonTranslational";
     default:  // LCOV_EXCL_LINE
       // LCOV_EXCL_START
       ERROR("An unknown value of Topology was passed to the stream operator.");

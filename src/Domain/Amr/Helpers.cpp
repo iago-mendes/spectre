@@ -216,7 +216,8 @@ constexpr auto cannot_be_h_refined =
                domain::Topology::B3Colatitude,
                domain::Topology::B3Longitude,
                domain::Topology::CartoonSphere,
-               domain::Topology::CartoonCylinder};
+               domain::Topology::CartoonCylinder,
+               domain::Topology::CartoonTranslational};
 }  // namespace
 
 template <size_t VolumeDim>
@@ -280,7 +281,8 @@ void enforce_p_refinement_topology_restrictions(
     } else if (topologies[2] == domain::Topology::CartoonSphere) {
       second_flag = amr::Flag::DoNothing;
       third_flag = amr::Flag::DoNothing;
-    } else if (topologies[2] == domain::Topology::CartoonCylinder) {
+    } else if (topologies[2] == domain::Topology::CartoonCylinder or
+               topologies[2] == domain::Topology::CartoonTranslational) {
       third_flag = amr::Flag::DoNothing;
     }
   }
