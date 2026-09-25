@@ -14,6 +14,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 #include "Utilities/TypeTraits.hpp"
@@ -840,6 +841,27 @@ class EquationOfState<IsRelativistic, 3> : public PUP::able {
       const Scalar<DataVector>& /*rest_mass_density*/,
       const Scalar<DataVector>& /*temperature*/,
       const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /*!
+   * Computes \f$\chi=\partial p / \partial \rho |_{\epsilon}\f$ from the
+   * \f$\rho\f$ and \f$\epsilon\f$.
+   *
+   * This is only available for equilibrium 3D EoSs, where these derivatives
+   * are delegated to an underlying 2D EoS.
+   */
+  virtual Scalar<double> chi_from_density_and_energy(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*specific_internal_energy*/) const {
+    ERROR(
+        "chi_from_density_and_energy is only implemented for Equilibrium3D "
+        "equations of state.");
+  }
+  virtual Scalar<DataVector> chi_from_density_and_energy(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*specific_internal_energy*/) const {
+    ERROR(
+        "chi_from_density_and_energy is only implemented for Equilibrium3D "
+        "equations of state.");
+  }
   /// @}
 
   /// @{
@@ -858,6 +880,28 @@ class EquationOfState<IsRelativistic, 3> : public PUP::able {
       const Scalar<DataVector>& /*rest_mass_density*/,
       const Scalar<DataVector>& /*temperature*/,
       const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /*!
+   * Computes \f$\kappa p/\rho^2=(p/\rho^2)\partial p / \partial \epsilon
+   * |_{\rho}\f$ from \f$\rho\f$ and \f$\epsilon\f$.
+   *
+   * This is only available for equilibrium 3D EoSs, where these derivatives
+   * are delegated to an underlying 2D EoS.
+   */
+  virtual Scalar<double> kappa_times_p_over_rho_squared_from_density_and_energy(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*specific_internal_energy*/) const {
+    ERROR(
+        "kappa_times_p_over_rho_squared_from_density_and_energy is only "
+        "implemented for Equilibrium3D equations of state.");
+  }
+  virtual Scalar<DataVector>
+  kappa_times_p_over_rho_squared_from_density_and_energy(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*specific_internal_energy*/) const {
+    ERROR(
+        "kappa_times_p_over_rho_squared_from_density_and_energy is only "
+        "implemented for Equilibrium3D equations of state.");
+  }
   /// @}
 
   /// The lower bound of the electron fraction that is valid for this EOS
