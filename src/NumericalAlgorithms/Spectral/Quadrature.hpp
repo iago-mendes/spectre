@@ -71,11 +71,33 @@ enum class Quadrature : uint8_t {
   GaussRadauLower,
   GaussRadauUpper,
   AxialSymmetry,
-  SphericalSymmetry
+  SphericalSymmetry,
+  TranslationalSymmetry
 };
 
+/*!
+ * \ingroup SpectralGroup
+ * \brief Whether a Cartoon quadrature collapses its direction by a GEOMETRIC
+ * symmetry.
+ *
+ * `AxialSymmetry` and `SphericalSymmetry` collapse a direction by a rotation:
+ * the collapsed direction reappears as radius weighting, as geometric source
+ * terms, and as an axis that has to be regularized with L'Hopital's rule, so
+ * those meshes need the dedicated `cartoon_*` differential operators.
+ *
+ * `TranslationalSymmetry` collapses a direction by a translation. Nothing
+ * reappears: the direction is simply ignorable, the ordinary Cartesian
+ * operators are correct, and the single grid point in the collapsed direction
+ * makes its logical derivative vanish identically. Dispatch on this rather
+ * than on `Basis::Cartoon` alone, which cannot tell the two situations apart.
+ */
+constexpr bool is_geometric_cartoon(const Quadrature quadrature) {
+  return quadrature == Quadrature::AxialSymmetry or
+         quadrature == Quadrature::SphericalSymmetry;
+}
+
 /// All possible values of Quadrature
-std::array<Quadrature, 10> all_quadratures();
+std::array<Quadrature, 11> all_quadratures();
 
 /// Convert a string to a Quadrature enum.
 Quadrature to_quadrature(const std::string& quadrature);

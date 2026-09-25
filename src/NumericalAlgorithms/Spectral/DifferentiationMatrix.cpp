@@ -22,12 +22,41 @@
 #include "NumericalAlgorithms/Spectral/QuadratureWeights.hpp"
 #include "NumericalAlgorithms/Spectral/SpectralQuantityForMesh.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Gsl.hpp"
 
 namespace Spectral {
 namespace {
 template <Basis BasisType, Quadrature QuadratureType>
 struct DifferentiationMatrixGenerator {
   Matrix operator()(const size_t num_points) const {
+    if constexpr (BasisType == Spectral::Basis::Cartoon and
+                  QuadratureType ==
+                      Spectral::Quadrature::TranslationalSymmetry) {
+      // A translationally collapsed direction holds a single grid point and
+      // the logical derivative along it vanishes identically, so the
+      // differentiation matrix is the 1x1 zero matrix. It has no collocation
+      // points to derive one from -- asking for those is deliberately an
+      // error for every Cartoon quadrature (Cartoon.cpp).
+      //
+      // Only the TRANSLATIONAL Cartoon needs this. The axial and spherical
+      // ones must keep erroring, and Test_Cartoon.cpp pins that: their
+      // `cartoon_*` operators differentiate the non-Cartoon directions
+      // themselves and add the geometric terms, so anything asking them for a
+      // differentiation matrix has taken a wrong turn. A translational
+      // Cartoon has no geometric terms and legitimately uses the ordinary
+      // Cartesian operators, which do ask -- once per collapsed direction.
+      // Keyed on the basis AND the quadrature: a bare quadrature test would
+      // hand back a zero matrix for any future
+      // <basis, TranslationalSymmetry> pair.  The size check is an ERROR, not
+      // an ASSERT, because an ASSERT is compiled out of a non-SPECTRE_DEBUG
+      // Release build and an NxN zero matrix would then differentiate a real
+      // field to zero in silence.
+      if (UNLIKELY(num_points != 1)) {
+        ERROR("A Cartoon direction must hold exactly one grid point, got "
+              << num_points);
+      }
+      return Matrix(1, 1, 0.0);
+    }
     // Algorithm 37 in Kopriva, p. 82
     // It is valid for any collocation points and barycentric weights.
     const DataVector& collocation_pts =
@@ -451,6 +480,8 @@ template const Matrix&
     differentiation_matrix<Basis::Cartoon, Quadrature::AxialSymmetry>(size_t);
 template const Matrix& differentiation_matrix<
     Basis::Cartoon, Quadrature::SphericalSymmetry>(size_t);
+template const Matrix& differentiation_matrix<
+    Basis::Cartoon, Quadrature::TranslationalSymmetry>(size_t);
 template const Matrix&
     differentiation_matrix<Basis::Chebyshev, Quadrature::Gauss>(size_t);
 template const Matrix&

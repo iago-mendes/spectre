@@ -199,7 +199,8 @@ bool is_valid_dg_mesh(const Mesh<Dim>& mesh) {
                  (bases[1] == Basis::Legendre or bases[1] == Basis::ZernikeB1 or
                   bases[1] == Basis::Chebyshev or
                   bases[1] == Basis::HalfFourier) and
-                 quadrature == Quadrature::AxialSymmetry)) {
+                 (quadrature == Quadrature::AxialSymmetry or
+                  quadrature == Quadrature::TranslationalSymmetry))) {
               break;
             } else {
               return false;

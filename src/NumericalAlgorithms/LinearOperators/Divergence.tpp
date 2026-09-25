@@ -381,7 +381,8 @@ void divergence(
                           DerivativeFrame>& inverse_jacobian_3d,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       cartoon_divergence(div_fluxes, fluxes, mesh, inverse_jacobian_3d,
                          inertial_coords);
     } else {
@@ -401,7 +402,8 @@ void divergence(
                           DerivativeFrame>& inverse_jacobian,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       auto& div_f_tnsr = *div_input;
       using f_type = tnsr::I<DataType, Dim, DerivativeFrame>;
       using div_f_type = Scalar<DataType>;
@@ -430,7 +432,8 @@ Scalar<DataType> divergence(
                           DerivativeFrame>& inverse_jacobian,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   if constexpr (Dim == 3) {
-    if (mesh.basis(2) == Spectral::Basis::Cartoon) {
+    if (mesh.basis(2) == Spectral::Basis::Cartoon and
+        Spectral::is_geometric_cartoon(mesh.quadrature(2))) {
       using f_type = tnsr::I<DataType, Dim, DerivativeFrame>;
       using div_f_type = Scalar<DataType>;
       using vars_list = ::Tags::convert_to_temp_tensors<tmpl::list<f_type>, 0>;
