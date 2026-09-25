@@ -529,6 +529,25 @@ struct TimeDerivative {
     const auto& cell_centered_det_inv_jacobian = db::get<
         evolution::dg::subcell::fd::Tags::DetInverseJacobianLogicalToInertial>(
         *box);
+    // For a translational (Cartesian) Cartoon collapse the flux divergence in
+    // the computational (x,y) directions is the PLAIN Cartesian one -- there is
+    // no radial/spherical weighting (the collapsed z contributes nothing since
+    // d/dz = 0). Route it through the ordinary cartesian divergence instead of
+    // the axial/spherical cartoon version.
+    // NB: `evolution::dg::subcell::fd::mesh` carries the DG mesh's own Cartoon
+    // quadrature across, so the subcell mesh reports
+    // Quadrature::TranslationalSymmetry too; either mesh may be asked. (Before
+    // that change the subcell mesh hardcoded AxialSymmetry and only the DG
+    // mesh carried the marker.)
+    const bool collapse_is_translational =
+        comp_dim != 3 and
+        dg_mesh.quadrature(2) == Spectral::Quadrature::TranslationalSymmetry;
+    ASSERT(comp_dim == 3 or collapse_is_translational ==
+                                (subcell_mesh.quadrature(2) ==
+                                 Spectral::Quadrature::TranslationalSymmetry),
+           "The DG and subcell meshes disagree about whether the collapsed "
+           "direction is translational: DG mesh "
+               << dg_mesh << ", subcell mesh " << subcell_mesh);
     for (size_t dim = 0; dim < comp_dim; ++dim) {
       const auto& boundary_correction_in_axis =
           high_order_corrections.has_value()
@@ -538,7 +557,7 @@ struct TimeDerivative {
       tmpl::for_each<typename variables_tag::tags_list>(
           [&dt_vars_ptr, &boundary_correction_in_axis,
            &cell_centered_det_inv_jacobian, dim, inverse_delta, &subcell_mesh,
-           comp_dim, &box](auto evolved_var_tag_v) {
+           comp_dim, collapse_is_translational, &box](auto evolved_var_tag_v) {
             using evolved_var_tag =
                 tmpl::type_from<decltype(evolved_var_tag_v)>;
             using dt_tag = ::Tags::dt<evolved_var_tag>;
@@ -546,7 +565,7 @@ struct TimeDerivative {
             const auto& var_correction =
                 get<evolved_var_tag>(boundary_correction_in_axis);
             for (size_t i = 0; i < dt_var.size(); ++i) {
-              if (comp_dim == 3) {
+              if (comp_dim == 3 or collapse_is_translational) {
                 evolution::dg::subcell::add_cartesian_flux_divergence(
                     make_not_null(&dt_var[i]), inverse_delta,
                     get(cell_centered_det_inv_jacobian), var_correction[i],

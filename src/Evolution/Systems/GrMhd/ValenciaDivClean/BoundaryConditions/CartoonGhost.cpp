@@ -177,8 +177,12 @@ void CartoonGhost::fd_ghost_impl(
 
     const size_t ghost_zone_size, const bool need_tags_for_fluxes) {
   const size_t dim_direction{direction.dimension()};
-  ASSERT(dim_direction == 0,
-         "Cartoon BC can only be applied in the x-direction, got "
+  // The x-direction is used by the curvilinear cartoon creators
+  // (CartoonSphere/Cylinder, radial axis); the z-direction is used by
+  // CartoonRectangle (translational collapse of z). The ghost-fill below is
+  // written generically in terms of dim_direction.
+  ASSERT(dim_direction == 0 or dim_direction == 2,
+         "Cartoon BC can only be applied in the x- or z-direction, got "
              << dim_direction);
 
   const auto subcell_extents{subcell_mesh.extents()};

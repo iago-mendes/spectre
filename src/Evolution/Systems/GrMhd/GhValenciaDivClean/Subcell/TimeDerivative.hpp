@@ -54,6 +54,7 @@
 #include "NumericalAlgorithms/FiniteDifference/PartialDerivatives.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Parity.hpp"
+#include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/DerivSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfLapse.hpp"
@@ -414,6 +415,17 @@ struct ComputeTimeDerivImpl<
         get<Tags::TraceReversedStressEnergy>(temp_tags),
         get<gr::Tags::Lapse<DataVector>>(temp_tags));
 
+    // For a translational (Cartesian) Cartoon collapse the flux divergence in
+    // the computational (x,y) directions is the PLAIN Cartesian one -- there
+    // is no radial/spherical weighting, and the collapsed z contributes
+    // nothing because d/dz = 0.  `add_cartoon_cartesian_flux_divergence`
+    // divides by the cylindrical radius and ERRORs on an element containing
+    // x = 0, which a translational domain such as the Kelvin-Helmholtz
+    // x in [-0.5, 0.5] contains by construction.  This mirrors the branch in
+    // grmhd::ValenciaDivClean::subcell::TimeDerivative.
+    const bool collapse_is_translational =
+        comp_dim != 3 and
+        dg_mesh.quadrature(2) == Spectral::Quadrature::TranslationalSymmetry;
     for (size_t dim = 0; dim < comp_dim; ++dim) {
       const auto& boundary_correction_in_axis =
           gsl::at(boundary_corrections, dim);
@@ -421,12 +433,13 @@ struct ComputeTimeDerivImpl<
       EXPAND_PACK_LEFT_TO_RIGHT([&dt_vars_ptr, &boundary_correction_in_axis,
                                  &cell_centered_det_inv_jacobian, dim,
                                  inverse_delta, &subcell_mesh, &inertial_coords,
-                                 comp_dim, time, &functions_of_time, &box]() {
+                                 comp_dim, collapse_is_translational, time,
+                                 &functions_of_time, &box]() {
         auto& dt_var = *get<::Tags::dt<GrmhdDtTags>>(dt_vars_ptr);
         const auto& var_correction =
             get<GrmhdDtTags>(boundary_correction_in_axis);
         for (size_t i = 0; i < dt_var.size(); ++i) {
-          if (comp_dim == 3) {
+          if (comp_dim == 3 or collapse_is_translational) {
             evolution::dg::subcell::add_cartesian_flux_divergence(
                 make_not_null(&dt_var[i]), inverse_delta,
                 get(cell_centered_det_inv_jacobian), var_correction[i],
