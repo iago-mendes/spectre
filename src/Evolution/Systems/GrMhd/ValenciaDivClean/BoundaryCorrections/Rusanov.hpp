@@ -111,7 +111,10 @@ class Rusanov final : public evolution::BoundaryCorrection {
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
                  hydro::Tags::Temperature<DataVector>,
-                 hydro::Tags::SpatialVelocity<DataVector, 3>>;
+                 hydro::Tags::SpatialVelocity<DataVector, 3>,
+                 hydro::Tags::SpecificInternalEnergy<DataVector>,
+                 hydro::Tags::Pressure<DataVector>,
+                 hydro::Tags::LorentzFactor<DataVector>>;
   using dg_package_data_volume_tags =
       tmpl::list<hydro::Tags::GrmhdEquationOfState>;
   using dg_boundary_terms_volume_tags = tmpl::list<>;
@@ -155,6 +158,9 @@ class Rusanov final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& /*electron_fraction*/,
       const Scalar<DataVector>& /*temperature*/,
       const tnsr::I<DataVector, 3, Frame::Inertial>& /*spatial_velocity*/,
+      const Scalar<DataVector>& /*specific_internal_energy*/,
+      const Scalar<DataVector>& /*pressure*/,
+      const Scalar<DataVector>& /*lorentz_factor*/,
 
       const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
       const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,

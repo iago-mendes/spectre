@@ -45,6 +45,29 @@ struct ComputeVolumeTimeDerivativeTermsHelper<
     ComputeVolumeTimeDerivativeTerms, Dim, tmpl::list<EvolvedTags...>,
     tmpl::list<FluxTags...>, tmpl::list<TempTags...>,
     tmpl::list<GradientTags...>, tmpl::list<ArgTags...>> {
+  template <typename TempTag, typename TemporaryVariables,
+            typename ArgumentVariables>
+  static auto get_temp_argument(
+      const gsl::not_null<TemporaryVariables*> temporaries,
+      const ArgumentVariables& time_derivative_args) {
+    if constexpr (tmpl::list_contains_v<typename TemporaryVariables::tags_list,
+                                        TempTag>) {
+      return make_not_null(&get<TempTag>(*temporaries));
+    } else if constexpr (tmpl::list_contains_v<
+                             typename ArgumentVariables::tags_list, TempTag>) {
+      return make_not_null(&const_cast<typename TempTag::type&>(
+          tuples::get<TempTag>(time_derivative_args)));
+    } else {
+      static_assert(
+          tmpl::list_contains_v<typename TemporaryVariables::tags_list,
+                                TempTag> or
+              tmpl::list_contains_v<typename ArgumentVariables::tags_list,
+                                    TempTag>,
+          "Temporary tag must be available in temporary storage or argument "
+          "variables.");
+    }
+  }
+
   template <typename EvolvedVariables, typename FluxVariables,
             typename TemporaryVariables, typename GradientVariables,
             typename ArgumentVariables>
@@ -57,7 +80,7 @@ struct ComputeVolumeTimeDerivativeTermsHelper<
     ComputeVolumeTimeDerivativeTerms::apply(
         make_not_null(&get<::Tags::dt<EvolvedTags>>(*dt_vars_ptr))...,
         make_not_null(&get<FluxTags>(*volume_fluxes))...,
-        make_not_null(&get<TempTags>(*temporaries))...,
+        get_temp_argument<TempTags>(temporaries, time_derivative_args)...,
         get<GradientTags>(partial_derivs)..., [](const auto& t) -> const auto& {
           if constexpr (tt::is_a_v<std::unique_ptr,
                                    std::decay_t<decltype(t)>>) {

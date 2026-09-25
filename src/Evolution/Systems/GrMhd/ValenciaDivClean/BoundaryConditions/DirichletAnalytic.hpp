@@ -121,11 +121,16 @@ class DirichletAnalytic final : public BoundaryCondition {
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
       gsl::not_null<tnsr::i<DataVector, 3,
                             Frame::Inertial>*> /*spatial_velocity_one_form*/,
+      gsl::not_null<
+          tnsr::ii<DataVector, 3, Frame::Inertial>*> /*spatial_metric*/,
       gsl::not_null<Scalar<DataVector>*> /*rest_mass_density*/,
       gsl::not_null<Scalar<DataVector>*> /*electron_fraction*/,
       gsl::not_null<Scalar<DataVector>*> /*temperature*/,
       gsl::not_null<
           tnsr::I<DataVector, 3, Frame::Inertial>*> /*spatial_velocity*/,
+      gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+      gsl::not_null<Scalar<DataVector>*> pressure,
+      gsl::not_null<Scalar<DataVector>*> lorentz_factor,
       gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
           inv_spatial_metric,
 
@@ -133,6 +138,44 @@ class DirichletAnalytic final : public BoundaryCondition {
           tnsr::I<DataVector, 3, Frame::Inertial>>& /*face_mesh_velocity*/,
       const tnsr::i<DataVector, 3, Frame::Inertial>& /*normal_covector*/,
       const tnsr::I<DataVector, 3, Frame::Inertial>& /*normal_vector*/,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
+      [[maybe_unused]] double time) const;
+
+  // Backward-compatible overload for boundary corrections that do not package
+  // the spatial metric explicitly.
+  std::optional<std::string> dg_ghost(
+      gsl::not_null<Scalar<DataVector>*> tilde_d,
+      gsl::not_null<Scalar<DataVector>*> tilde_ye,
+      gsl::not_null<Scalar<DataVector>*> tilde_tau,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> tilde_s,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_b,
+      gsl::not_null<Scalar<DataVector>*> tilde_phi,
+
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_d_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_ye_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_tau_flux,
+      gsl::not_null<tnsr::Ij<DataVector, 3, Frame::Inertial>*> tilde_s_flux,
+      gsl::not_null<tnsr::IJ<DataVector, 3, Frame::Inertial>*> tilde_b_flux,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_phi_flux,
+
+      gsl::not_null<Scalar<DataVector>*> lapse,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          spatial_velocity_one_form,
+      gsl::not_null<Scalar<DataVector>*> rest_mass_density,
+      gsl::not_null<Scalar<DataVector>*> electron_fraction,
+      gsl::not_null<Scalar<DataVector>*> temperature,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> spatial_velocity,
+      gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
+      gsl::not_null<Scalar<DataVector>*> pressure,
+      gsl::not_null<Scalar<DataVector>*> lorentz_factor,
+      gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
+          inv_spatial_metric,
+
+      const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
+          face_mesh_velocity,
+      const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
       const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
       [[maybe_unused]] double time) const;
 
