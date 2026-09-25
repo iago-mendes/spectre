@@ -72,7 +72,8 @@ std::ostream& operator<<(std::ostream& os, Topology topology);
 constexpr bool topology_supports_subcell(const Topology topology) {
   return topology == Topology::I1 or topology == Topology::B1Radial or
          topology == Topology::CartoonSphere or
-         topology == Topology::CartoonCylinder;
+         topology == Topology::CartoonCylinder or
+         topology == Topology::CartoonTranslational;
 }
 
 namespace topologies {
