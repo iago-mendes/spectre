@@ -14,6 +14,7 @@ set(LIBRARY_SOURCES
   BoundaryCorrections/Test_Hll.cpp
   BoundaryCorrections/Test_Hllem.cpp
   BoundaryCorrections/Test_Marquina.cpp
+  BoundaryCorrections/Test_PlutoHlld.cpp
   BoundaryCorrections/Test_Rusanov.cpp
   FiniteDifference/Test_BoundaryConditionGhostData.cpp
   FiniteDifference/Test_MonotonicityPreserving5.cpp

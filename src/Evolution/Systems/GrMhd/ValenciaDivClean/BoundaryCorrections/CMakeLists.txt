@@ -8,6 +8,7 @@ spectre_target_sources(
   Hll.cpp
   Hllem.cpp
   Marquina.cpp
+  PlutoHlld.cpp
   Rusanov.cpp
   )
 
@@ -19,6 +20,7 @@ spectre_target_headers(
   Hll.hpp
   Hllem.hpp
   Marquina.hpp
+  PlutoHlld.hpp
   NamespaceDocs.hpp
   Rusanov.hpp
   )
