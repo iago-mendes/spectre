@@ -8,6 +8,7 @@ add_spectre_library(${LIBRARY})
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  AxisymmetricJet.cpp
   BeckwithStoneKhInstability.cpp
   BlastWave.cpp
   BondiHoyleAccretion.cpp
@@ -29,6 +30,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   AnalyticData.hpp
+  AxisymmetricJet.hpp
   BeckwithStoneKhInstability.hpp
   BlastWave.hpp
   BondiHoyleAccretion.hpp
