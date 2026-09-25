@@ -4,6 +4,7 @@
 #pragma once
 
 #include "PointwiseFunctions/AnalyticData/GrMhd/AnalyticData.hpp"
+#include "PointwiseFunctions/AnalyticData/GrMhd/BeckwithStoneKhInstability.hpp"
 #include "PointwiseFunctions/AnalyticData/GrMhd/BlastWave.hpp"
 #include "PointwiseFunctions/AnalyticData/GrMhd/BondiHoyleAccretion.hpp"
 #include "PointwiseFunctions/AnalyticData/GrMhd/CcsnCollapse.hpp"
@@ -28,7 +29,8 @@
 
 namespace grmhd::ValenciaDivClean::InitialData {
 using initial_data_list = tmpl::list<
-    AnalyticData::BlastWave, AnalyticData::BondiHoyleAccretion,
+    AnalyticData::BeckwithStoneKhInstability, AnalyticData::BlastWave,
+    AnalyticData::BondiHoyleAccretion,
     AnalyticData::CcsnCollapse, AnalyticData::KhInstability,
     AnalyticData::MagneticFieldLoop, AnalyticData::MagneticRotor,
     AnalyticData::MagnetizedFmDisk, AnalyticData::MagnetizedTovStar,
