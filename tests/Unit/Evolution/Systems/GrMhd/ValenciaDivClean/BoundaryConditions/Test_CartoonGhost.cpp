@@ -333,7 +333,7 @@ void test_fd_ghost_impl_wrong_direction() {
           empty_scalar, empty_scalar, empty_vec, empty_vec, empty_metric,
           empty_scalar, empty_vec, 2, false),
       Catch::Matchers::ContainsSubstring(
-          "Cartoon BC can only be applied in the x-direction"));
+          "Cartoon BC can only be applied in the x- or z-direction"));
 }
 #endif
 
