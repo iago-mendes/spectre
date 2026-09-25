@@ -63,6 +63,8 @@ size_t extent_delta(const domain::Topology topology) {
       ERROR("Cannot refine topology CartoonSphere");
     case domain::Topology::CartoonCylinder:
       ERROR("Cannot refine topology CartoonCylinder");
+    case domain::Topology::CartoonTranslational:
+      ERROR("Cannot refine topology CartoonTranslational");
     case domain::Topology::HalfS1:
       return 1;
     default:  // LCOV_EXCL_LINE

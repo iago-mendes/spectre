@@ -88,7 +88,9 @@ bool is_valid_dg_mesh(const Mesh<Dim>& mesh, const Element<Dim>& element) {
       }
       case Topology::CartoonSphere:
         [[fallthrough]];
-      case Topology::CartoonCylinder: {
+      case Topology::CartoonCylinder:
+        [[fallthrough]];
+      case Topology::CartoonTranslational: {
         if (basis == Spectral::Basis::Cartoon and refinement_level == 0_st) {
           break;
         } else {

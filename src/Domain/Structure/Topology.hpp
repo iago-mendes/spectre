@@ -43,9 +43,9 @@ namespace domain {
 /// Topology::I1
 ///
 /// \note Currently the hybrid DG-Subcell scheme can be used only in Elements
-/// whose topologies are all among I1, B1Radial, CartoonSphere, and
-/// CartoonCylinder.  Elements with other topologies are automatically treated
-/// as DG-only.
+/// whose topologies are all among I1, B1Radial, CartoonSphere,
+/// CartoonCylinder, and CartoonTranslational.  Elements with other topologies
+/// are automatically treated as DG-only.
 enum class Topology : uint8_t {
   Uninitialized = 0,
   I1 = 1,
@@ -60,7 +60,8 @@ enum class Topology : uint8_t {
   B3Longitude = 10,
   CartoonSphere = 11,
   CartoonCylinder = 12,
-  HalfS1 = 13
+  HalfS1 = 13,
+  CartoonTranslational = 14
 };
 
 /// Output operator for a Topology.
@@ -136,6 +137,10 @@ static constexpr auto cartoon_cylinder_inner =
 /// boundary.
 static constexpr auto cartoon_cylinder_annulus =
     std::array{Topology::I1, Topology::HalfS1, Topology::CartoonCylinder};
+// Cartesian 2D (x-y) plane with a translationally-symmetric collapsed z
+// direction (Kelvin-Helmholtz-style problems).
+static constexpr auto cartoon_rectangle =
+    std::array{Topology::I1, Topology::I1, Topology::CartoonTranslational};
 }  // namespace topologies
 
 }  // namespace domain

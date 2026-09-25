@@ -15,6 +15,7 @@ spectre_target_sources(
   BinaryCompactObject.cpp
   BinaryNeutronStars.cpp
   CartoonCylinder.cpp
+  CartoonRectangle.cpp
   CartoonSphere1D.cpp
   CartoonSphere2D.cpp
   Cylinder.cpp
@@ -45,6 +46,7 @@ spectre_target_headers(
   BinaryCompactObject.hpp
   BinaryNeutronStars.hpp
   CartoonCylinder.hpp
+  CartoonRectangle.hpp
   CartoonSphere1D.hpp
   CartoonSphere2D.hpp
   Cylinder.hpp

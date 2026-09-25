@@ -11,6 +11,7 @@
 #include "Domain/Creators/BinaryCompactObject.hpp"
 #include "Domain/Creators/BinaryNeutronStars.hpp"
 #include "Domain/Creators/CartoonCylinder.hpp"
+#include "Domain/Creators/CartoonRectangle.hpp"
 #include "Domain/Creators/CartoonSphere1D.hpp"
 #include "Domain/Creators/CartoonSphere2D.hpp"
 #include "Domain/Creators/Cylinder.hpp"
@@ -33,8 +34,9 @@ struct domain_creators<3> {
       domain::creators::AngularCartoonSphere2D,
       domain::creators::AngularCylinder, domain::creators::BinaryCompactObject,
       domain::creators::BinaryNeutronStars, domain::creators::Brick,
-      domain::creators::CartoonCylinder, domain::creators::CartoonSphere1D,
-      domain::creators::CartoonSphere2D, domain::creators::Cylinder,
+      domain::creators::CartoonCylinder, domain::creators::CartoonRectangle,
+      domain::creators::CartoonSphere1D, domain::creators::CartoonSphere2D,
+      domain::creators::Cylinder,
       domain::creators::CylindricalBinaryCompactObject,
       domain::creators::FrustalCloak,
       domain::creators::NonconformingSphericalShells,
