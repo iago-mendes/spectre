@@ -14,6 +14,7 @@ Next:
     pipeline_dir: {{ pipeline_dir | default("None") }}
     horizon_l_max: {{ HorizonLMax }}
     control: {{ control }}
+    control_delay: {{ control_delay | default(2) }}
     control_refinement_level: {{ L }}
     control_polynomial_order: {{ P }}
     control_params:

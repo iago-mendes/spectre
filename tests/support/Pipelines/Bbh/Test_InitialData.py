@@ -181,6 +181,7 @@ class TestInitialData(unittest.TestCase):
                     "pipeline_dir": str(self.test_dir.resolve() / "Pipeline"),
                     "horizon_l_max": 20,
                     "control": True,
+                    "control_delay": 2,
                     "control_refinement_level": 1,
                     "control_polynomial_order": 5,
                     "control_params": [
