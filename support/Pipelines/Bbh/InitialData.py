@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 ID_INPUT_FILE_TEMPLATE = Path(__file__).parent / "InitialData.yaml"
 
+# Minimum thickness of the spherical shell around each object, as a multiple of
+# that object's excision radius. The shell is the layer that resolves the
+# horizon, and the domain creator cannot build a shell thinner than 1. See
+# 'id_parameters' for how this floors the objects' outer radii at small
+# separations.
+MIN_SHELL_THICKNESS = 1.6
+
 TargetParams = Literal[
     "MassRatio",
     "MassA",
@@ -122,22 +129,77 @@ def id_parameters(
         )
     else:
         excision_factor = 1.0
+    excision_radius_a = excision_factor * r_plus_A
+    excision_radius_b = excision_factor * r_plus_B
     # Falloff widths of superposition
     L1_dist_A = L1_distance(conformal_mass_a, conformal_mass_b, separation)
     L1_dist_B = separation - L1_dist_A
     falloff_width_A = 3.0 / 5.0 * L1_dist_A
     falloff_width_B = 3.0 / 5.0 * L1_dist_B
-    # This extra refinement was found through trial and error and allowed mass
-    # ratio 6 to evolve through inspiral stably. This extra refinement doesn't
-    # seem to scale linearly with mass ratio. The current hard-coded limits (3
-    # and 5) were enough to find initial data for mass ratio 50 (no evolution
-    # attempted).
+    # Extra radial refinement and object B's cube log map strength scale
+    # logarithmically with mass ratio to resolve the small black hole.
     q = target_params["MassA"] / target_params["MassB"]
-    extra_radial_refinement_l = min(round(q / 3.0) - 1 if (q > 3.0) else 0, 3)
-    extra_radial_refinement_p = min(round(q / 5.0) if (q > 5.0) else 0, 5)
+    object_b_cube_log_map_strength = 1.0 + 0.15 * np.log(q)
+    extra_radial_refinement_l = round(0.3 * np.log(q))
+    extra_radial_refinement_p = round(0.9 * np.log(q))
+    max_extra_radial_refinement_p = 20 - polynomial_order - 2
+    if extra_radial_refinement_p > max_extra_radial_refinement_p:
+        logger.warning(
+            "Clipping extra radial refinement p from"
+            f" {extra_radial_refinement_p} to"
+            f" {max_extra_radial_refinement_p} because polynomial order"
+            f" {polynomial_order} + 2 + extra radial p must not exceed 20."
+        )
+        extra_radial_refinement_p = max_extra_radial_refinement_p
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
+    # Outer radius of the spherical shell around each object, which is also the
+    # inner radius of the surrounding cube. The historical choice is a fixed
+    # fraction of the separation, 'separation / 3.75' (and an extra 1/q for
+    # object B so that it tracks M_B). That ignores the excision radius, so in
+    # units of the excision radius the shell thickness is
+    #     outer_radius / excision_radius = separation / (3.75 * excision / M)
+    # which depends on the separation alone -- q cancels for object B, because
+    # both its excision radius and its outer radius scale as 1/q. Shrinking the
+    # separation therefore thins the shell and eventually inverts it, so that
+    # the domain cannot be built at all.
+    #
+    # Keep the historical choice wherever it is already thick enough, and
+    # otherwise anchor the outer radius to the excision radius. Since the
+    # excision radius of object B scales as 1/q, so does the floor, and the
+    # cube around B keeps its 1/q inner radius and the dynamic range that
+    # 'object_b_cube_log_map_strength' is chosen for.
+    outer_radius_a = max(
+        separation / 3.75, MIN_SHELL_THICKNESS * excision_radius_a
+    )
+    outer_radius_b = max(
+        separation / 3.75 / q, MIN_SHELL_THICKNESS * excision_radius_b
+    )
+    # The domain creator requires the outer radius to stay inside the cube
+    # surrounding each object, i.e. below 'separation / 2', the distance to the
+    # face that the two object cubes share. Object A binds, since its excision
+    # radius is much larger than object B's. Stay below the limit, because the
+    # wedge maps degrade as the shell approaches the cube face.
+    max_outer_radius = 0.9 * separation / 2.0
+    if outer_radius_a > max_outer_radius:
+        logger.warning(
+            f"Clipping ObjectA outer radius from {outer_radius_a} to"
+            f" {max_outer_radius} because the separation {separation} is too"
+            " small to fit a shell of thickness"
+            f" {MIN_SHELL_THICKNESS} x {excision_radius_a} around it. The"
+            " shell will be thinner than requested, which costs radial"
+            " resolution at the horizon. The smallest separation that fits the"
+            " requested shell is"
+            f" {MIN_SHELL_THICKNESS * excision_radius_a / 0.45}."
+        )
+        outer_radius_a = max_outer_radius
+    if outer_radius_b > max_outer_radius:
+        logger.warning(
+            f"Clipping ObjectB outer radius from {outer_radius_b} to"
+            f" {max_outer_radius}."
+        )
+        outer_radius_b = max_outer_radius
     return {
         "ConformalMassRight": conformal_mass_a,
         "ConformalMassLeft": conformal_mass_b,
@@ -148,9 +210,12 @@ def id_parameters(
         "LinearVelocity_x": linear_velocity[0],
         "LinearVelocity_y": linear_velocity[1],
         "LinearVelocity_z": linear_velocity[2],
-        "ExcisionRadiusRight": excision_factor * r_plus_A,
-        "ExcisionRadiusLeft": excision_factor * r_plus_B,
-        "ObjectOuterRadius": separation / 3.75,
+        "ExcisionRadiusRight": excision_radius_a,
+        "ExcisionRadiusLeft": excision_radius_b,
+        "ObjectAOuterRadius": outer_radius_a,
+        "ObjectBOuterRadius": outer_radius_b,
+        "CubeScale": 1.0,
+        "ObjectBCubeLogMapStrength": object_b_cube_log_map_strength,
         "OrbitalAngularVelocity": orbital_angular_velocity,
         "RadialExpansionVelocity": radial_expansion_velocity,
         "ConformalSpinRight_x": chi_A[0],

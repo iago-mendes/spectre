@@ -15,6 +15,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -33,6 +34,7 @@
 #include "Domain/FunctionsOfTime/FixedSpeedCubic.hpp"
 #include "Domain/FunctionsOfTime/PiecewisePolynomial.hpp"
 #include "Domain/FunctionsOfTime/QuaternionFunctionOfTime.hpp"
+#include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/ObjectLabel.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
@@ -181,14 +183,14 @@ void test_connectivity() {
                                             ? create_inner_boundary_condition()
                                             : nullptr})
                                   : std::nullopt,
-                 false},
+                 std::nullopt},
           Object{inner_radius_objectB, outer_radius_objectB, xcoord_objectB,
                  excise_interiorB ? std::make_optional(Excision{
                                         with_boundary_conditions
                                             ? create_inner_boundary_condition()
                                             : nullptr})
                                   : std::nullopt,
-                 false},
+                 std::nullopt},
           center_of_mass_offset,
           envelope_radius,
           outer_radius,
@@ -323,13 +325,13 @@ void test_connectivity() {
                     excise_interiorA ? std::make_optional(Excision{
                                            create_inner_boundary_condition()})
                                      : std::nullopt,
-                    false},
+                    std::nullopt},
                 domain::creators::BinaryCompactObject::Object{
                     inner_radius_objectB, outer_radius_objectB, xcoord_objectB,
                     excise_interiorB ? std::make_optional(Excision{
                                            create_inner_boundary_condition()})
                                      : std::nullopt,
-                    false},
+                    std::nullopt},
                 center_of_mass_offset, envelope_radius, outer_radius,
                 (excise_interiorA and excise_interiorB) ? cube_scale
                                                         : cube_scales[0],
@@ -349,13 +351,13 @@ void test_connectivity() {
                          excise_interiorA ? std::make_optional(Excision{
                                                 std::make_unique<PeriodicBc>()})
                                           : std::nullopt,
-                         false},
+                         std::nullopt},
                   Object{inner_radius_objectB, outer_radius_objectB,
                          xcoord_objectB,
                          excise_interiorB ? std::make_optional(Excision{
                                                 std::make_unique<PeriodicBc>()})
                                           : std::nullopt,
-                         false},
+                         std::nullopt},
                   center_of_mass_offset, envelope_radius, outer_radius,
                   (excise_interiorA and excise_interiorB) ? cube_scale
                                                           : cube_scales[0],
@@ -376,14 +378,14 @@ void test_connectivity() {
                              ? std::make_optional(
                                    Excision{create_inner_boundary_condition()})
                              : std::nullopt,
-                         false},
+                         std::nullopt},
                   Object{inner_radius_objectB, outer_radius_objectB,
                          xcoord_objectB,
                          excise_interiorB
                              ? std::make_optional(
                                    Excision{create_inner_boundary_condition()})
                              : std::nullopt,
-                         false},
+                         std::nullopt},
                   center_of_mass_offset, envelope_radius, outer_radius,
                   (excise_interiorA and excise_interiorB) ? cube_scale
                                                           : cube_scales[0],
@@ -403,13 +405,13 @@ void test_connectivity() {
                          excise_interiorA
                              ? std::make_optional(Excision{nullptr})
                              : std::nullopt,
-                         false},
+                         std::nullopt},
                   Object{inner_radius_objectB, outer_radius_objectB,
                          xcoord_objectB,
                          excise_interiorB
                              ? std::make_optional(Excision{nullptr})
                              : std::nullopt,
-                         false},
+                         std::nullopt},
                   center_of_mass_offset, envelope_radius, outer_radius,
                   (excise_interiorA and excise_interiorB) ? cube_scale
                                                           : cube_scales[0],
@@ -426,6 +428,68 @@ void test_connectivity() {
       }
     }
   }
+}
+
+// A binary with mass ratio q = 1e6, set up with the radii that the BBH initial
+// data pipeline chooses at separation 10. The shell around object B is then
+// only a few times 1e-6 across, so distinct corners of its blocks are closer
+// to each other than an absolute tolerance of 1e-6. Finding the block
+// neighbors must not identify these corners with each other.
+void test_small_object() {
+  INFO("Small object");
+  const double separation = 10.0;
+  const double mass_ratio = 1.0e6;
+  const double mass_b = 1.0 / (1.0 + mass_ratio);
+  const double mass_a = 1.0 - mass_b;
+  const double x_coord_a = mass_b * separation;
+  const double x_coord_b = x_coord_a - separation;
+  // Excisions at 0.93 r_+ for conformal masses 0.82 M
+  const double inner_radius_a = 0.93 * 2.0 * 0.82 * mass_a;
+  const double inner_radius_b = 0.93 * 2.0 * 0.82 * mass_b;
+  const double outer_radius_a = separation / 3.75;
+  const double outer_radius_b = separation / 3.75 / mass_ratio;
+  CAPTURE(inner_radius_b);
+  CAPTURE(outer_radius_b);
+  const domain::creators::BinaryCompactObject binary_compact_object{
+      Object{inner_radius_a, outer_radius_a, x_coord_a, true, 1.0, 1.0},
+      Object{inner_radius_b, outer_radius_b, x_coord_b, true, 1.0,
+             1.0 + 0.15 * std::log(mass_ratio)},
+      {{0.0, 0.0}},
+      4.0 * separation,
+      1.0e3,
+      1.0,
+      0_st,
+      3_st,
+      true,
+      Distribution::Projective,
+      {},
+      Distribution::Linear,
+      120.0};
+  const auto domain = binary_compact_object.create_domain();
+  const auto& blocks = domain.blocks();
+  REQUIRE(blocks.size() == 44);
+  // The only external boundaries are the two excision surfaces (the inner
+  // faces of the 6 shell blocks around each object) and the outer boundary
+  // (the outer faces of the 10 outer shell blocks). Every other block face has
+  // a neighbor.
+  size_t num_external_boundaries = 0;
+  for (const auto& block : blocks) {
+    CAPTURE(block.name());
+    const auto& external_boundaries = block.external_boundaries();
+    num_external_boundaries += external_boundaries.size();
+    CHECK(block.neighbors().size() + external_boundaries.size() == 6);
+    const size_t block_id = block.id();
+    if (block_id < 6 or (block_id >= 12 and block_id < 18)) {
+      CHECK(external_boundaries ==
+            std::unordered_set<Direction<3>>{Direction<3>::lower_zeta()});
+    } else if (block_id >= 34) {
+      CHECK(external_boundaries ==
+            std::unordered_set<Direction<3>>{Direction<3>::upper_zeta()});
+    } else {
+      CHECK(external_boundaries.empty());
+    }
+  }
+  CHECK(num_external_boundaries == 22);
 }
 
 std::string stringize(const bool t) { return t ? "true" : "false"; }
@@ -506,16 +570,18 @@ std::string create_option_string(
          "    InnerRadius: 1.0\n"
          "    OuterRadius: 2.0\n"
          "    XCoord: 3.0\n" +
-         interior_A +
-         "    UseLogarithmicMap: " + stringize(use_logarithmic_map_AB) +
+         interior_A + "    ShellLogMapStrength: " +
+         (use_logarithmic_map_AB ? "1.0"s : "None"s) +
          "\n"
+         "    CubeLogMapStrength: None\n"
          "  ObjectB:\n"
          "    InnerRadius: 0.2\n"
          "    OuterRadius: 1.0\n"
          "    XCoord: -2.0\n" +
-         interior_B +
-         "    UseLogarithmicMap: " + stringize(use_logarithmic_map_AB) +
+         interior_B + "    ShellLogMapStrength: " +
+         (use_logarithmic_map_AB ? "1.0"s : "None"s) +
          "\n"
+         "    CubeLogMapStrength: None\n"
          "  CenterOfMassOffset: [0.1, 0.2]\n"
          "  Envelope:\n"
          "    Radius: 22.0\n"
@@ -817,8 +883,16 @@ void test_binary_factory() {
 void test_parse_errors() {
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{20.0},
           Distribution::Linear, 120.0, false, false, std::nullopt,
@@ -827,8 +901,16 @@ void test_parse_errors() {
           "First radial partition must be larger than the envelope radius"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{40.0},
           Distribution::Linear, 120.0, false, false, std::nullopt,
@@ -837,8 +919,16 @@ void test_parse_errors() {
           "Last radial partition must be smaller than the outer radius"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{28.0, 28.0},
           Distribution::Linear, 120.0, false, false, std::nullopt,
@@ -847,8 +937,16 @@ void test_parse_errors() {
           "Radial partitioning contains duplicate element"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{28.0, 29.0},
           std::vector{Distribution::Linear}, 120.0, false, false, std::nullopt,
@@ -857,8 +955,16 @@ void test_parse_errors() {
           "Specify a 'RadialDistribution' for every spherical shell."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -867,8 +973,16 @@ void test_parse_errors() {
           "The x-coordinate of ObjectA's center is expected to be positive."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -877,8 +991,16 @@ void test_parse_errors() {
           "The x-coordinate of ObjectB's center is expected to be negative."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 8.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -7.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 8.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -7.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -888,8 +1010,16 @@ void test_parse_errors() {
           "small! The Frustums will be malformed."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 8.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -7.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 8.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -7.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 0.5, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -899,8 +1029,16 @@ void test_parse_errors() {
           "separation between the two objects."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{1.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{1.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -909,8 +1047,16 @@ void test_parse_errors() {
           "ObjectB's inner radius must be less than its outer radius."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{3.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{3.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -919,8 +1065,16 @@ void test_parse_errors() {
           "ObjectA's inner radius must be less than its outer radius."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -930,8 +1084,16 @@ void test_parse_errors() {
           "using 0.8"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -941,8 +1103,12 @@ void test_parse_errors() {
           "using 0.8"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 0.8, -1.0, std::nullopt, true},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5, 0.8, -1.0, std::nullopt, std::optional<double>{1.0}},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, true, 6_st,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -953,8 +1119,12 @@ void test_parse_errors() {
           "of Object B"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, std::nullopt, true},
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3, 0.8, 1.0, std::nullopt, std::optional<double>{1.0}},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
@@ -965,15 +1135,23 @@ void test_parse_errors() {
           "of Object A"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, false, false},
-          Object{0.5, 0.8, -1.0, false, false},
+          Object{0.3, 0.8, 1.0, false, std::nullopt},
+          Object{0.5, 0.8, -1.0, false, std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.2, 2_st, 6_st),
       Catch::Matchers::ContainsSubstring(
           "A filled object cannot be offset within its cube."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0,
           std::vector<std::array<size_t, 3>>{}, 6_st, true,
           Distribution::Projective, std::vector<double>{}, Distribution::Linear,
@@ -982,8 +1160,16 @@ void test_parse_errors() {
       Catch::Matchers::ContainsSubstring("Invalid 'InitialRefinement'"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st,
           std::vector<std::array<size_t, 3>>{}, true, Distribution::Projective,
           std::vector<double>{}, Distribution::Linear, 120.0, false, false,
@@ -993,8 +1179,16 @@ void test_parse_errors() {
   // Misuse of SH types when SH is disabled
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0, 2_st,
           std::unordered_map<std::string, std::variant<std::array<size_t, 3>,
                                                        std::array<size_t, 2>>>{
@@ -1006,8 +1200,16 @@ void test_parse_errors() {
           "only valid for spherical-harmonic shell blocks"));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.5, 0.8, 1.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.3, 0.8, -1.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.5,
+                 0.8,
+                 1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.3,
+                 0.8,
+                 -1.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.1, 0.2}}, 25.5, 32.4, 1.0,
           std::unordered_map<std::string,
                              std::variant<std::array<size_t, 3>, size_t>>{
@@ -1031,8 +1233,10 @@ void test_spherical_harmonics_wavezone() {
       std::unordered_map<std::string,
                          std::variant<std::array<size_t, 3>, size_t>>;
   const domain::creators::BinaryCompactObject bco_sh{
-      Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-      Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+      Object{
+          0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, std::nullopt},
+      Object{
+          0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, std::nullopt},
       std::array<double, 2>{{0.0, 0.0}},
       25.5,
       32.4,
@@ -1127,8 +1331,10 @@ void test_spherical_harmonics_wavezone() {
   // 2-shell test: add a radial partition and verify the shell-to-shell
   // neighbor.
   const domain::creators::BinaryCompactObject bco_sh2{
-      Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-      Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+      Object{
+          0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, std::nullopt},
+      Object{
+          0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, std::nullopt},
       std::array<double, 2>{{0.0, 0.0}},
       25.5,
       32.4,
@@ -1201,8 +1407,16 @@ void test_spherical_harmonics_wavezone() {
   // Global scalar refinement (non-zero) -> post-expansion angular error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, 1_st,
           valid_grid_points, true, Distribution::Projective,
           std::vector<double>{}, Distribution::Linear, 120.0, true, false,
@@ -1213,8 +1427,16 @@ void test_spherical_harmonics_wavezone() {
   // Global scalar grid points (ell too small) -> post-expansion ell>=6 error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, valid_refinement,
           4_st, true, Distribution::Projective, std::vector<double>{},
           Distribution::Linear, 120.0, true, false, std::nullopt,
@@ -1224,8 +1446,16 @@ void test_spherical_harmonics_wavezone() {
   // ell>=6 error. This is the canonical user-facing path to this error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, valid_refinement,
           GridPointsMap{{"ObjectAShell", std::array<size_t, 3>{3, 3, 3}},
                         {"ObjectACube", std::array<size_t, 3>{3, 3, 3}},
@@ -1240,8 +1470,16 @@ void test_spherical_harmonics_wavezone() {
   // Global array<3> with l_max != m_max -> post-expansion single-ell error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, valid_refinement,
           std::array<size_t, 3>{4, 8, 10}, true, Distribution::Projective,
           std::vector<double>{}, Distribution::Linear, 120.0, true, false,
@@ -1251,8 +1489,16 @@ void test_spherical_harmonics_wavezone() {
   // Map refinement with array<3> for OuterShell0 -> pre-expansion error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0,
           RefinementMap{{"ObjectAShell", std::array<size_t, 3>{1, 1, 1}},
                         {"ObjectACube", std::array<size_t, 3>{1, 1, 1}},
@@ -1269,8 +1515,16 @@ void test_spherical_harmonics_wavezone() {
   // Map grid points with array<3> for OuterShell0 -> pre-expansion error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, valid_refinement,
           GridPointsMap{{"ObjectAShell", std::array<size_t, 3>{3, 3, 3}},
                         {"ObjectACube", std::array<size_t, 3>{3, 3, 3}},
@@ -1286,8 +1540,16 @@ void test_spherical_harmonics_wavezone() {
   // Map refinement with size_t on a non-SH block -> pre-expansion error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0,
           RefinementMap{{"Envelope", size_t{1}}, {"OuterShell0", size_t{2}}},
           valid_grid_points, true, Distribution::Projective,
@@ -1299,8 +1561,16 @@ void test_spherical_harmonics_wavezone() {
   // Map grid points with array<2> on a non-SH block -> pre-expansion error.
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
-          Object{0.3, 1.0, 3.0, {{create_inner_boundary_condition()}}, false},
-          Object{0.5, 1.0, -3.0, {{create_inner_boundary_condition()}}, false},
+          Object{0.3,
+                 1.0,
+                 3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
+          Object{0.5,
+                 1.0,
+                 -3.0,
+                 {{create_inner_boundary_condition()}},
+                 std::nullopt},
           std::array<double, 2>{{0.0, 0.0}}, 25.5, 32.4, 1.0, valid_refinement,
           GridPointsMap{{"Envelope", std::array<size_t, 2>{3, 4}},
                         {"OuterShell0", std::array<size_t, 2>{4, 7}}},
@@ -1331,8 +1601,8 @@ void test_kerr_horizon_conforming() {
   const double y_offset = 0.1;
   const double z_offset = 0.2;
   const domain::creators::BinaryCompactObject domain_creator{
-      Object{inner_radius_A, 4., x_pos_A, true, true},
-      Object{inner_radius_B, 4., x_pos_B, true, true},
+      Object{inner_radius_A, 4., x_pos_A, true, std::optional<double>{1.0}},
+      Object{inner_radius_B, 4., x_pos_B, true, std::optional<double>{1.0}},
       std::array<double, 2>{{0.1, 0.2}},
       40.,
       200.,
@@ -1411,6 +1681,7 @@ void test_kerr_horizon_conforming() {
 SPECTRE_TEST_CASE("Unit.Domain.Creators.BinaryCompactObject",
                   "[Domain][Unit]") {
   test_connectivity();
+  test_small_object();
   test_bns_domain_with_cubes();
   for (const auto& [with_bc, add_time_dep, excise_B] :
        cartesian_product(make_array(true, false), make_array(true, false),
