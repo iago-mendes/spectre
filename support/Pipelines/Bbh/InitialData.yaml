@@ -27,6 +27,7 @@ Next:
     evolve: {{ evolve }}
     eccentricity_control: {{ eccentricity_control }}
     negative_expansion_bc: {{ negative_expansion_bc }}
+    run_convergence_tests: {{ run_convergence_tests }}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}
