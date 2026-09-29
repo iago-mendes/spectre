@@ -55,6 +55,108 @@ ScalarQuantities = [
 ]
 
 
+def control_scales(
+    control_params: List[TargetParams],
+    param_index_map: Dict[str, int],
+    target_params: Dict[TargetParams, Union[float, Sequence[float]]],
+    u: np.ndarray,
+    num_params: int,
+):
+    """Natural magnitudes of the free data and of the residuals.
+
+    The control problem is posed in raw free data, whose components differ in
+    magnitude by powers of the mass ratio: conformal_mass_b ~ 1/q, while
+    horizon_rotation_b ~ chi_B / (2 rbar_B) ~ q. The Jacobian inherits this, so
+    d(chi_B)/d(Omega_B) = 2 rbar_B ~ 1/q and d(chi_B)/d(conformal_mass_b) ~ q,
+    and its condition number grows like q (chi_B = 0) or q^3 (chi_B > 0).
+
+    This hurts Broyden's method: its update 'J += outer(F, du) / (du . du)'
+    writes its correction into the columns of J in proportion to 'du', so a
+    step dominated by Omega_B pollutes the Omega_B column of every row,
+    including rows that should not couple to it at all. Inverting the polluted
+    Jacobian then leaks the chi_B residual into the conformal-mass step.
+
+    Dividing each free-data component by the scale below makes the spin control
+    the effective spin 'chi_eff_a = 2 rbar_a Omega_a', where
+    'rbar_a = Mbar_a (1 + sqrt(1 - chi_a^2))' is the horizon radius of the
+    conformal Kerr solution, and each mass control a fraction of its target.
+    The mass residuals are measured relative to their targets as well, and the
+    spin residuals are already dimensionless. The scaled Jacobian is then O(1)
+    in every entry.
+
+    The same rule extends to the controls of hyperbolic encounters: the ADM
+    mass and the ADM angular momentum are divided by their targets, and the
+    free data that control them (the radial expansion velocity and the orbital
+    angular velocity) by their own initial magnitudes. Without this, the
+    largest Jacobian entry is d(J_ADM^z)/d(Omega_0) = eta D^2, so the condition
+    number grows as the square of the separation D.
+
+    The scales are computed once from the initial free data and held fixed, so
+    that the Jacobian accumulated by Broyden's method keeps a single consistent
+    meaning across iterations.
+
+    Arguments:
+      control_params: List of parameters to control.
+      param_index_map: Index of each control parameter, and of its free data,
+        in the vectors of residuals and free data.
+      target_params: Target values of the control parameters.
+      u: Initial free data.
+      num_params: Length of the vectors of residuals and free data.
+
+    Returns: (u_scale, f_scale), both of length 'num_params', such that the
+      dimensionless free data is 'u / u_scale' and the dimensionless residual
+      is 'F / f_scale'. Components without a natural scale are set to 1.
+    """
+    u_scale = np.ones(num_params)
+    f_scale = np.ones(num_params)
+
+    def set_scale(param_key, free_data_key):
+        # Only the controlled quantities are in the 'param_index_map'
+        if (
+            param_key not in control_params
+            or param_key not in param_index_map
+            or free_data_key not in param_index_map
+        ):
+            return
+        idx = param_index_map[param_key]
+        u_value = u[param_index_map[free_data_key]]
+        f_value = target_params.get(param_key)
+        if u_value and np.isfinite(u_value):
+            u_scale[idx] = abs(u_value)
+        if f_value and np.isfinite(f_value):
+            f_scale[idx] = abs(f_value)
+
+    # Controls of hyperbolic encounters
+    set_scale("AdmMass", "radial_expansion_velocity")
+    set_scale("AdmAngularMomentumZ", "orbital_angular_velocity")
+
+    # Horizon masses and spins
+    for mass_key, spin_key in zip(
+        ["MassA", "MassB"], ["DimensionlessSpinA", "DimensionlessSpinB"]
+    ):
+        if mass_key in control_params:
+            idx = param_index_map[mass_key]
+            # Fall back to the conformal mass if the target is unusable, so the
+            # scale is never zero
+            target_mass = abs(target_params.get(mass_key, 0.0))
+            if target_mass == 0.0:
+                target_mass = abs(u[idx])
+            if target_mass > 0.0:
+                u_scale[idx] = target_mass
+                f_scale[idx] = target_mass
+        if spin_key in control_params and mass_key in control_params:
+            conformal_spin = target_params[spin_key]
+            spin_term = 1.0 + np.sqrt(
+                1.0 - np.dot(conformal_spin, conformal_spin)
+            )
+            rbar = abs(u[param_index_map[mass_key]]) * spin_term
+            if rbar > 0.0:
+                idx = param_index_map[spin_key]
+                # Omega -> 2 rbar Omega, i.e. the effective spin
+                u_scale[idx : idx + 3] = 1.0 / (2.0 * rbar)
+    return u_scale, f_scale
+
+
 def control_id(
     id_input_file_path: Union[str, Path],
     control_params: List[TargetParams],
@@ -107,6 +209,15 @@ def control_id(
         CenterOfMass: [0., 0., 0.]
         AdmLinearMomentum: [0., 0., 0.]
     ```
+
+    The free data is updated with Broyden's method, a quasi-Newton method,
+    which is posed in non-dimensional variables (see 'control_scales').
+    Diagnostic data is written to 'ControlParams.h5' in the initial-data
+    directory: the residuals of the control parameters in 'Residuals.dat', the
+    non-dimensional Jacobian in 'Jacobian.dat' (one row per iteration), and the
+    scales of the free data and of the residuals, in this order, in
+    'ControlScales.dat'. A Jacobian entry in raw units is the non-dimensional
+    entry times the residual scale divided by the free-data scale.
 
     Arguments:
       control_params: List of parameters to control.
@@ -184,12 +295,16 @@ def control_id(
     id_dir = Path(id_run_dir).resolve().parent
     output_filename = str(id_dir / "ControlParams.h5")
     residual_legend = []
+    free_data_legend = []
     jacobian_legend = []
     for param in control_params:
+        free_data = FreeDataFromParams[param]
         if param in ScalarQuantities:
             residual_legend.append(param)
+            free_data_legend.append(free_data)
         else:
             residual_legend.extend([f"{param}_{xyz}" for xyz in "xyz"])
+            free_data_legend.extend([f"{free_data}_{xyz}" for xyz in "xyz"])
     for residual in residual_legend:
         for free_data in [
             FreeDataFromParams[param] for param in control_params
@@ -432,7 +547,22 @@ def control_id(
             ] = (
                 q * eta * separation**2 * OmegaZ0
             )
+
+    # Non-dimensionalize the Newton system. From here on J is the Jacobian of
+    # the scaled residual F / f_scale with respect to the scaled free data
+    # u / u_scale, so that all of its entries are O(1); see 'control_scales'.
+    # Only the linear algebra (the Newton step and the Broyden update) works in
+    # scaled variables. Everything else keeps working in raw units.
+    u_scale, f_scale = control_scales(
+        control_params, param_index_map, target_params, u, len(u)
+    )
+    J *= u_scale[np.newaxis, :] / f_scale[:, np.newaxis]
     with spectre_h5.H5File(output_filename, "a") as output_file:
+        dat_file = output_file.try_insert_dat(
+            "ControlScales", free_data_legend + residual_legend, 0
+        )
+        dat_file.append(np.concatenate([u_scale, f_scale]))
+        output_file.close_current_object()
         dat_file = output_file.try_insert_dat("Jacobian", jacobian_legend, 0)
         dat_file.append(J.flatten())
 
@@ -506,7 +636,7 @@ def control_id(
             )
 
         # Update the free parameters using a quasi-Newton-Raphson method
-        Delta_u = -np.dot(np.linalg.inv(J), F)
+        Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
         if delay_control:
             Delta_u[delayed_indices] = 0.0
 
@@ -519,8 +649,12 @@ def control_id(
         if delay_control:
             F[delayed_indices] = 0.0
 
-        # Update the Jacobian using Broyden's method
-        J += np.outer(F, Delta_u) / np.dot(Delta_u, Delta_u)
+        # Update the Jacobian using Broyden's method, in scaled variables so
+        # that no single control can dominate the update
+        scaled_Delta_u = Delta_u / u_scale
+        J += np.outer(F / f_scale, scaled_Delta_u) / np.dot(
+            scaled_Delta_u, scaled_Delta_u
+        )
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Jacobian", jacobian_legend, 0
