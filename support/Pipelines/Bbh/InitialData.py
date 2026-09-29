@@ -142,9 +142,15 @@ def id_parameters(
     object_b_cube_log_map_strength = 1.0 + 0.15 * np.log(q)
     extra_radial_refinement_l = round(0.3 * np.log(q))
     extra_radial_refinement_p = round(0.9 * np.log(q))
-    assert (
-        polynomial_order + 2 + extra_radial_refinement_p <= 20
-    ), "The polynomial order + extra radial points exceeds the maximum of 20."
+    max_extra_radial_refinement_p = 20 - polynomial_order - 2
+    if extra_radial_refinement_p > max_extra_radial_refinement_p:
+        logger.warning(
+            "Clipping extra radial refinement p from"
+            f" {extra_radial_refinement_p} to"
+            f" {max_extra_radial_refinement_p} because polynomial order"
+            f" {polynomial_order} + 2 + extra radial p must not exceed 20."
+        )
+        extra_radial_refinement_p = max_extra_radial_refinement_p
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
