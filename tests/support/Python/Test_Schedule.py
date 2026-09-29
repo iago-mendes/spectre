@@ -185,6 +185,46 @@ NUM_TASKS_PER_NODE={{ num_slurm_tasks | default (5) }}
             ["0000_InputFile", "0001_InputFile", "0002_InputFile"],
         )
 
+    def test_run_redirect_output(self):
+        # Create an executable that writes to stdout and stderr
+        executable = self.test_dir / "TestExecOutput"
+        executable.write_text("""#!/bin/bash
+echo "Output of TestExecOutput"
+echo "Error of TestExecOutput" >&2
+""")
+        executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
+        # Create an input file with a 'Next' entrypoint that logs a message
+        input_file_template = self.test_dir / "InputFileWithNext.yaml"
+        input_file_template.write_text("""
+Executable: TestExecOutput
+Next:
+  Run: logging:warning
+  With:
+    msg: Next entrypoint ran
+---
+Option: TestOpt
+""")
+        # Run once with the output streaming to the console, and once with the
+        # output redirected to the log file
+        for run_name, redirect_output in [("Stream", False), ("Log", True)]:
+            root_handlers = logging.getLogger().handlers[:]
+            proc = schedule(
+                input_file_template=input_file_template,
+                scheduler=None,
+                executable=executable,
+                run_dir=self.test_dir / run_name,
+                out_file_name="Run.out",
+                redirect_output=redirect_output,
+            )
+            self.assertEqual(proc.returncode, 0)
+            # The logger handlers are restored
+            self.assertEqual(logging.getLogger().handlers, root_handlers)
+        self.assertFalse((self.test_dir / "Stream/Run.out").exists())
+        log = (self.test_dir / "Log/Run.out").read_text()
+        self.assertIn("Output of TestExecOutput", log)
+        self.assertIn("Error of TestExecOutput", log)
+        self.assertIn("Next entrypoint ran", log)
+
     def test_schedule(self):
         # Submit a batch job to create the first segment
         schedule(
@@ -241,6 +281,7 @@ NUM_TASKS_PER_NODE={{ num_slurm_tasks | default (5) }}
                 metadata_option="MetaOpt",
                 force=False,
                 validate=True,
+                redirect_output=False,
                 input_file="InputFile.yaml",
                 input_file_name="InputFile.yaml",
                 input_file_template=str(self.test_dir / "InputFile.yaml"),

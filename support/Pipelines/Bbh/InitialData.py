@@ -113,11 +113,11 @@ def id_parameters(
     # Spins
     chi_A = np.asarray(target_params["DimensionlessSpinA"])
     r_plus_A = conformal_mass_a * (1.0 + np.sqrt(1 - np.dot(chi_A, chi_A)))
-    Omega_A = horizon_rotation_a
+    Omega_A = list(horizon_rotation_a)
     Omega_A[2] += orbital_angular_velocity
     chi_B = np.asarray(target_params["DimensionlessSpinB"])
     r_plus_B = conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_B, chi_B)))
-    Omega_B = horizon_rotation_b
+    Omega_B = list(horizon_rotation_b)
     Omega_B[2] += orbital_angular_velocity
     if negative_expansion_bc:
         # For high spins, we need to place the excisions closer to the outer
@@ -264,6 +264,7 @@ def generate_id(
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
+    run_convergence_tests: bool = False,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
     segments_dir: Optional[Union[str, Path]] = None,
@@ -315,6 +316,11 @@ def generate_id(
         be inside of the apparent horizons. This helps to find horizons and
         start an evolution from the initial data without extrapolation.
         (default: True)
+      run_convergence_tests: If set to True, run resolution convergence tests
+        in the control loop. A test before the control loop selects the
+        polynomial order, and a test after the control loop checks that it was
+        appropriate. See 'support.Pipelines.Bbh.ControlId' for details.
+        (default: False)
       pipeline_dir: Directory of the simulation, in which the pipeline
         creates its runs. Required when 'evolve' is set to True. The initial
         data runs in the 'ID' directory of the next eccentricity-control
@@ -486,6 +492,7 @@ def generate_id(
         evolve=evolve,
         eccentricity_control=eccentricity_control,
         negative_expansion_bc=negative_expansion_bc,
+        run_convergence_tests=run_convergence_tests,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
         segments_dir=segments_dir,
@@ -656,6 +663,15 @@ def generate_id(
         "boundaries are inside of the apparent horizons. This helps to find"
         "horizons and start an evolution from the initial data without"
         "extrapolation."
+    ),
+)
+@click.option(
+    "--run-convergence-tests",
+    is_flag=True,
+    help=(
+        "Run resolution convergence tests in the control loop. A test before"
+        " the control loop selects the polynomial order, and a test after the"
+        " control loop checks that it was appropriate."
     ),
 )
 @click.option(
