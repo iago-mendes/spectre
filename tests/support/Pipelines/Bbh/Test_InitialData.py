@@ -11,7 +11,11 @@ import yaml
 from click.testing import CliRunner
 
 from spectre.Informer import unit_test_build_path
-from spectre.Pipelines.Bbh.InitialData import generate_id_command, id_parameters
+from spectre.Pipelines.Bbh.InitialData import (
+    MIN_SHELL_THICKNESS,
+    generate_id_command,
+    id_parameters,
+)
 from spectre.support.Logging import configure_logging
 
 
@@ -80,6 +84,10 @@ class TestInitialData(unittest.TestCase):
             [params[f"HorizonRotationLeft_{xyz}"] for xyz in "xyz"],
             [-0.3, -0.4, -0.4 + 0.01],
         )
+        # The shells are thick enough at this separation, so the outer radii
+        # are the historical fractions of the separation
+        self.assertAlmostEqual(params["ObjectAOuterRadius"], 20.0 / 3.75)
+        self.assertAlmostEqual(params["ObjectBOuterRadius"], 20.0 / 3.75 / 1.5)
         self.assertAlmostEqual(params["FalloffWidthRight"], 6.479672589667676)
         self.assertAlmostEqual(params["FalloffWidthLeft"], 5.520327410332324)
         self.assertEqual(params["L"], 1)
@@ -89,6 +97,53 @@ class TestInitialData(unittest.TestCase):
             params["ConformalMassRight"] * (params["XRight"] - 0.1)
             + params["ConformalMassLeft"] * (params["XLeft"] - 0.1),
             0.0,
+        )
+
+    def test_small_separation(self):
+        mass_ratio = 1.0e4
+        mass_a = mass_ratio / (1.0 + mass_ratio)
+        mass_b = 1.0 / (1.0 + mass_ratio)
+
+        def params_at(separation):
+            return id_parameters(
+                conformal_mass_a=0.82 * mass_a,
+                conformal_mass_b=0.82 * mass_b,
+                horizon_rotation_a=[0.0, 0.0, 0.0],
+                horizon_rotation_b=[0.0, 0.0, 0.0],
+                center_of_mass_offset=[0.0, 0.0, 0.0],
+                linear_velocity=[0.0, 0.0, 0.0],
+                separation=separation,
+                orbital_angular_velocity=0.01,
+                radial_expansion_velocity=0.0,
+                refinement_level=1,
+                polynomial_order=5,
+                negative_expansion_bc=True,
+                target_params={
+                    "MassA": mass_a,
+                    "MassB": mass_b,
+                    "DimensionlessSpinA": [0.0, 0.0, 0.0],
+                    "DimensionlessSpinB": [0.0, 0.0, 0.0],
+                },
+            )
+
+        # The shells are floored at MIN_SHELL_THICKNESS excision radii
+        params = params_at(5.5)
+        self.assertAlmostEqual(
+            params["ObjectAOuterRadius"],
+            MIN_SHELL_THICKNESS * params["ExcisionRadiusRight"],
+        )
+        self.assertAlmostEqual(
+            params["ObjectBOuterRadius"],
+            MIN_SHELL_THICKNESS * params["ExcisionRadiusLeft"],
+        )
+        # At even smaller separations the shell around object A is clipped to
+        # stay inside its cube
+        with self.assertLogs(level="WARNING"):
+            params = params_at(5.0)
+        self.assertAlmostEqual(params["ObjectAOuterRadius"], 0.9 * 5.0 / 2.0)
+        self.assertAlmostEqual(
+            params["ObjectBOuterRadius"],
+            MIN_SHELL_THICKNESS * params["ExcisionRadiusLeft"],
         )
 
     def test_cli(self):
