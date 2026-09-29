@@ -12,6 +12,7 @@ import yaml
 from spectre.IO.H5 import open_volfiles, select_observation
 from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_CONTROL_DELAY,
+    DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RESIDUAL_TOLERANCE,
     TargetParams,
@@ -45,6 +46,8 @@ def postprocess_id(
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
     pipeline_dir: Optional[Union[str, Path]] = None,
+    run_convergence_tests: bool = False,
+    convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -91,6 +94,10 @@ def postprocess_id(
       pipeline_dir: Directory of the simulation, in which the pipeline
         creates its runs.
         Required if 'evolve' is set to True.
+      run_convergence_tests: Run resolution convergence tests in the control
+        loop. See ControlId.py for details. (Default: False)
+      convergence_test_tolerance: Tolerance of the convergence tests.
+        (Default: 1e-5)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -169,6 +176,8 @@ def postprocess_id(
             refinement_level=control_refinement_level,
             polynomial_order=control_polynomial_order,
             negative_expansion_bc=negative_expansion_bc,
+            run_convergence_tests=run_convergence_tests,
+            convergence_test_tolerance=convergence_test_tolerance,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
@@ -245,6 +254,22 @@ def postprocess_id(
     type=click.Path(writable=True, path_type=Path),
     help="Path to the file where the horizon data is written to.",
     show_default="Horizons.h5 in the ID_RUN_DIR",
+)
+@click.option(
+    "--run-convergence-tests",
+    is_flag=True,
+    help=(
+        "Run resolution convergence tests in the control loop. A test before"
+        " the control loop selects the polynomial order, and a test after the"
+        " control loop checks that it was appropriate."
+    ),
+)
+@click.option(
+    "--convergence-test-tolerance",
+    type=float,
+    default=DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    show_default=True,
+    help="Tolerance of the resolution convergence tests.",
 )
 @scheduler_options
 def postprocess_id_command(**kwargs):

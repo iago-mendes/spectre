@@ -142,6 +142,7 @@ class TestInitialData(unittest.TestCase):
                     str(self.test_dir / "Pipeline"),
                     "--evolve",
                     "--eccentricity-control",
+                    "--run-convergence-tests",
                     "--no-submit",
                 ]
             )
@@ -194,6 +195,7 @@ class TestInitialData(unittest.TestCase):
                     "evolve": True,
                     "eccentricity_control": True,
                     "negative_expansion_bc": True,
+                    "run_convergence_tests": True,
                     "scheduler": "None",
                     "copy_executable": "None",
                     "submit_script_template": "None",

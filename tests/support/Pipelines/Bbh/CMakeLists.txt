@@ -10,6 +10,13 @@ spectre_add_python_bindings_test(
   None
   TIMEOUT 60)
 
+spectre_add_python_bindings_test(
+  "support.Pipelines.Bbh.ControlId"
+  Test_ControlId.py
+  "Python"
+  None
+  TIMEOUT 20)
+
 if (SpEC_FOUND)
   spectre_add_python_bindings_test(
     "support.Pipelines.Bbh.EccentricityControl"

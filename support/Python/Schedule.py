@@ -1,6 +1,7 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
+import contextlib
 import functools
 import logging
 import os
@@ -14,6 +15,8 @@ import click
 import jinja2
 import jinja2.meta
 import numpy as np
+import rich.console
+import rich.logging
 import yaml
 from rich.pretty import pretty_repr
 
@@ -119,6 +122,31 @@ def _copy_submit_script_template(
     return dest
 
 
+@contextlib.contextmanager
+def _redirect_output_to(out_file: Path):
+    """Redirect the Python logger output to the 'out_file'
+
+    Swaps the handlers of the root logger for one that writes to the
+    'out_file' and yields the open file, so it can also be passed as the
+    'stdout' and 'stderr' of a subprocess. The previous handlers are restored
+    on exit, so nested redirections work.
+    """
+    with open(out_file, "a") as open_out_file:
+        root_logger = logging.getLogger()
+        saved_handlers = root_logger.handlers[:]
+        root_logger.handlers = [
+            rich.logging.RichHandler(
+                console=rich.console.Console(
+                    file=open_out_file, width=120, force_terminal=False
+                ),
+            )
+        ]
+        try:
+            yield open_out_file
+        finally:
+            root_logger.handlers = saved_handlers
+
+
 def schedule(
     input_file_template: Union[str, Path],
     scheduler: Optional[Union[str, Sequence]],
@@ -139,6 +167,7 @@ def schedule(
     force: bool = False,
     validate: Optional[bool] = True,
     profile_with: Optional[str] = None,
+    redirect_output: bool = False,
     extra_params: dict = {},
     **kwargs,
 ) -> Optional[subprocess.CompletedProcess]:
@@ -320,6 +349,11 @@ def schedule(
         https://spectre-code.org/profiling.html). This will modify the submit
         script to run the executable with 'hpcrun' and postprocess the profiling
         data with 'hpcstruct' and 'hpcprof'. (Default: False).
+      redirect_output: Optional. When 'True' and the executable runs directly
+        (no 'scheduler'), write the output of the executable to the 'out_file'
+        instead of the console, and also the Python log output while it runs
+        and while the 'Next' entrypoint runs. Useful to run many small runs from
+        a script without flooding its log. (Default: 'False')
       extra_params: Optional. Dictionary of extra parameters passed to input
         file and submit script templates. Parameters can also be passed as
         keyword arguments to this function instead.
@@ -658,37 +692,58 @@ def schedule(
         env["OMP_NUM_THREADS"] = "1"
         env["OPENBLAS_NUM_THREADS"] = "1"
         env["MKL_NUM_THREADS"] = "1"
-        process = subprocess.Popen(run_command, cwd=run_dir, env=env)
-        # Realtime streaming of _captured_ stdout and stderr to the console
-        # doesn't seem to work reliably, so we just let the process stream
-        # directly to the console and wait for it to complete.
-        process.wait()
-        # Raise errors on non-zero exit codes
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(
-                returncode=process.returncode, cmd=run_command
+        # Either stream the output to the console, or redirect it (and the
+        # Python log output) to the 'out_file'
+        with (
+            _redirect_output_to(out_file)
+            if redirect_output
+            else contextlib.nullcontext()
+        ) as open_out_file:
+            if open_out_file is not None:
+                open_out_file.flush()
+                output_kwargs = dict(
+                    stdout=open_out_file, stderr=subprocess.STDOUT
+                )
+            else:
+                output_kwargs = {}
+            process = subprocess.Popen(
+                run_command, cwd=run_dir, env=env, **output_kwargs
             )
-        if profile_with == "hpctoolkit":
-            subprocess.run(
-                ["hpcstruct", "hpctoolkit-measurements"],
-                cwd=run_dir,
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "hpcprof",
-                    "-o",
-                    "hpctoolkit-database",
-                    "hpctoolkit-measurements",
-                ],
-                cwd=run_dir,
-                check=True,
-            )
-        # Run the 'Next' entrypoint listed in the input file metadata
-        if metadata and "Next" in metadata:
-            run_next(
-                metadata["Next"], input_file_path=input_file_path, cwd=run_dir
-            )
+            # Realtime streaming of _captured_ stdout and stderr to the console
+            # doesn't seem to work reliably, so we just let the process stream
+            # directly to the console (or the 'out_file') and wait for it to
+            # complete.
+            process.wait()
+            # Raise errors on non-zero exit codes
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode=process.returncode, cmd=run_command
+                )
+            if profile_with == "hpctoolkit":
+                subprocess.run(
+                    ["hpcstruct", "hpctoolkit-measurements"],
+                    cwd=run_dir,
+                    check=True,
+                    **output_kwargs,
+                )
+                subprocess.run(
+                    [
+                        "hpcprof",
+                        "-o",
+                        "hpctoolkit-database",
+                        "hpctoolkit-measurements",
+                    ],
+                    cwd=run_dir,
+                    check=True,
+                    **output_kwargs,
+                )
+            # Run the 'Next' entrypoint listed in the input file metadata
+            if metadata and "Next" in metadata:
+                run_next(
+                    metadata["Next"],
+                    input_file_path=input_file_path,
+                    cwd=run_dir,
+                )
         return process
 
     # Copy executable to segments directory
