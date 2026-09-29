@@ -15,6 +15,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -33,6 +34,7 @@
 #include "Domain/FunctionsOfTime/FixedSpeedCubic.hpp"
 #include "Domain/FunctionsOfTime/PiecewisePolynomial.hpp"
 #include "Domain/FunctionsOfTime/QuaternionFunctionOfTime.hpp"
+#include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/ObjectLabel.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
@@ -426,6 +428,68 @@ void test_connectivity() {
       }
     }
   }
+}
+
+// A binary with mass ratio q = 1e6, set up with the radii that the BBH initial
+// data pipeline chooses at separation 10. The shell around object B is then
+// only a few times 1e-6 across, so distinct corners of its blocks are closer
+// to each other than an absolute tolerance of 1e-6. Finding the block
+// neighbors must not identify these corners with each other.
+void test_small_object() {
+  INFO("Small object");
+  const double separation = 10.0;
+  const double mass_ratio = 1.0e6;
+  const double mass_b = 1.0 / (1.0 + mass_ratio);
+  const double mass_a = 1.0 - mass_b;
+  const double x_coord_a = mass_b * separation;
+  const double x_coord_b = x_coord_a - separation;
+  // Excisions at 0.93 r_+ for conformal masses 0.82 M
+  const double inner_radius_a = 0.93 * 2.0 * 0.82 * mass_a;
+  const double inner_radius_b = 0.93 * 2.0 * 0.82 * mass_b;
+  const double outer_radius_a = separation / 3.75;
+  const double outer_radius_b = separation / 3.75 / mass_ratio;
+  CAPTURE(inner_radius_b);
+  CAPTURE(outer_radius_b);
+  const domain::creators::BinaryCompactObject binary_compact_object{
+      Object{inner_radius_a, outer_radius_a, x_coord_a, true, 1.0, 1.0},
+      Object{inner_radius_b, outer_radius_b, x_coord_b, true, 1.0,
+             1.0 + 0.15 * std::log(mass_ratio)},
+      {{0.0, 0.0}},
+      4.0 * separation,
+      1.0e3,
+      1.0,
+      0_st,
+      3_st,
+      true,
+      Distribution::Projective,
+      {},
+      Distribution::Linear,
+      120.0};
+  const auto domain = binary_compact_object.create_domain();
+  const auto& blocks = domain.blocks();
+  REQUIRE(blocks.size() == 44);
+  // The only external boundaries are the two excision surfaces (the inner
+  // faces of the 6 shell blocks around each object) and the outer boundary
+  // (the outer faces of the 10 outer shell blocks). Every other block face has
+  // a neighbor.
+  size_t num_external_boundaries = 0;
+  for (const auto& block : blocks) {
+    CAPTURE(block.name());
+    const auto& external_boundaries = block.external_boundaries();
+    num_external_boundaries += external_boundaries.size();
+    CHECK(block.neighbors().size() + external_boundaries.size() == 6);
+    const size_t block_id = block.id();
+    if (block_id < 6 or (block_id >= 12 and block_id < 18)) {
+      CHECK(external_boundaries ==
+            std::unordered_set<Direction<3>>{Direction<3>::lower_zeta()});
+    } else if (block_id >= 34) {
+      CHECK(external_boundaries ==
+            std::unordered_set<Direction<3>>{Direction<3>::upper_zeta()});
+    } else {
+      CHECK(external_boundaries.empty());
+    }
+  }
+  CHECK(num_external_boundaries == 22);
 }
 
 std::string stringize(const bool t) { return t ? "true" : "false"; }
@@ -1617,6 +1681,7 @@ void test_kerr_horizon_conforming() {
 SPECTRE_TEST_CASE("Unit.Domain.Creators.BinaryCompactObject",
                   "[Domain][Unit]") {
   test_connectivity();
+  test_small_object();
   test_bns_domain_with_cubes();
   for (const auto& [with_bc, add_time_dep, excise_B] :
        cartesian_product(make_array(true, false), make_array(true, false),
