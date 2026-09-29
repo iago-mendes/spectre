@@ -146,6 +146,47 @@ class TestInitialData(unittest.TestCase):
             MIN_SHELL_THICKNESS * params["ExcisionRadiusLeft"],
         )
 
+    def test_extra_radial_points_clip(self):
+        mass_ratio = 1.0e6
+        mass_a = mass_ratio / (1.0 + mass_ratio)
+        mass_b = 1.0 / (1.0 + mass_ratio)
+
+        def params_at(polynomial_order):
+            return id_parameters(
+                conformal_mass_a=0.82 * mass_a,
+                conformal_mass_b=0.82 * mass_b,
+                horizon_rotation_a=[0.0, 0.0, 0.0],
+                horizon_rotation_b=[0.0, 0.0, 0.0],
+                center_of_mass_offset=[0.0, 0.0, 0.0],
+                linear_velocity=[0.0, 0.0, 0.0],
+                separation=20.0,
+                orbital_angular_velocity=0.01,
+                radial_expansion_velocity=0.0,
+                refinement_level=1,
+                polynomial_order=polynomial_order,
+                negative_expansion_bc=True,
+                target_params={
+                    "MassA": mass_a,
+                    "MassB": mass_b,
+                    "DimensionlessSpinA": [0.0, 0.0, 0.0],
+                    "DimensionlessSpinB": [0.0, 0.0, 0.0],
+                },
+            )
+
+        # The extra radial points round(0.9 * ln(q)) = 12 fit below the
+        # maximum of 20 points at low polynomial order
+        self.assertEqual(params_at(5)["ExtraRadPoints"], 12)
+        # At higher polynomial order they are clipped instead of failing
+        with self.assertLogs(level="WARNING") as logs:
+            params = params_at(8)
+        self.assertTrue(
+            any(
+                "Clipping extra radial refinement p" in line
+                for line in logs.output
+            )
+        )
+        self.assertEqual(params["ExtraRadPoints"], 20 - 8 - 2)
+
     def test_cli(self):
         common_args = [
             "--mass-ratio",
