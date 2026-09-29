@@ -11,6 +11,13 @@ spectre_add_python_bindings_test(
   TIMEOUT 60)
 
 spectre_add_python_bindings_test(
+  "support.Pipelines.Bbh.ControlId"
+  Test_ControlId.py
+  "Python"
+  None
+  TIMEOUT 20)
+
+spectre_add_python_bindings_test(
   "support.Pipelines.Bbh.EccentricityControl"
   Test_EccentricityControl.py
   "Python"
