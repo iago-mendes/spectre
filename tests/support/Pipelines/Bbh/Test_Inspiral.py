@@ -6,6 +6,7 @@ import shutil
 import unittest
 from pathlib import Path
 
+import numpy as np
 import yaml
 from click.testing import CliRunner
 
@@ -86,11 +87,15 @@ class TestInspiral(unittest.TestCase):
                 self.assertEqual(
                     params["UseCylindricalDomain"], cylindrical_domain
                 )
+                # Initial guesses of the conformal masses for q = 1.5 and zero
+                # spins (see 'generate_id')
+                mass_factor_a = 0.826 + 0.012 * np.log10(1.5)
+                mass_factor_b = 0.826 + 0.134 * (1.0 - 1.0 / 1.5)
                 self.assertAlmostEqual(
-                    params["ExcisionRadiusA"], 1.116 * 1.0385 * 0.82
+                    params["ExcisionRadiusA"], 1.116 * 1.0385 * mass_factor_a
                 )
                 self.assertAlmostEqual(
-                    params["ExcisionRadiusB"], 0.744 * 1.0385 * 0.82
+                    params["ExcisionRadiusB"], 0.744 * 1.0385 * mass_factor_b
                 )
                 self.assertEqual(params["XCoordA"], 8.0)
                 self.assertEqual(params["XCoordB"], -12.0)
@@ -102,11 +107,15 @@ class TestInspiral(unittest.TestCase):
                 )
                 self.assertEqual(params["AhASubfileName"], "AhA/Coefficients")
                 self.assertEqual(params["AhBSubfileName"], "AhB/Coefficients")
-                self.assertEqual(params["ExcisionAShapeMass"], 0.6 * 0.82)
+                self.assertAlmostEqual(
+                    params["ExcisionAShapeMass"], 0.6 * mass_factor_a
+                )
                 self.assertEqual(params["ExcisionAShapeSpin_x"], 0.0)
                 self.assertEqual(params["ExcisionAShapeSpin_y"], 0.0)
                 self.assertEqual(params["ExcisionAShapeSpin_z"], 0.0)
-                self.assertEqual(params["ExcisionBShapeMass"], 0.4 * 0.82)
+                self.assertAlmostEqual(
+                    params["ExcisionBShapeMass"], 0.4 * mass_factor_b
+                )
                 self.assertEqual(params["ExcisionBShapeSpin_x"], 0.0)
                 self.assertEqual(params["ExcisionBShapeSpin_y"], 0.0)
                 self.assertEqual(params["ExcisionBShapeSpin_z"], 0.0)

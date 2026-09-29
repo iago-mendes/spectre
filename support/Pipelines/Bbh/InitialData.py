@@ -287,8 +287,9 @@ def generate_id(
     The ID control loop adjusts the conformal masses and spins to drive the
     horizon masses and spins to the specified values in a series of consecutive
     initial data solves. See 'support.Pipelines.Bbh.ControlId' for details. If
-    unspecified, initial guesses for the conformal masses and spins default to
-    the target masses and spins.
+    unspecified, initial guesses for the conformal masses and horizon rotations
+    are computed from fits to the converged values over a range of mass ratios
+    and spins.
 
     ## Eccentricity control
 
@@ -377,38 +378,80 @@ def generate_id(
             target_params["Eccentricity"] is not None
         ), "For eccentricity control the target eccentricity must be set."
 
-    # This is an empirical factor based on an equal-mass non-spinning case, in
-    # which ~0.41 conformal masses result in ~0.5 horizon masses.
-    # mass_initial_guess_factor = 1.0
-    mass_initial_guess_factor = 0.82
+    # Initial guesses for the free data, fit to the converged free data of BBH
+    # initial data covering q = 1 to 1e6 and chi = 0 to 0.999, with both the
+    # negative-expansion and the zero-expansion excision boundary conditions.
+    #
+    # The mass and rotation factors share a parallel structure: the factor of
+    # the larger black hole depends on log10(q), and the factor of the smaller
+    # black hole on (1 - 1/q), so it saturates at an isolated-black-hole
+    # plateau as q -> infinity. Both factors have the same q = 1 limit, so the
+    # guesses are symmetric under exchange of the black holes at equal mass.
+    q = max(target_params["MassA"] / target_params["MassB"], 1.0)
+    log10q = np.log10(q)
     if conformal_mass_a is None:
-        conformal_mass_a = mass_initial_guess_factor * target_params["MassA"]
+        chi_a_sq = np.dot(
+            np.asarray(target_params["DimensionlessSpinA"]),
+            np.asarray(target_params["DimensionlessSpinA"]),
+        )
+        conformal_mass_a = (
+            0.826 + 0.012 * log10q + 0.021 * chi_a_sq
+        ) * target_params["MassA"]
     if conformal_mass_b is None:
-        conformal_mass_b = mass_initial_guess_factor * target_params["MassB"]
+        chi_b_sq = np.dot(
+            np.asarray(target_params["DimensionlessSpinB"]),
+            np.asarray(target_params["DimensionlessSpinB"]),
+        )
+        conformal_mass_b = (
+            0.826 + 0.134 * (1.0 - 1.0 / q) + 0.021 * chi_b_sq
+        ) * target_params["MassB"]
 
-    # The 0.9 is an empirical factor that avoids an ill-posed elliptic problem
-    # for very high spins.
+    # The apparent-horizon boundary condition needs the horizon rotation. For
+    # a Kerr black hole with the conformal mass Mbar it would be
+    #
+    #     Omega_Kerr = -chi / (2 * Mbar * (1 + sqrt(1 - chi^2))).
+    #
+    # The converged horizon rotation deviates from this at high spins by a
+    # factor f that depends on the boundary condition, so we set
+    # Omega = f * Omega_Kerr with
+    #
+    #     f = 1 + chi^2 (alpha + beta * g(q) + gamma * chi^2),
+    #
+    # where alpha and gamma are shared between the black holes and
+    # g_A = log10(q) and g_B = 1 - 1/q.
     if horizon_rotation_a is None:
         chi_a = np.asarray(target_params["DimensionlessSpinA"])
-        rotation_initial_guess_factor = (
-            0.9 if np.linalg.norm(chi_a) > 0.99 else 1.0
-        )
+        chi_a_sq = float(np.dot(chi_a, chi_a))
+        if negative_expansion_bc:
+            rotation_initial_guess_factor = 1.0 + chi_a_sq * (
+                0.341 + 0.018 * log10q - 0.496 * chi_a_sq
+            )
+        else:
+            rotation_initial_guess_factor = 1.0 + chi_a_sq * (
+                -0.399 + 0.016 * log10q + 0.234 * chi_a_sq
+            )
         horizon_rotation_a = (
             -rotation_initial_guess_factor
             * 0.5
             * chi_a
-            / (conformal_mass_a * (1.0 + np.sqrt(1 - np.dot(chi_a, chi_a))))
+            / (conformal_mass_a * (1.0 + np.sqrt(1 - chi_a_sq)))
         )
     if horizon_rotation_b is None:
         chi_b = np.asarray(target_params["DimensionlessSpinB"])
-        rotation_initial_guess_factor = (
-            0.9 if np.linalg.norm(chi_b) > 0.99 else 1.0
-        )
+        chi_b_sq = float(np.dot(chi_b, chi_b))
+        if negative_expansion_bc:
+            rotation_initial_guess_factor = 1.0 + chi_b_sq * (
+                0.341 + 0.074 * (1.0 - 1.0 / q) - 0.496 * chi_b_sq
+            )
+        else:
+            rotation_initial_guess_factor = 1.0 + chi_b_sq * (
+                -0.399 + 0.059 * (1.0 - 1.0 / q) + 0.234 * chi_b_sq
+            )
         horizon_rotation_b = (
             -rotation_initial_guess_factor
             * 0.5
             * chi_b
-            / (conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_b, chi_b))))
+            / (conformal_mass_b * (1.0 + np.sqrt(1 - chi_b_sq)))
         )
 
     # Determine initial data parameters from options
