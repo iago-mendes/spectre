@@ -26,6 +26,21 @@ DEFAULT_CONTROL_DELAY = 2
 # of their targets
 HORIZON_RESIDUAL_FOR_ASYMPTOTIC_CONTROL = 5.0e-3
 
+# Step-size constraints of the control loop. Each constraint limits the step of
+# the free data to a fraction alpha in [0, 1] of the quasi-Newton step:
+# - mass: the step of each conformal mass is at most MAX_RELATIVE_MASS_STEP
+#   times its current value.
+# - com: the x-coordinate of the larger black hole stays above MIN_X_A, so the
+#   black hole does not cross the origin.
+# - spin: the effective spin of each black hole stays below MAX_EFFECTIVE_SPIN
+#   (see 'spin_step_size_constraint').
+StepSizeConstraint = Literal["mass", "com", "spin"]
+STEP_SIZE_CONSTRAINTS: List[StepSizeConstraint] = ["mass", "com", "spin"]
+DEFAULT_STEP_SIZE_CONSTRAINTS: Sequence[StepSizeConstraint] = ("spin",)
+MAX_RELATIVE_MASS_STEP = 0.2
+MIN_X_A = 1.0e-10
+MAX_EFFECTIVE_SPIN = 1.0 - 1.0e-4
+
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
 # Note 2: conformal_mass_a/b and conformal_spin_a/b refer to the Kerr masses and
@@ -157,6 +172,111 @@ def control_scales(
     return u_scale, f_scale
 
 
+def effective_spin(
+    conformal_mass: float,
+    horizon_rotation: Sequence[float],
+    conformal_spin: Sequence[float],
+) -> float:
+    """Effective spin 'chi_eff = 2 rbar |Omega|' of a black hole.
+
+    Here 'rbar = Mbar (1 + sqrt(1 - chi^2))' is the horizon radius of the
+    conformal Kerr solution with mass Mbar and dimensionless spin chi, and Omega
+    is the horizon rotation. The apparent-horizon boundary condition has no
+    solution for chi_eff >= 1.
+    """
+    spin_term = 1.0 + np.sqrt(1.0 - np.dot(conformal_spin, conformal_spin))
+    return (
+        2.0
+        * spin_term
+        * abs(conformal_mass)
+        * np.linalg.norm(np.asarray(horizon_rotation))
+    )
+
+
+def spin_step_size_constraint(
+    conformal_mass: float,
+    delta_conformal_mass: float,
+    horizon_rotation: Sequence[float],
+    delta_horizon_rotation: Sequence[float],
+    conformal_spin: Sequence[float],
+    max_effective_spin: float = MAX_EFFECTIVE_SPIN,
+) -> float:
+    """Largest fraction of a step that keeps the effective spin below a limit.
+
+    The step changes the conformal mass Mbar by 'delta_conformal_mass' and the
+    horizon rotation Omega by 'delta_horizon_rotation'. Both are scaled by the
+    same alpha, so the effective spin along the step (see 'effective_spin') is
+
+        chi_eff(alpha) = 2 S |Mbar + alpha dMbar| |Omega + alpha dOmega|,
+
+    with S = 1 + sqrt(1 - chi^2). This function returns the largest alpha in
+    [0, 1] such that chi_eff stays below 'max_effective_spin' along the whole
+    step from 0 to alpha. Note that the change of the mass must be taken into
+    account: solving for alpha with the mass held at another value can
+    overshoot the limit.
+
+    The condition chi_eff(alpha)^2 = max_effective_spin^2 is a quartic
+    polynomial equation in alpha. Its real roots in [0, 1] bracket the
+    admissible interval, and the crossing is refined by bisection so that the
+    returned alpha is guaranteed to satisfy the limit.
+
+    Returns 0 if the effective spin already exceeds the limit at alpha = 0.
+    """
+    spin_term = 1.0 + np.sqrt(1.0 - np.dot(conformal_spin, conformal_spin))
+    rotation = np.asarray(horizon_rotation, dtype=float)
+    delta_rotation = np.asarray(delta_horizon_rotation, dtype=float)
+    mass_poly = np.polynomial.Polynomial([conformal_mass, delta_conformal_mass])
+    rotation_sq_poly = np.polynomial.Polynomial(
+        [
+            np.dot(rotation, rotation),
+            2.0 * np.dot(rotation, delta_rotation),
+            np.dot(delta_rotation, delta_rotation),
+        ]
+    )
+    # Positive where the effective spin exceeds the limit
+    excess = (
+        4.0 * spin_term**2 * mass_poly**2 * rotation_sq_poly
+        - max_effective_spin**2
+    ).trim()
+
+    if excess(0.0) > 0.0:
+        return 0.0
+
+    def first_crossing(safe_alpha, unsafe_alpha):
+        # Bisect between an alpha that satisfies the limit and one that
+        # doesn't, keeping the one that does
+        for _ in range(200):
+            mid = 0.5 * (safe_alpha + unsafe_alpha)
+            if mid <= safe_alpha or mid >= unsafe_alpha:
+                break
+            if excess(mid) > 0.0:
+                unsafe_alpha = mid
+            else:
+                safe_alpha = mid
+        return safe_alpha
+
+    # The sign of the excess can only change at its real roots, so check it
+    # once between consecutive roots
+    roots = excess.roots() if excess.degree() > 0 else []
+    crossings = sorted(
+        root.real
+        for root in roots
+        if abs(root.imag) <= 1.0e-10 * max(1.0, abs(root))
+        and 0.0 < root.real < 1.0
+    )
+    safe_alpha = 0.0
+    lower = 0.0
+    for upper in crossings + [1.0]:
+        mid = 0.5 * (lower + upper)
+        if excess(mid) > 0.0:
+            return first_crossing(safe_alpha, mid)
+        safe_alpha = mid
+        lower = upper
+    if excess(1.0) > 0.0:
+        return first_crossing(safe_alpha, 1.0)
+    return 1.0
+
+
 def control_id(
     id_input_file_path: Union[str, Path],
     control_params: List[TargetParams],
@@ -167,6 +287,9 @@ def control_id(
     refinement_level: int = 1,
     polynomial_order: int = 6,
     negative_expansion_bc: bool = True,
+    step_size_constraints: Sequence[
+        StepSizeConstraint
+    ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
 ):
     """Control BBH physical parameters.
 
@@ -219,6 +342,23 @@ def control_id(
     'ControlScales.dat'. A Jacobian entry in raw units is the non-dimensional
     entry times the residual scale divided by the free-data scale.
 
+    Each step of the free data can be shortened by step-size constraints, which
+    scale the whole step by a factor alpha in [0, 1] so that its direction is
+    preserved:
+
+    - 'mass': the step of each conformal mass is at most 20% of its value.
+    - 'com': the larger black hole stays at positive x, i.e., it does not cross
+      the origin.
+    - 'spin': the effective spin 2 rbar |Omega| of each black hole stays below
+      1 - 1e-4, where the apparent-horizon boundary condition has solutions
+      (see 'spin_step_size_constraint').
+
+    The alpha of every constraint is computed, logged and written to
+    'StepSizeConstraints.dat' in 'ControlParams.h5' in every iteration, along
+    with the alpha that was applied and the effective spins after the step.
+    Only the constraints listed in 'step_size_constraints' limit the step. If
+    they allow no step at all (alpha = 0) the control loop stops with an error.
+
     Arguments:
       control_params: List of parameters to control.
       id_input_file_path: Path to the input file of the first initial data run.
@@ -238,11 +378,19 @@ def control_id(
       refinement_level: h-refinement used in control loop.
       polynomial_order: p-refinement used in control loop.
       negative_expansion_bc: Place the excisions inside of apparent horizons.
+      step_size_constraints: Step-size constraints to enforce, any of 'mass',
+        'com' and 'spin' (see above). All of them are computed and reported
+        regardless. (Default: ['spin'])
     """
 
     assert (
         len(control_params) > 0
     ), "At least one control parameter must be specified."
+    for constraint in step_size_constraints:
+        assert constraint in STEP_SIZE_CONSTRAINTS, (
+            f"Unknown step-size constraint '{constraint}'. Choose from"
+            f" {STEP_SIZE_CONSTRAINTS}."
+        )
 
     # Read input file
     if id_run_dir is None:
@@ -297,6 +445,14 @@ def control_id(
     residual_legend = []
     free_data_legend = []
     jacobian_legend = []
+    step_size_legend = [
+        "MassAlpha",
+        "CenterOfMassAlpha",
+        "SpinAlpha",
+        "AppliedAlpha",
+        "EffectiveSpinA",
+        "EffectiveSpinB",
+    ]
     for param in control_params:
         free_data = FreeDataFromParams[param]
         if param in ScalarQuantities:
@@ -608,6 +764,79 @@ def control_id(
             horizon_indices = np.append(horizon_indices, [is_horizon_param] * 3)
     delay_control = np.any(delayed_indices)
 
+    def horizon_free_data(u, Delta_u):
+        """Conformal mass, horizon rotation, and their steps for each black
+        hole, along with its conformal spin. Free data that is not controlled
+        keeps its initial value."""
+        result = []
+        for mass_key, spin_key in zip(
+            ["MassA", "MassB"], ["DimensionlessSpinA", "DimensionlessSpinB"]
+        ):
+            if mass_key in control_params:
+                idx = param_index_map[mass_key]
+                mass, delta_mass = u[idx], Delta_u[idx]
+            else:
+                mass = initial_free_data[FreeDataFromParams[mass_key]]
+                delta_mass = 0.0
+            if spin_key in control_params:
+                idx = param_index_map[spin_key]
+                rotation = u[idx : idx + 3]
+                delta_rotation = Delta_u[idx : idx + 3]
+            else:
+                rotation = initial_free_data[FreeDataFromParams[spin_key]]
+                delta_rotation = np.zeros(3)
+            result.append(
+                (
+                    mass,
+                    delta_mass,
+                    rotation,
+                    delta_rotation,
+                    target_params[spin_key],
+                )
+            )
+        return result
+
+    def step_size_alphas(u, Delta_u):
+        """The alpha of every step-size constraint, whether it is enforced or
+        not, for the step 'Delta_u' from the free data 'u'."""
+        alphas = {constraint: 1.0 for constraint in STEP_SIZE_CONSTRAINTS}
+        # Step of each conformal mass is at most MAX_RELATIVE_MASS_STEP times
+        # its current value
+        for mass_key in ["MassA", "MassB"]:
+            if mass_key not in control_params:
+                continue
+            idx = param_index_map[mass_key]
+            max_delta = MAX_RELATIVE_MASS_STEP * abs(u[idx])
+            if abs(Delta_u[idx]) > max_delta:
+                alphas["mass"] = min(
+                    alphas["mass"], max_delta / abs(Delta_u[idx])
+                )
+        # The larger black hole stays at x_A > MIN_X_A
+        if "CenterOfMass" in control_params:
+            idx = param_index_map["center_of_mass_offset"]
+            x_A = Newtonian_x_A + u[idx]
+            if x_A + Delta_u[idx] < MIN_X_A:
+                alphas["com"] = float(
+                    np.clip((MIN_X_A - x_A) / Delta_u[idx], 0.0, 1.0)
+                )
+        # Effective spin of each black hole stays below MAX_EFFECTIVE_SPIN
+        for (
+            mass,
+            delta_mass,
+            rotation,
+            delta_rotation,
+            conformal_spin,
+        ) in horizon_free_data(u, Delta_u):
+            if delta_mass == 0.0 and not np.any(delta_rotation):
+                continue
+            alphas["spin"] = min(
+                alphas["spin"],
+                spin_step_size_constraint(
+                    mass, delta_mass, rotation, delta_rotation, conformal_spin
+                ),
+            )
+        return alphas
+
     while iteration < max_iterations:
         iteration += 1
 
@@ -639,6 +868,55 @@ def control_id(
         Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
         if delay_control:
             Delta_u[delayed_indices] = 0.0
+
+        # Shorten the step to satisfy the enforced step-size constraints. The
+        # whole step is scaled by the same alpha to preserve its direction.
+        alphas = step_size_alphas(u, Delta_u)
+        alpha = min(
+            [1.0] + [alphas[constraint] for constraint in step_size_constraints]
+        )
+        binding = [
+            constraint
+            for constraint in step_size_constraints
+            if alphas[constraint] <= alpha < 1.0
+        ]
+        logger.info(
+            "Step-size constraints: "
+            + ", ".join(
+                f"{constraint} alpha = {alphas[constraint]:g}"
+                + (" (enforced)" if constraint in step_size_constraints else "")
+                for constraint in STEP_SIZE_CONSTRAINTS
+            )
+            + f". Applied alpha = {alpha:g}."
+        )
+        Delta_u *= alpha
+        effective_spins_after_step = [
+            effective_spin(mass, rotation, conformal_spin)
+            for mass, _, rotation, _, conformal_spin in horizon_free_data(
+                u + Delta_u, Delta_u
+            )
+        ]
+        if 0.0 < alpha < 1.0:
+            logger.warning(
+                f"Step of the free data limited by {binding} to alpha ="
+                f" {alpha:g}. Effective spins after the step:"
+                f" {effective_spins_after_step}."
+            )
+        with spectre_h5.H5File(output_filename, "a") as output_file:
+            dat_file = output_file.try_insert_dat(
+                "StepSizeConstraints", step_size_legend, 0
+            )
+            dat_file.append(
+                [alphas[constraint] for constraint in STEP_SIZE_CONSTRAINTS]
+                + [alpha]
+                + effective_spins_after_step
+            )
+        if alpha <= 0.0:
+            raise RuntimeError(
+                f"The step-size constraints {binding} allow no step of the"
+                " free data (alpha = 0), so the control loop cannot make"
+                f" progress. Step-size constraints: {alphas}."
+            )
 
         u += Delta_u
 
