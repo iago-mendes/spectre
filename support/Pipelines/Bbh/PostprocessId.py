@@ -82,8 +82,8 @@ def postprocess_id(
       control_max_iterations: Maximum of iterations allowed for control.
       control_refinement_level: h-refinement used for control.
       control_polynomial_order: p-refinement used for control.
-      control_delay: Numer of iterations before control of delayed parameters
-        starts. See ControlId.py for details.
+      control_delay: Minimum number of iterations before control of delayed
+        parameters starts. See ControlId.py for details.
       control_params: List of parameters to control. See ControlId.py
         for details.
       evolve: Evolve the initial data after postprocessing (default: False).
