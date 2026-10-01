@@ -1,0 +1,35 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Machine:
+  Name: Eiger
+  Description: |
+    CPU partition of the CSCS Alps system. Each node has two AMD EPYC 7742
+    sockets with 64 cores each and 2 hardware threads per core. SpECTRE runs
+    in the sxscollaboration/spectre container with Apptainer.
+    More information:
+    https://docs.cscs.ch/clusters/eiger/
+  DefaultTasksPerNode: 1
+  DefaultProcsPerTask: 128
+  DefaultQueue: "normal"
+  DefaultTimeLimit: "1-00:00:00"
+  # Executables that are run directly (not through the submit script), such as
+  # the solves of the initial-data control loop, are launched with
+  # `+auto-provision`, which starts one thread per hardware thread (256 per
+  # node). This prefix replaces it with `+oneWthPerCore +setcpuaffinity`: one
+  # thread per physical core, pinned. All other arguments are passed through.
+  # Keep dollar-brace variable references out of this file: CMake's
+  # `configure_file` expands them when the machine is selected.
+  # The login-node command is the same because the batch script runs SpECTRE
+  # in a container with a clean environment, where `SLURM_JOB_ID` is not set.
+  LaunchCommandSingleNode: &one_thread_per_core
+    - bash
+    - -c
+    - >-
+      n=$#; for a; do
+      if [ "$a" = +auto-provision ];
+      then set -- "$@" +oneWthPerCore +setcpuaffinity;
+      else set -- "$@" "$a"; fi;
+      done; shift $n; exec "$@"
+    - launch
+  LaunchCommandLoginNode: *one_thread_per_core
