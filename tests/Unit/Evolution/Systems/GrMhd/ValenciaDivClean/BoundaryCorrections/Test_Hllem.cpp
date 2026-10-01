@@ -1364,7 +1364,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "Hllem:\n"
           "  WavesToRestore: ContactSlow\n"
       "  UseComplementaryProjection: true\n"
-          "  DegeneracyTolerance: 1.0e-10\n"
+          "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n");
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
@@ -1380,11 +1380,11 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "Hllem:\n"
           "  WavesToRestore: None\n"
           "  UseComplementaryProjection: false\n"
-          "  DegeneracyTolerance: 1.0e-10\n"
+          "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_none) !=
-              bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8});
+              bc::Hllem{bc::HllemWaves::None, false, 1.0e-4, 1.0e-30, 1.0e-8});
   CHECK(bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8} !=
         bc::Hllem{bc::HllemWaves::Contact, false, 1.0e-10, 1.0e-30, 1.0e-8});
 
@@ -1396,23 +1396,23 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "Hllem:\n"
           "  WavesToRestore: Slow\n"
           "  UseComplementaryProjection: false\n"
-          "  DegeneracyTolerance: 1.0e-10\n"
+          "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_slow) !=
-              bc::Hllem{bc::HllemWaves::Slow, false, 1.0e-10, 1.0e-30, 1.0e-8});
+              bc::Hllem{bc::HllemWaves::Slow, false, 1.0e-4, 1.0e-30, 1.0e-8});
   const auto hllem_alfven =
       TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
                                          bc::Hllem>(
           "Hllem:\n"
           "  WavesToRestore: Alfven\n"
           "  UseComplementaryProjection: false\n"
-          "  DegeneracyTolerance: 1.0e-10\n"
+          "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n");
   CHECK_FALSE(
       dynamic_cast<const bc::Hllem&>(*hllem_alfven) !=
-      bc::Hllem{bc::HllemWaves::Alfven, false, 1.0e-10, 1.0e-30, 1.0e-8});
+      bc::Hllem{bc::HllemWaves::Alfven, false, 1.0e-4, 1.0e-30, 1.0e-8});
   for (const auto other :
        {bc::HllemWaves::None, bc::HllemWaves::Contact,
         bc::HllemWaves::ContactSlow, bc::HllemWaves::ContactAlfven,
