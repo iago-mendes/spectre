@@ -20,3 +20,5 @@ target_link_libraries(
   XctsAnalyticData
   XctsSolutions
   )
+
+add_subdirectory(Python)

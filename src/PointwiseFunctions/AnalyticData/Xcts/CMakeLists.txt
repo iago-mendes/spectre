@@ -42,3 +42,5 @@ target_link_libraries(
   ElasticityPointwiseFunctions
   XctsPointwiseFunctions
   )
+
+add_subdirectory(Python)
