@@ -265,6 +265,9 @@ def generate_id(
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
     run_convergence_tests: bool = False,
+    numeric_initial_guess: bool = False,
+    numeric_initial_guess_in_tests: bool = False,
+    initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
     segments_dir: Optional[Union[str, Path]] = None,
@@ -321,6 +324,18 @@ def generate_id(
         polynomial order, and a test after the control loop checks that it was
         appropriate. See 'support.Pipelines.Bbh.ControlId' for details.
         (default: False)
+      numeric_initial_guess: If set to True, every solve of the control loop
+        after the first starts from the solution of the previous solve instead
+        of the superposed Kerr-Schild background. The volume data then also
+        holds the fields the next solve imports. (default: False)
+      numeric_initial_guess_in_tests: If set to True, every solve of the
+        convergence tests starts from the solution at the nearest polynomial
+        order that is already solved instead of the background. The volume data
+        then also holds the fields the next solve imports. (default: False)
+      initial_guess_file_glob: Volume data files of a previous solve to
+        interpolate the initial guess of this solve from. If not set, the
+        initial guess is the background. Set by the control loop when
+        'numeric_initial_guess' is True.
       pipeline_dir: Directory of the simulation, in which the pipeline
         creates its runs. Required when 'evolve' is set to True. The initial
         data runs in the 'ID' directory of the next eccentricity-control
@@ -493,6 +508,9 @@ def generate_id(
         eccentricity_control=eccentricity_control,
         negative_expansion_bc=negative_expansion_bc,
         run_convergence_tests=run_convergence_tests,
+        numeric_initial_guess=numeric_initial_guess,
+        numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+        initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
         segments_dir=segments_dir,
@@ -672,6 +690,23 @@ def generate_id(
         "Run resolution convergence tests in the control loop. A test before"
         " the control loop selects the polynomial order, and a test after the"
         " control loop checks that it was appropriate."
+    ),
+)
+@click.option(
+    "--numeric-initial-guess",
+    is_flag=True,
+    help=(
+        "Start every solve of the control loop after the first from the"
+        " solution of the previous solve instead of the background."
+    ),
+)
+@click.option(
+    "--numeric-initial-guess-in-tests",
+    is_flag=True,
+    help=(
+        "Start every solve of the convergence tests from the solution at the"
+        " nearest polynomial order that is already solved instead of the"
+        " background."
     ),
 )
 @click.option(

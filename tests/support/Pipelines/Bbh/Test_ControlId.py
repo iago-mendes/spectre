@@ -451,6 +451,43 @@ class TestControlId(unittest.TestCase):
         self.assertEqual(result, 6)
         errors = self.read_convergence_errors("FinalConvergenceTest")
         self.assertEqual(list(errors["PolynomialOrder"]), [4, 6, 7, 8, 9])
+        # Without the option every solve starts from the background
+        for call in generate_id.mock_calls:
+            self.assertIsNone(call.kwargs["initial_guess_file_glob"])
+            self.assertFalse(call.kwargs["numeric_initial_guess_in_tests"])
+
+    def test_numeric_initial_guess(self):
+        mock_generate_id.failing_orders = [5]
+        result, test_dir, generate_id = self.run_convergence_test(
+            polynomial_order=6,
+            mode="final",
+            control_params=["MassA"],
+            tolerance=1.0e-3,
+            numeric_initial_guess=True,
+        )
+        # Every solve starts from the nearest P that is already solved, the
+        # higher one on a tie. The failed solve at P=5 is never a seed.
+        seed_dirs = {
+            call.kwargs["polynomial_order"]: (
+                Path(call.kwargs["initial_guess_file_glob"]).parent.resolve()
+            )
+            for call in generate_id.mock_calls
+        }
+        self.assertEqual(
+            seed_dirs,
+            {
+                4: self.run_dir.resolve(),
+                5: self.run_dir.resolve(),
+                7: self.run_dir.resolve(),
+                8: (test_dir / "P07").resolve(),
+            },
+        )
+        for call in generate_id.mock_calls:
+            self.assertEqual(
+                Path(call.kwargs["initial_guess_file_glob"]).name,
+                "BbhVolume*.h5",
+            )
+            self.assertTrue(call.kwargs["numeric_initial_guess_in_tests"])
 
 
 if __name__ == "__main__":
