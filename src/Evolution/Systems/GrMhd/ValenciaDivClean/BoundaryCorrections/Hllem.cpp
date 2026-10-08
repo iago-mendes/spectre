@@ -94,7 +94,11 @@ namespace {
 // STATE.md). Nothing evolved is changed. Files are flushed every call,
 // so a run that dies with an FPE keeps everything up to its last call.
 constexpr size_t probe_record_size = 156;
-constexpr size_t probe_summary_size = 20;
+// Summary v2 (file sum2.<proc>.bin): slots 0-19 as v1; 20-24 points with dU != 0
+// where wave 2..6 is inside the fast fan; 25-29 of those whose speed gap also
+// passes DegeneracyTolerance. With SPECTRE_HLLEM_PROBE_SUMMARY_ONLY set, no
+// per-face records are written.
+constexpr size_t probe_summary_size = 30;
 struct ProbeFiles {
   std::FILE* rec = nullptr;
   std::FILE* sum = nullptr;
@@ -106,7 +110,7 @@ ProbeFiles& probe_files(const char* dir) {
     files.rec = std::fopen(
         (std::string(dir) + "/rec." + proc + ".bin").c_str(), "ab");
     files.sum = std::fopen(
-        (std::string(dir) + "/sum." + proc + ".bin").c_str(), "ab");
+        (std::string(dir) + "/sum2." + proc + ".bin").c_str(), "ab");
     if (files.rec == nullptr or files.sum == nullptr) {
       ERROR("HLLEM probe: cannot open files in " << dir);
     }
@@ -975,6 +979,8 @@ void Hllem::dg_boundary_terms(
   const char* const probe_dir = std::getenv("SPECTRE_HLLEM_PROBE_DIR");
   const double nan = std::numeric_limits<double>::quiet_NaN();
   std::array<DataVector, 5> pr_ok{};
+  std::array<DataVector, 5> pr_fan{};
+  std::array<DataVector, 5> pr_gapok{};
   std::array<DataVector, 5> pr_diag{};
   std::array<DataVector, 5> pr_ldu{};
   std::array<DataVector, 5> pr_delta{};
@@ -983,6 +989,8 @@ void Hllem::dg_boundary_terms(
   if (probe_dir != nullptr) {
     for (size_t k = 0; k < 5; ++k) {
       gsl::at(pr_ok, k) = DataVector{num_points, 0.0};
+      gsl::at(pr_fan, k) = DataVector{num_points, 0.0};
+      gsl::at(pr_gapok, k) = DataVector{num_points, 0.0};
       gsl::at(pr_diag, k) = DataVector{num_points, nan};
       gsl::at(pr_ldu, k) = DataVector{num_points, nan};
       gsl::at(pr_delta, k) = DataVector{num_points, nan};
@@ -1088,6 +1096,13 @@ void Hllem::dg_boundary_terms(
         }
       }
       gsl::at(pr_gap, k) = gap;
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        const bool in_fan = lam[pt] < fast_lambda_max[pt] and
+                            lam[pt] > fast_lambda_min[pt];
+        gsl::at(pr_fan, k)[pt] = in_fan ? 1.0 : 0.0;
+        gsl::at(pr_gapok, k)[pt] =
+            (in_fan and gap[pt] >= degeneracy_tolerance_) ? 1.0 : 0.0;
+      }
       for (size_t n = 0; n < 9; ++n) {
         gsl::at(gsl::at(pr_pdu, k), n) =
             ldu / diagonal * modes.get(wave, n);
@@ -1175,6 +1190,8 @@ void Hllem::dg_boundary_terms(
     hll_corr[7] = get(*boundary_correction_tilde_tau);
     hll_corr[8] = get(*boundary_correction_tilde_phi);
     std::vector<size_t> selected{};
+    const bool summary_only =
+        std::getenv("SPECTRE_HLLEM_PROBE_SUMMARY_ONLY") != nullptr;
     std::array<double, probe_summary_size> summary{};
     summary.fill(0.0);
     summary[0] = ctx.valid ? ctx.time : nan;
@@ -1195,6 +1212,10 @@ void Hllem::dg_boundary_terms(
         continue;
       }
       summary[5] += 1.0;
+      for (size_t k = 0; k < 5; ++k) {
+        summary[20 + k] += gsl::at(pr_fan, k)[pt];
+        summary[25 + k] += gsl::at(pr_gapok, k)[pt];
+      }
       bool near_degenerate_kept = false;
       for (size_t k = 0; k < 5; ++k) {
         if (gsl::at(pr_ok, k)[pt] > 0.0) {
@@ -1209,7 +1230,7 @@ void Hllem::dg_boundary_terms(
       if (amplified) {
         summary[16] += 1.0;
       }
-      if (near_degenerate_kept or amplified) {
+      if ((near_degenerate_kept or amplified) and not summary_only) {
         selected.push_back(pt);
       }
     }
