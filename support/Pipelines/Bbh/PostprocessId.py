@@ -55,6 +55,8 @@ def postprocess_id(
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
     final_convergence_test_max_polynomial_order: Optional[int] = None,
+    numeric_initial_guess: bool = False,
+    numeric_initial_guess_in_tests: bool = False,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -113,6 +115,11 @@ def postprocess_id(
       final_convergence_test_max_polynomial_order: Highest polynomial order
         that the convergence test after the control loop climbs to if none
         meets its tolerance. See ControlId.py for details. (Default: no climb)
+      numeric_initial_guess: Start every solve of the control loop after the
+        first from the solution of the previous solve. (Default: False)
+      numeric_initial_guess_in_tests: Start every solve of the convergence
+        tests from the solution at the nearest polynomial order that is already
+        solved. (Default: False)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -198,6 +205,8 @@ def postprocess_id(
             final_convergence_test_max_polynomial_order=(
                 final_convergence_test_max_polynomial_order
             ),
+            numeric_initial_guess=numeric_initial_guess,
+            numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
