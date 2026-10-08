@@ -22,6 +22,7 @@
 #include "IO/H5/VolumeData.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Interpolation/PolynomialInterpolation.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/FileSystem.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/GetOutput.hpp"
@@ -286,6 +287,16 @@ bool add_extrapolation_anchors(
   // interpolation.
   auto anchors_block_logical =
       block_logical_coordinates(domain, anchors_grid, time, functions_of_time);
+  // Anchor points that are not in any block can't be used to extrapolate, so
+  // this excision can't handle the target point. This happens e.g. when the
+  // first anchor on the excision boundary is not located due to roundoff, or
+  // when the target point is far from this excision, so the loop over
+  // excisions should try the next one rather than dereference an empty
+  // optional below.
+  if (alg::any_of(anchors_block_logical,
+                  [](const auto& anchor) { return not anchor.has_value(); })) {
+    return false;
+  }
   const size_t block_id = anchors_block_logical[0]->id.get_index();
   const auto& block = domain.blocks()[block_id];
   // Map anchor points to the distorted frame. We will extrapolate in
