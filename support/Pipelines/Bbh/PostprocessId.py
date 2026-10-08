@@ -53,6 +53,8 @@ def postprocess_id(
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    final_convergence_test_tolerance: Optional[float] = None,
+    final_convergence_test_max_polynomial_order: Optional[int] = None,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -106,6 +108,11 @@ def postprocess_id(
         loop. See ControlId.py for details. (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
+      final_convergence_test_tolerance: Tolerance of the convergence test
+        after the control loop. (Default: the 'convergence_test_tolerance')
+      final_convergence_test_max_polynomial_order: Highest polynomial order
+        that the convergence test after the control loop climbs to if none
+        meets its tolerance. See ControlId.py for details. (Default: no climb)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -187,6 +194,10 @@ def postprocess_id(
             step_size_constraints=control_step_size_constraints,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
+            final_convergence_test_tolerance=final_convergence_test_tolerance,
+            final_convergence_test_max_polynomial_order=(
+                final_convergence_test_max_polynomial_order
+            ),
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
@@ -279,6 +290,22 @@ def postprocess_id(
     default=DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     show_default=True,
     help="Tolerance of the resolution convergence tests.",
+)
+@click.option(
+    "--final-convergence-test-tolerance",
+    type=float,
+    help="Tolerance of the resolution convergence test after the control loop.",
+    show_default="the --convergence-test-tolerance",
+)
+@click.option(
+    "--final-convergence-test-max-polynomial-order",
+    type=click.IntRange(1, None),
+    help=(
+        "If no polynomial order of the resolution convergence test after the"
+        " control loop meets its tolerance, climb up to this polynomial order"
+        " until one does."
+    ),
+    show_default="max(8, P + 2), i.e., no climb",
 )
 @scheduler_options
 def postprocess_id_command(**kwargs):
