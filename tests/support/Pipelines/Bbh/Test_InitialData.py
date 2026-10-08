@@ -13,6 +13,7 @@ from click.testing import CliRunner
 from spectre.Informer import unit_test_build_path
 from spectre.Pipelines.Bbh.InitialData import (
     MIN_SHELL_THICKNESS,
+    generate_id,
     generate_id_command,
     id_parameters,
 )
@@ -300,6 +301,89 @@ class TestInitialData(unittest.TestCase):
                 },
             },
         )
+
+    def test_numeric_initial_guess(self):
+        target_params = {
+            "MassA": 0.6,
+            "MassB": 0.4,
+            "DimensionlessSpinA": [0.0, 0.0, 0.0],
+            "DimensionlessSpinB": [0.0, 0.0, 0.0],
+        }
+        common_kwargs = dict(
+            separation=20.0,
+            orbital_angular_velocity=0.01,
+            radial_expansion_velocity=-1.0e-5,
+            polynomial_order=5,
+            numeric_initial_guess=True,
+            executable=str(self.bin_dir / "SolveXcts"),
+            scheduler=None,
+            submit=False,
+        )
+
+        def read_input_file(run_dir):
+            with open(run_dir / "InitialData.yaml", "r") as open_input_file:
+                return list(yaml.safe_load_all(open_input_file))
+
+        # The first solve starts from the background, but observes the fields
+        # that the next solve imports and tells the control loop to use them
+        generate_id(
+            target_params,
+            control=True,
+            run_dir=self.test_dir / "First",
+            **common_kwargs,
+        )
+        metadata, input_file = read_input_file(
+            self.test_dir / "First/0000_InitialData"
+        )
+        self.assertTrue(metadata["Next"]["With"]["numeric_initial_guess"])
+        self.assertEqual(input_file["InitialGuess"], input_file["Background"])
+        observed_fields = input_file["EventsAndTriggersAtIterations"][0][
+            "Events"
+        ][0]["ObserveFields"]["VariablesToObserve"]
+        self.assertIn("ConformalFactorMinusOne", observed_fields)
+        self.assertIn("LapseTimesConformalFactorMinusOne", observed_fields)
+        self.assertIn("ShiftExcess", observed_fields)
+        # A later solve of the control loop starts from the previous solve
+        generate_id(
+            target_params,
+            control=False,
+            run_dir=self.test_dir / "Next",
+            initial_guess_file_glob="/previous/BbhVolume*.h5",
+            **common_kwargs,
+        )
+        _, input_file = read_input_file(self.test_dir / "Next")
+        self.assertEqual(
+            input_file["InitialGuess"],
+            {
+                "NumericData": {
+                    "FileGlob": "/previous/BbhVolume*.h5",
+                    "Subgroup": "VolumeData",
+                    "ObservationStep": -1,
+                    "ExtrapolateIntoExcisions": True,
+                }
+            },
+        )
+        # Seeding only the convergence tests also observes the fields
+        common_kwargs["numeric_initial_guess"] = False
+        generate_id(
+            target_params,
+            control=True,
+            run_dir=self.test_dir / "Tests",
+            numeric_initial_guess_in_tests=True,
+            **common_kwargs,
+        )
+        metadata, input_file = read_input_file(
+            self.test_dir / "Tests/0000_InitialData"
+        )
+        self.assertNotIn("numeric_initial_guess", metadata["Next"]["With"])
+        self.assertTrue(
+            metadata["Next"]["With"]["numeric_initial_guess_in_tests"]
+        )
+        observed_fields = input_file["EventsAndTriggersAtIterations"][0][
+            "Events"
+        ][0]["ObserveFields"]["VariablesToObserve"]
+        self.assertIn("ConformalFactorMinusOne", observed_fields)
+        self.assertIn("LapseTimesConformalFactorMinusOne", observed_fields)
 
 
 if __name__ == "__main__":
