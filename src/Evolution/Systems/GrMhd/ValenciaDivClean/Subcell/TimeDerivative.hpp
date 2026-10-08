@@ -41,6 +41,7 @@
 #include "Evolution/DiscontinuousGalerkin/Actions/NormalCovectorAndMagnitude.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/PackageDataImpl.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarTags.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/HllemProbe.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/BoundaryConditionGhostData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructWork.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Reconstructor.hpp"
@@ -54,6 +55,7 @@
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Parity.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
+#include "Time/Tags/Time.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
@@ -447,11 +449,29 @@ struct TimeDerivative {
             // compute this once because we can just flip the normal
             // vectors then
             gsl::at(boundary_corrections, i).initialize(reconstructed_num_pts);
+            // DEBUG PROBE (hllem_degeneracy_debug): tell Hllem where this
+            // face block sits. Read only when SPECTRE_HLLEM_PROBE_DIR is set.
+            {
+              auto& probe_ctx = grmhd::ValenciaDivClean::BoundaryCorrections::
+                  hllem_probe::context();
+              probe_ctx.valid = true;
+              probe_ctx.time = db::get<::Tags::Time>(*box);
+              probe_ctx.dim = i;
+              for (size_t d = 0; d < 3; ++d) {
+                gsl::at(probe_ctx.xi_lower, d) =
+                    element.id().segment_id(d).endpoint(Side::Lower);
+                gsl::at(probe_ctx.xi_upper, d) =
+                    element.id().segment_id(d).endpoint(Side::Upper);
+                gsl::at(probe_ctx.face_extents, d) = face_mesh_extents[d];
+              }
+            }
             evolution::dg::subcell::compute_boundary_terms(
                 make_not_null(&gsl::at(boundary_corrections, i)),
                 *derived_correction, upper_packaged_data, lower_packaged_data,
                 db::as_access(*box),
                 typename DerivedCorrection::dg_boundary_terms_volume_tags{});
+            grmhd::ValenciaDivClean::BoundaryCorrections::hllem_probe::context()
+                .valid = false;
             // We need to multiply by the normal vector normalization
             gsl::at(boundary_corrections, i) *= get(normalization);
             // Also multiply by determinant of Jacobian, following Eq.(34)

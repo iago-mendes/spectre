@@ -3,8 +3,10 @@
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hllem.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <ostream>
 #include <pup.h>
@@ -15,11 +17,19 @@
 
 #include <string>
 
+#include <blaze/math/StaticMatrix.h>
+#include <blaze/math/StaticVector.h>
+#include <blaze/math/lapack/geev.h>
+#include <complex>
+#include <cstdio>
+#include <cstdlib>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/HllemProbe.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/NormalDotFlux.hpp"
@@ -29,6 +39,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/System/ParallelInfo.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
 
@@ -61,6 +72,35 @@ namespace {
 // Indices (MhdSpeed enum order) of the internal waves the anti-diffusion
 // restores. Contact=4 (Entropy), Alfven={2,6}, Slow={3,5}; the outer fast
 // waves (1,7) and GLM scalars (0,8) are the HLL / divergence-cleaning waves.
+// ---- DEBUG PROBE (branch hllem_degeneracy_debug; not for merging) --------
+// With SPECTRE_HLLEM_PROBE_DIR set, every call of dg_boundary_terms appends a
+// summary record to <dir>/sum.<proc>.bin and, for each face point that has a
+// nonzero jump AND either keeps a restored wave whose computed speed gap is
+// below 1e-6 or anti-diffuses more than twice the HLL jump term, a full record
+// to <dir>/rec.<proc>.bin (layout: experiments/delzanna_jet/hllem_face_probe/
+// probe_format.md). Nothing evolved is changed. Files are flushed every call,
+// so a run that dies with an FPE keeps everything up to its last call.
+constexpr size_t probe_record_size = 156;
+constexpr size_t probe_summary_size = 20;
+struct ProbeFiles {
+  std::FILE* rec = nullptr;
+  std::FILE* sum = nullptr;
+};
+ProbeFiles& probe_files(const char* dir) {
+  static thread_local ProbeFiles files{};
+  if (files.rec == nullptr) {
+    const std::string proc = std::to_string(sys::my_proc());
+    files.rec = std::fopen(
+        (std::string(dir) + "/rec." + proc + ".bin").c_str(), "ab");
+    files.sum = std::fopen(
+        (std::string(dir) + "/sum." + proc + ".bin").c_str(), "ab");
+    if (files.rec == nullptr or files.sum == nullptr) {
+      ERROR("HLLEM probe: cannot open files in " << dir);
+    }
+  }
+  return files;
+}
+
 std::vector<size_t> restored_wave_indices(const HllemWaves waves) {
   switch (waves) {
     case HllemWaves::Contact:
@@ -839,6 +879,27 @@ void Hllem::dg_boundary_terms(
   // speed collapses onto a neighbour and its individual analytic eigenvector is
   // ill-conditioned; those points are recorded for the complement fallback.
   DataVector restored_wave_dropped{num_points, 0.0};
+  // DEBUG PROBE storage, index wave - 2 (waves 2..6)
+  const char* const probe_dir = std::getenv("SPECTRE_HLLEM_PROBE_DIR");
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::array<DataVector, 5> pr_ok{};
+  std::array<DataVector, 5> pr_diag{};
+  std::array<DataVector, 5> pr_ldu{};
+  std::array<DataVector, 5> pr_delta{};
+  std::array<DataVector, 5> pr_gap{};
+  std::array<std::array<DataVector, 9>, 5> pr_pdu{};
+  if (probe_dir != nullptr) {
+    for (size_t k = 0; k < 5; ++k) {
+      gsl::at(pr_ok, k) = DataVector{num_points, 0.0};
+      gsl::at(pr_diag, k) = DataVector{num_points, nan};
+      gsl::at(pr_ldu, k) = DataVector{num_points, nan};
+      gsl::at(pr_delta, k) = DataVector{num_points, nan};
+      gsl::at(pr_gap, k) = DataVector{num_points, nan};
+      for (size_t n = 0; n < 9; ++n) {
+        gsl::at(gsl::at(pr_pdu, k), n) = DataVector{num_points, nan};
+      }
+    }
+  }
   for (const size_t wave : restored_waves) {
     const DataVector& lam = mhd_speeds.get(wave);
     const DataVector lambdap = max(lam, 0.0);
@@ -895,6 +956,25 @@ void Hllem::dg_boundary_terms(
     const DataVector w = coeff * delta * ldu * inv_diagonal;
     for (size_t n = 0; n < 9; ++n) {
       gsl::at(antidiff, n) += w * modes.get(wave, n);
+    }
+    if (probe_dir != nullptr and wave >= 2 and wave <= 6) {
+      const ScopedFpeState probe_fpe(false);
+      const size_t k = wave - 2;
+      gsl::at(pr_ok, k) = wave_ok;
+      gsl::at(pr_diag, k) = diagonal;
+      gsl::at(pr_ldu, k) = ldu;
+      gsl::at(pr_delta, k) = delta;
+      DataVector gap{num_points, std::numeric_limits<double>::max()};
+      for (size_t j = 0; j < 9; ++j) {
+        if (j != wave) {
+          gap = min(gap, abs(lam - mhd_speeds.get(j)));
+        }
+      }
+      gsl::at(pr_gap, k) = gap;
+      for (size_t n = 0; n < 9; ++n) {
+        gsl::at(gsl::at(pr_pdu, k), n) =
+            ldu / diagonal * modes.get(wave, n);
+      }
     }
   }
 
@@ -964,6 +1044,183 @@ void Hllem::dg_boundary_terms(
   }
   for (size_t n = 0; n < 9; ++n) {
     gsl::at(antidiff, n) *= mask;
+  }
+
+  if (probe_dir != nullptr) {
+    const ScopedFpeState probe_fpe(false);
+    const auto& ctx = hllem_probe::context();
+    std::array<DataVector, 9> hll_corr{};
+    for (size_t k = 0; k < 3; ++k) {
+      gsl::at(hll_corr, k) = boundary_correction_tilde_s->get(k);
+      gsl::at(hll_corr, 3 + k) = boundary_correction_tilde_b->get(k);
+    }
+    hll_corr[6] = get(*boundary_correction_tilde_d);
+    hll_corr[7] = get(*boundary_correction_tilde_tau);
+    hll_corr[8] = get(*boundary_correction_tilde_phi);
+    std::vector<size_t> selected{};
+    std::array<double, probe_summary_size> summary{};
+    summary.fill(0.0);
+    summary[0] = ctx.valid ? ctx.time : nan;
+    summary[1] = ctx.valid ? static_cast<double>(ctx.dim) : -1.0;
+    summary[2] = ctx.valid ? ctx.xi_lower[0] : nan;
+    summary[3] = ctx.valid ? ctx.xi_lower[1] : nan;
+    summary[4] = static_cast<double>(num_points);
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      double max_du = 0.0;
+      double max_cdu = 0.0;
+      double max_ad = 0.0;
+      for (size_t n = 0; n < 9; ++n) {
+        max_du = std::max(max_du, std::abs(gsl::at(du, n)[pt]));
+        max_cdu = std::max(max_cdu, std::abs(coeff[pt] * gsl::at(du, n)[pt]));
+        max_ad = std::max(max_ad, std::abs(gsl::at(antidiff, n)[pt]));
+      }
+      if (not(max_du > 0.0)) {
+        continue;
+      }
+      summary[5] += 1.0;
+      bool near_degenerate_kept = false;
+      for (size_t k = 0; k < 5; ++k) {
+        if (gsl::at(pr_ok, k)[pt] > 0.0) {
+          summary[6 + k] += 1.0;
+          if (gsl::at(pr_gap, k)[pt] < 1.0e-6) {
+            summary[11 + k] += 1.0;
+            near_degenerate_kept = true;
+          }
+        }
+      }
+      const bool amplified = max_ad > 2.0 * max_cdu;
+      if (amplified) {
+        summary[16] += 1.0;
+      }
+      if (near_degenerate_kept or amplified) {
+        selected.push_back(pt);
+      }
+    }
+    summary[17] = static_cast<double>(selected.size());
+    ProbeFiles& files = probe_files(probe_dir);
+    std::fwrite(summary.data(), sizeof(double), summary.size(), files.sum);
+    if (not selected.empty()) {
+      // double-precision numeric characteristics at the averaged state
+      tnsr::II<DataVector, 3, Frame::Inertial> inv_flat_metric{num_points,
+                                                               0.0};
+      for (size_t i = 0; i < 3; ++i) {
+        inv_flat_metric.get(i, i) = 1.0;
+      }
+      tnsr::iJ<DataVector, 9> jac{num_points};
+      flux_jacobian_mhd(make_not_null(&jac), v_avg, b_avg, rho_avg, eps_avg,
+                        ye_avg, w_avg, enthalpy_avg, flat_metric,
+                        inv_flat_metric, unit_normal, equation_of_state);
+      blaze::StaticMatrix<double, 9, 9> mat{};
+      blaze::StaticVector<std::complex<double>, 9> eigs{};
+      std::array<double, probe_record_size> rec{};
+      for (const size_t pt : selected) {
+        rec.fill(nan);
+        size_t c = 0;
+        const auto put = [&rec, &c](const double x) { gsl::at(rec, c++) = x; };
+        // 0-4: time, dim, logical coordinates (3) of the face point
+        put(summary[0]);
+        put(summary[1]);
+        {
+          const size_t e0 = ctx.face_extents[0];
+          const size_t e1 = ctx.face_extents[1];
+          const std::array<size_t, 3> j{
+              {pt % e0, (pt / e0) % e1, pt / (e0 * e1)}};
+          for (size_t d = 0; d < 3; ++d) {
+            const double lo = gsl::at(ctx.xi_lower, d);
+            const double hi = gsl::at(ctx.xi_upper, d);
+            const size_t e = gsl::at(ctx.face_extents, d);
+            put(not ctx.valid ? nan
+                : d == ctx.dim
+                    ? lo + static_cast<double>(gsl::at(j, d)) * (hi - lo) /
+                               static_cast<double>(e - 1)
+                    : lo + (static_cast<double>(gsl::at(j, d)) + 0.5) *
+                               (hi - lo) / static_cast<double>(e));
+          }
+        }
+        // 5-19: averaged state
+        put(get(rho_avg)[pt]);
+        put(get(eps_avg)[pt]);
+        put(get(p_at_avg_state)[pt]);
+        put(get(enthalpy_avg)[pt]);
+        put(get(w_avg)[pt]);
+        for (size_t i = 0; i < 3; ++i) {
+          put(v_avg.get(i)[pt]);
+        }
+        for (size_t i = 0; i < 3; ++i) {
+          put(b_avg.get(i)[pt]);
+        }
+        for (size_t i = 0; i < 3; ++i) {
+          put(unit_normal.get(i)[pt]);
+        }
+        put(get(ye_avg)[pt]);
+        // 20-28 speeds, 29-30 fast bounds
+        for (size_t i = 0; i < 9; ++i) {
+          put(mhd_speeds.get(i)[pt]);
+        }
+        put(fast_lambda_min[pt]);
+        put(fast_lambda_max[pt]);
+        // 31-55: per restored wave 2..6: ok, l.r, l.dU, delta, computed gap
+        for (size_t k = 0; k < 5; ++k) {
+          put(gsl::at(pr_ok, k)[pt]);
+          put(gsl::at(pr_diag, k)[pt]);
+          put(gsl::at(pr_ldu, k)[pt]);
+          put(gsl::at(pr_delta, k)[pt]);
+          put(gsl::at(pr_gap, k)[pt]);
+        }
+        // 56-64 dU, 65-73 antidiff (masked), 74-82 HLL correction
+        for (size_t n = 0; n < 9; ++n) {
+          put(gsl::at(du, n)[pt]);
+        }
+        for (size_t n = 0; n < 9; ++n) {
+          put(gsl::at(antidiff, n)[pt]);
+        }
+        for (size_t n = 0; n < 9; ++n) {
+          put(gsl::at(hll_corr, n)[pt]);
+        }
+        // 83-91 int, 92-100 ext: rho, p, eps, v(3), B(3)
+        for (const bool interior : {true, false}) {
+          put(get(interior ? rest_mass_density_int : rest_mass_density_ext)[pt]);
+          put(get(interior ? pressure_int : pressure_ext)[pt]);
+          put(get(interior ? specific_internal_energy_int
+                           : specific_internal_energy_ext)[pt]);
+          for (size_t i = 0; i < 3; ++i) {
+            put((interior ? spatial_velocity_int : spatial_velocity_ext)
+                    .get(i)[pt]);
+          }
+          for (size_t i = 0; i < 3; ++i) {
+            put((interior ? tilde_b_int : tilde_b_ext).get(i)[pt]);
+          }
+        }
+        // 101-109 geev eigenvalues (sorted real parts), 110 max |imag|
+        for (size_t row = 0; row < 9; ++row) {
+          for (size_t col = 0; col < 9; ++col) {
+            mat(row, col) = jac.get(row, col)[pt];
+          }
+        }
+        blaze::geev(mat, eigs);
+        std::array<double, 9> re{};
+        double max_imag = 0.0;
+        for (size_t i = 0; i < 9; ++i) {
+          gsl::at(re, i) = eigs[i].real();
+          max_imag = std::max(max_imag, std::abs(eigs[i].imag()));
+        }
+        std::sort(re.begin(), re.end());
+        for (size_t i = 0; i < 9; ++i) {
+          put(gsl::at(re, i));
+        }
+        put(max_imag);
+        // 111-155: (l.dU / l.r) r per restored wave 2..6
+        for (size_t k = 0; k < 5; ++k) {
+          for (size_t n = 0; n < 9; ++n) {
+            put(gsl::at(gsl::at(pr_pdu, k), n)[pt]);
+          }
+        }
+        ASSERT(c == probe_record_size, "probe record size " << c);
+        std::fwrite(rec.data(), sizeof(double), rec.size(), files.rec);
+      }
+      std::fflush(files.rec);
+    }
+    std::fflush(files.sum);
   }
 
   // G_HLLEM = G_HLL - antidiff, so subtract from the HLL boundary correction.

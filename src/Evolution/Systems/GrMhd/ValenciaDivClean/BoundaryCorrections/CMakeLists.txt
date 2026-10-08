@@ -19,6 +19,7 @@ spectre_target_headers(
   Factory.hpp
   Hll.hpp
   Hllem.hpp
+  HllemProbe.hpp
   Marquina.hpp
   PlutoHlld.hpp
   NamespaceDocs.hpp
