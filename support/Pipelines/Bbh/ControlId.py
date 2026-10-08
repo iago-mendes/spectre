@@ -452,6 +452,7 @@ def _convergence_test(
     mode: Literal["initial", "final"],
     output_filename: Union[str, Path],
     max_polynomial_order: Optional[int] = None,
+    numeric_initial_guess: bool = False,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -487,6 +488,12 @@ def _convergence_test(
       'max_polynomial_order' is reached. By default it doesn't climb. The
       result is informational. Returns the optimal P, or 'None' if none was
       found.
+
+    With 'numeric_initial_guess', every solve starts from the solution at the
+    nearest P that is already solved (the higher one on a tie), interpolated to
+    its grid, instead of from the background. The domain is the same at every
+    P, so the interpolation stays within the same elements, and it is exact
+    from a lower to a higher P.
     """
     is_initial = mode == "initial"
     label = "Initial" if is_initial else "Final"
