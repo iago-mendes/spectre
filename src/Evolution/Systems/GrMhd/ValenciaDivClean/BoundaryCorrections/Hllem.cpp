@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <cstddef>
+#include <exception>
 #include <ostream>
 #include <pup.h>
 
@@ -78,7 +79,7 @@ namespace {
 // nonzero jump AND either keeps a restored wave whose computed speed gap is
 // below 1e-6 or anti-diffuses more than twice the HLL jump term, a full record
 // to <dir>/rec.<proc>.bin (layout: experiments/delzanna_jet/hllem_face_probe/
-// probe_format.md). Nothing evolved is changed. Files are flushed every call,
+// STATE.md). Nothing evolved is changed. Files are flushed every call,
 // so a run that dies with an FPE keeps everything up to its last call.
 constexpr size_t probe_record_size = 156;
 constexpr size_t probe_summary_size = 20;
@@ -1197,14 +1198,32 @@ void Hllem::dg_boundary_terms(
             mat(row, col) = jac.get(row, col)[pt];
           }
         }
-        blaze::geev(mat, eigs);
+        // A non-finite Jacobian entry, or LAPACK's non-convergence (blaze
+        // throws std::runtime_error), is recorded, not propagated: NaN
+        // eigenvalues and max |imag| = -1 (non-finite matrix) or -2 (throw).
         std::array<double, 9> re{};
-        double max_imag = 0.0;
-        for (size_t i = 0; i < 9; ++i) {
-          gsl::at(re, i) = eigs[i].real();
-          max_imag = std::max(max_imag, std::abs(eigs[i].imag()));
+        re.fill(nan);
+        double max_imag = -1.0;
+        bool finite_matrix = true;
+        for (size_t row = 0; row < 9; ++row) {
+          for (size_t col = 0; col < 9; ++col) {
+            finite_matrix = finite_matrix and std::isfinite(mat(row, col));
+          }
         }
-        std::sort(re.begin(), re.end());
+        if (finite_matrix) {
+          try {
+            blaze::geev(mat, eigs);
+            max_imag = 0.0;
+            for (size_t i = 0; i < 9; ++i) {
+              gsl::at(re, i) = eigs[i].real();
+              max_imag = std::max(max_imag, std::abs(eigs[i].imag()));
+            }
+            std::sort(re.begin(), re.end());
+          } catch (const std::exception& /*e*/) {
+            re.fill(nan);
+            max_imag = -2.0;
+          }
+        }
         for (size_t i = 0; i < 9; ++i) {
           put(gsl::at(re, i));
         }
