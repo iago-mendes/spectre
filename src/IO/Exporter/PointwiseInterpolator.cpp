@@ -297,27 +297,36 @@ bool add_extrapolation_anchors(
                   [](const auto& anchor) { return not anchor.has_value(); })) {
     return false;
   }
-  const size_t block_id = anchors_block_logical[0]->id.get_index();
-  const auto& block = domain.blocks()[block_id];
   // Map anchor points to the distorted frame. We will extrapolate in
   // the distorted frame because we have the target point in the distorted
   // frame. The target point in the grid frame is undefined because there's
   // no grid-distorted map in the excision sphere. We could extrapolate in
   // the inertial frame, but that's just an unnecessary transformation.
-  auto anchors_distorted =
-      [&block, &anchors_grid, &time,
-       &functions_of_time]() -> tnsr::I<DataVector, Dim, Frame::Distorted> {
-    if (block.has_distorted_frame()) {
-      return block.moving_mesh_grid_to_distorted_map()(anchors_grid, time,
-                                                       functions_of_time);
-    } else {
-      tnsr::I<DataVector, Dim, Frame::Distorted> result{};
-      for (size_t d = 0; d < Dim; ++d) {
-        result.get(d) = anchors_grid.get(d);
-      }
-      return result;
+  // Each anchor is mapped with the map of the block it is in: the outer
+  // anchors can lie beyond the block of the first anchor (e.g. beyond the
+  // shell around a small excision), where that block's grid-to-distorted map
+  // is not defined.
+  tnsr::I<DataVector, Dim, Frame::Distorted> anchors_distorted{
+      NumExtrapolationAnchors};
+  for (size_t i = 0; i < NumExtrapolationAnchors; ++i) {
+    const auto& block =
+        domain.blocks()[anchors_block_logical[i]->id.get_index()];
+    tnsr::I<double, Dim, Frame::Grid> anchor_grid{};
+    for (size_t d = 0; d < Dim; ++d) {
+      anchor_grid.get(d) = anchors_grid.get(d)[i];
     }
-  }();
+    if (block.has_distorted_frame()) {
+      const auto anchor_distorted = block.moving_mesh_grid_to_distorted_map()(
+          anchor_grid, time, functions_of_time);
+      for (size_t d = 0; d < Dim; ++d) {
+        anchors_distorted.get(d)[i] = anchor_distorted.get(d);
+      }
+    } else {
+      for (size_t d = 0; d < Dim; ++d) {
+        anchors_distorted.get(d)[i] = anchor_grid.get(d);
+      }
+    }
+  }
   for (size_t d = 0; d < Dim; ++d) {
     anchors_distorted.get(d) -= excision_sphere.center().get(d);
   }
