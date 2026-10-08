@@ -53,6 +53,8 @@ def postprocess_id(
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    numeric_initial_guess: bool = False,
+    numeric_initial_guess_in_tests: bool = False,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -106,6 +108,11 @@ def postprocess_id(
         loop. See ControlId.py for details. (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
+      numeric_initial_guess: Start every solve of the control loop after the
+        first from the solution of the previous solve. (Default: False)
+      numeric_initial_guess_in_tests: Start every solve of the convergence
+        tests from the solution at the nearest polynomial order that is already
+        solved. (Default: False)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -187,6 +194,8 @@ def postprocess_id(
             step_size_constraints=control_step_size_constraints,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
+            numeric_initial_guess=numeric_initial_guess,
+            numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"

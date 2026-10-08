@@ -452,6 +452,7 @@ def _convergence_test(
     mode: Literal["initial", "final"],
     output_filename: Union[str, Path],
     max_polynomial_order: int = CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER,
+    numeric_initial_guess: bool = False,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -482,6 +483,12 @@ def _convergence_test(
       at every P from 4 to max(8, polynomial_order + 2) and uses all
       'control_params' for the selection. The result is informational. Returns
       the optimal P, or 'None' if none was found.
+
+    With 'numeric_initial_guess', every solve starts from the solution at the
+    nearest P that is already solved (the higher one on a tie), interpolated to
+    its grid, instead of from the background. The domain is the same at every
+    P, so the interpolation stays within the same elements, and it is exact
+    from a lower to a higher P.
     """
     is_initial = mode == "initial"
     label = "Initial" if is_initial else "Final"
@@ -530,6 +537,7 @@ def _convergence_test(
             P for P in range(min_order, max_order + 1) if P != polynomial_order
         ]
 
+    run_dir_by_order = {polynomial_order: Path(run_dir).resolve()}
     try:
         measured_params_by_order = {
             polynomial_order: _measured_params(run_dir, control_params)
@@ -544,6 +552,18 @@ def _convergence_test(
     optimal_order = None
     for P in candidate_orders:
         P_run_dir = test_dir / f"P{P:02d}"
+        initial_guess_file_glob = None
+        if numeric_initial_guess:
+            seed_order = min(
+                run_dir_by_order, key=lambda P_i: (abs(P_i - P), -P_i)
+            )
+            initial_guess_file_glob = str(
+                run_dir_by_order[seed_order] / "BbhVolume*.h5"
+            )
+            logger.info(
+                f"{label} convergence test: P={P} starts from the solution at"
+                f" P={seed_order}."
+            )
         try:
             generate_id(
                 target_params,
@@ -556,11 +576,14 @@ def _convergence_test(
                 refinement_level=refinement_level,
                 polynomial_order=P,
                 negative_expansion_bc=negative_expansion_bc,
+                numeric_initial_guess_in_tests=numeric_initial_guess,
+                initial_guess_file_glob=initial_guess_file_glob,
                 redirect_output=True,
             )
             measured_params_by_order[P] = _measured_params(
                 P_run_dir, control_params
             )
+            run_dir_by_order[P] = P_run_dir
         except Exception as e:
             logger.warning(
                 f"{label} convergence test: solve at P={P} failed: {e}"
@@ -636,6 +659,8 @@ def control_id(
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    numeric_initial_guess: bool = False,
+    numeric_initial_guess_in_tests: bool = False,
 ):
     """Control BBH physical parameters.
 
@@ -736,6 +761,13 @@ def control_id(
         '_convergence_test' for details. (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
+      numeric_initial_guess: Start every solve after the first from the
+        solution of the previous solve, interpolated to the new grid and
+        extrapolated into the parts of the excisions that the new domain
+        covers, instead of from the background. (Default: False)
+      numeric_initial_guess_in_tests: Start every solve of the convergence
+        tests from the solution at the nearest polynomial order that is already
+        solved. See '_convergence_test'. (Default: False)
     """
 
     assert (
@@ -865,6 +897,15 @@ def control_id(
                 refinement_level=refinement_level,
                 polynomial_order=polynomial_order,
                 negative_expansion_bc=negative_expansion_bc,
+                numeric_initial_guess=numeric_initial_guess,
+                numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+                # Start from the solution of the previous solve. The excisions
+                # move between solves, so the importer extrapolates into them.
+                initial_guess_file_glob=(
+                    str(Path(control_run_dir).resolve() / "BbhVolume*.h5")
+                    if numeric_initial_guess
+                    else None
+                ),
             )
             control_run_dir = str(Segment.last(id_dir).path)
 
@@ -918,6 +959,7 @@ def control_id(
             tolerance=convergence_test_tolerance,
             mode="initial",
             output_filename=output_filename,
+            numeric_initial_guess=numeric_initial_guess_in_tests,
         )
 
     # Initialize Jacobian as an identity matrix
@@ -1267,6 +1309,7 @@ def control_id(
             tolerance=convergence_test_tolerance,
             mode="final",
             output_filename=output_filename,
+            numeric_initial_guess=numeric_initial_guess_in_tests,
         )
 
     return control_run_dir
