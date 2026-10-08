@@ -4,11 +4,13 @@
 #include "IO/Exporter/PointwiseInterpolator.hpp"
 
 #include <csignal>  // For Blaze error handling without PCH
+#include <limits>
 #ifdef _OPENMP
 #include <omp.h>
 #endif  // _OPENMP
 
 #include "DataStructures/Tensor/EagerMath/CartesianToSpherical.hpp"
+#include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "Domain/BlockLogicalCoordinates.hpp"
 #include "Domain/Creators/RegisterDerivedWithCharm.hpp"
 #include "Domain/Creators/TimeDependence/RegisterDerivedWithCharm.hpp"
@@ -272,6 +274,15 @@ bool add_extrapolation_anchors(
         1. + static_cast<double>(i) * extrapolation_spacing;
   }
   get<0>(anchors_grid_spherical) *= excision_sphere.radius();
+  // The first anchor is on the excision boundary. Move it outward by many
+  // roundoff units of the coordinates, so it is located in a block despite
+  // roundoff in the inverse maps. A point exactly on the boundary can be found
+  // in no block, e.g. around a small excision far from the origin with a
+  // logarithmic radial distribution, where the roundoff in the coordinates is
+  // large relative to the excision radius.
+  get<0>(anchors_grid_spherical)[0] +=
+      100. * std::numeric_limits<double>::epsilon() *
+      (magnitude(excision_sphere.center()).get() + excision_sphere.radius());
   // The grid-distorted map preserves angles
   if constexpr (Dim > 1) {
     get<1>(anchors_grid_spherical) = get<1>(x_spherical_distorted);
