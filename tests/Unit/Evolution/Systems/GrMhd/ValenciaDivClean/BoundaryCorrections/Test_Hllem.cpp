@@ -1334,6 +1334,126 @@ void test_no_restored_waves_reduces_to_hll(
   }
 }
 
+// DEBUG (hllem_degeneracy_debug): Eigensystem Numeric (dgeev of the flux
+// Jacobian) against Analytic on one interface. On a non-degenerate interface
+// the two eigensystems span the same eigenspaces, so every wave set must give
+// the same boundary correction to round-off; on a B_n = 0 interface (Type I,
+// exactly degenerate) Numeric must drop every restored internal wave, so All
+// equals None.
+std::array<double, 10> run_hllem(
+    const bc::Hllem& solver, const InterfaceState& state_int,
+    const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction) {
+  const size_t num_points = 1;
+  const Scalar<DataVector> lapse{num_points, 1.0};
+  const tnsr::I<DataVector, 3> shift{num_points, 0.0};
+  auto normal_covector_int = tnsr::i<DataVector, 3>{num_points, 0.0};
+  auto normal_vector_int = tnsr::I<DataVector, 3>{num_points, 0.0};
+  auto normal_covector_ext = tnsr::i<DataVector, 3>{num_points, 0.0};
+  auto normal_vector_ext = tnsr::I<DataVector, 3>{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    normal_covector_int.get(i) =
+        DataVector{num_points, gsl::at(normal_direction, i)};
+    normal_vector_int.get(i) =
+        DataVector{num_points, gsl::at(normal_direction, i)};
+    normal_covector_ext.get(i) =
+        DataVector{num_points, -gsl::at(normal_direction, i)};
+    normal_vector_ext.get(i) =
+        DataVector{num_points, -gsl::at(normal_direction, i)};
+  }
+  const auto interior =
+      package_interface_state(solver, state_int, normal_covector_int,
+                              normal_vector_int, lapse, shift,
+                              equation_of_state);
+  const auto exterior =
+      package_interface_state(solver, state_ext, normal_covector_ext,
+                              normal_vector_ext, lapse, shift,
+                              equation_of_state);
+  Scalar<DataVector> c_d{num_points, 0.0};
+  Scalar<DataVector> c_ye{num_points, 0.0};
+  Scalar<DataVector> c_tau{num_points, 0.0};
+  tnsr::i<DataVector, 3> c_s{num_points, 0.0};
+  tnsr::I<DataVector, 3> c_b{num_points, 0.0};
+  Scalar<DataVector> c_phi{num_points, 0.0};
+  solver.dg_boundary_terms(
+      make_not_null(&c_d), make_not_null(&c_ye), make_not_null(&c_tau),
+      make_not_null(&c_s), make_not_null(&c_b), make_not_null(&c_phi),
+      interior.tilde_d, interior.tilde_ye, interior.tilde_tau,
+      interior.tilde_s, interior.tilde_b, interior.tilde_phi,
+      interior.nf_tilde_d, interior.nf_tilde_ye, interior.nf_tilde_tau,
+      interior.nf_tilde_s, interior.nf_tilde_b, interior.nf_tilde_phi,
+      interior.largest_outgoing, interior.largest_ingoing,
+      interior.fast_outgoing, interior.fast_ingoing,
+      interior.interface_unit_normal, interior.metric_flatness,
+      interior.rest_mass_density, interior.spatial_velocity,
+      interior.pressure, interior.lorentz_factor,
+      interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
+      exterior.tilde_tau, exterior.tilde_s, exterior.tilde_b,
+      exterior.tilde_phi, exterior.nf_tilde_d, exterior.nf_tilde_ye,
+      exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
+      exterior.nf_tilde_phi, exterior.largest_outgoing,
+      exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
+      exterior.interface_unit_normal, exterior.metric_flatness,
+      exterior.rest_mass_density, exterior.spatial_velocity,
+      exterior.pressure, exterior.lorentz_factor,
+      exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
+      equation_of_state);
+  return flatten_correction(c_d, c_ye, c_tau, c_phi, c_s, c_b);
+}
+
+void test_numeric_eigensystem(
+    const InterfaceState& state_int, const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction, const std::string& what,
+    const bool exactly_degenerate) {
+  CAPTURE(what);
+  const auto run = [&](const bc::HllemWaves waves,
+                       const bc::HllemEigensystem eigensystem) {
+    return run_hllem(bc::Hllem{waves, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                               eigensystem, 1.0e300},
+                     state_int, state_ext, equation_of_state,
+                     normal_direction);
+  };
+  const auto none = run(bc::HllemWaves::None, bc::HllemEigensystem::Analytic);
+  for (const auto waves :
+       {bc::HllemWaves::Contact, bc::HllemWaves::ContactSlow,
+        bc::HllemWaves::ContactAlfven, bc::HllemWaves::All,
+        bc::HllemWaves::AllWithFast}) {
+    CAPTURE(waves);
+    const auto analytic = run(waves, bc::HllemEigensystem::Analytic);
+    const auto numeric = run(waves, bc::HllemEigensystem::Numeric);
+    double scale = 0.0;
+    for (size_t n = 0; n < 10; ++n) {
+      scale = std::max(scale, std::abs(gsl::at(none, n)));
+      scale = std::max(scale,
+                       std::abs(gsl::at(analytic, n) - gsl::at(none, n)));
+    }
+    CAPTURE(scale);
+    CHECK(scale > 1.0e-8);
+    Approx approx = Approx::custom().epsilon(1.0e-10).scale(scale);
+    for (size_t n = 0; n < 10; ++n) {
+      CAPTURE(n);
+      CHECK(std::isfinite(gsl::at(numeric, n)));
+      if (exactly_degenerate and waves != bc::HllemWaves::AllWithFast) {
+        // every restored internal wave sits in the five-fold cluster
+        CHECK(gsl::at(numeric, n) == approx(gsl::at(none, n)));
+      } else if (not exactly_degenerate) {
+        CHECK(gsl::at(numeric, n) == approx(gsl::at(analytic, n)));
+      }
+    }
+  }
+  // the option value round-trips and is distinct
+  CHECK(bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Numeric, 1.0e300} !=
+        bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Analytic, 1.0e300});
+  CHECK(bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Numeric, 1.0e4} !=
+        bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Numeric, 1.0e300});
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
   PUPable_reg(bc::Hllem);
@@ -1366,7 +1486,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
       "  UseComplementaryProjection: true\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  Eigensystem: Analytic\n"
+          "  MaxProjectorNorm: 1.0e300\n");
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen), dynamic_cast<const bc::Hllem&>(*hllem),
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
@@ -1382,7 +1504,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  Eigensystem: Analytic\n"
+          "  MaxProjectorNorm: 1.0e300\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_none) !=
               bc::Hllem{bc::HllemWaves::None, false, 1.0e-4, 1.0e-30, 1.0e-8});
   CHECK(bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -1398,7 +1522,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  Eigensystem: Analytic\n"
+          "  MaxProjectorNorm: 1.0e300\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_slow) !=
               bc::Hllem{bc::HllemWaves::Slow, false, 1.0e-4, 1.0e-30, 1.0e-8});
   const auto hllem_alfven =
@@ -1409,7 +1535,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  Eigensystem: Analytic\n"
+          "  MaxProjectorNorm: 1.0e300\n");
   CHECK_FALSE(
       dynamic_cast<const bc::Hllem&>(*hllem_alfven) !=
       bc::Hllem{bc::HllemWaves::Alfven, false, 1.0e-4, 1.0e-30, 1.0e-8});
@@ -1451,6 +1579,32 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}}, "purely tangential field, B_n = 0",
         true);
+    test_numeric_eigensystem(
+        make_state(1.0, 1.0, {{0.2, -0.3, 0.1}}, {{0.5, 0.3, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}}, "numeric: generic interface", false);
+    test_numeric_eigensystem(
+        make_state(1.0, 1.0, {{0.0, 0.2, -0.3}}, {{0.0, 0.4, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{0.0, -0.1, 0.25}}, {{0.0, 0.3, -0.2}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}}, "numeric: B_n = 0", true);
+    const auto numeric_from_yaml =
+        TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
+                                           bc::Hllem>(
+            "Hllem:\n"
+            "  WavesToRestore: All\n"
+            "  UseComplementaryProjection: false\n"
+            "  DegeneracyTolerance: 1.0e-10\n"
+            "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
+            "  LightSpeedDensityCutoff: 1.0e-8\n"
+            "  Eigensystem: Numeric\n"
+            "  MaxProjectorNorm: 1.0e4\n");
+    CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*numeric_from_yaml) !=
+                bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                          bc::HllemEigensystem::Numeric, 1.0e4});
   }
 
   CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -1465,6 +1619,13 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen),
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-3, 1.0e-30, 1.0e-8},
+      Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+      volume_data, ranges);
+  // DEBUG: the numeric eigensystem and the conditioning guard are too
+  TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+      make_not_null(&gen),
+      bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                bc::HllemEigensystem::Numeric, 1.0e4},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges);
 
@@ -1510,3 +1671,137 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   test_strong_blast_states_stay_finite();
 }
 }  // namespace
+
+// DEBUG (hllem_degeneracy_debug, umbrella A2): the face where the Del Zanna jet
+// at DegeneracyTolerance 1e-10 goes wrong (the nozzle rim, r = 1, first cell
+// row; probe records of experiments/delzanna_jet/hllem_face_probe, r11 at
+// t = 0.908605 and r22 at t = 0.444207). The analytic eigenvectors are
+// evaluated on the recorded averaged state twice: at SpECTRE's own double
+// speeds (what the run did) and at the 60-digit oracle speeds rounded to
+// double. The restored anti-diffusion direction sum_k delta_k (l.dU/l.r) r
+// over the five kept internal waves is printed relative to |dU|; the oracle's
+// own value (exact eigensystem) is 1.569 (r11) and 0.7332 (r22). This
+// separates the speed error from round-off in the eigenvector formulas.
+namespace {
+struct OnsetFace {
+  std::string name;
+  double rho, eps, w, h;
+  std::array<double, 3> v, b, n;
+  std::array<double, 9> du, speeds_double, speeds_oracle;
+  std::array<double, 5> delta;
+  double oracle_value;
+};
+
+double onset_face_antidiffusion(
+    const OnsetFace& face, const std::array<double, 9>& speeds,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
+  const size_t num_points = 1;
+  tnsr::I<DataVector, 3, Frame::Inertial> v{num_points};
+  tnsr::I<DataVector, 3, Frame::Inertial> b{num_points};
+  tnsr::i<DataVector, 3> n{num_points};
+  tnsr::ii<DataVector, 3, Frame::Inertial> metric{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    v.get(i) = gsl::at(face.v, i);
+    b.get(i) = gsl::at(face.b, i);
+    n.get(i) = gsl::at(face.n, i);
+    metric.get(i, i) = 1.0;
+  }
+  tnsr::i<DataVector, 9> lam{num_points};
+  for (size_t k = 0; k < 9; ++k) {
+    lam.get(k) = gsl::at(speeds, k);
+  }
+  tnsr::ij<DataVector, 9> modes{num_points, 0.0};
+  tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
+  characteristic_eigenvectors_mhd(
+      make_not_null(&modes), make_not_null(&projectors), lam, v, b,
+      Scalar<DataVector>{num_points, face.rho},
+      Scalar<DataVector>{num_points, face.eps},
+      Scalar<DataVector>{num_points, face.w},
+      Scalar<DataVector>{num_points, face.h}, metric, n, equation_of_state,
+      false);
+  std::array<double, 9> sum{};
+  double du_norm = 0.0;
+  for (size_t m = 0; m < 9; ++m) {
+    du_norm += square(gsl::at(face.du, m));
+  }
+  for (size_t k = 2; k <= 6; ++k) {
+    double lr = 0.0;
+    double ldu = 0.0;
+    for (size_t m = 0; m < 9; ++m) {
+      lr += projectors.get(k, m)[0] * modes.get(k, m)[0];
+      ldu += projectors.get(k, m)[0] * gsl::at(face.du, m);
+    }
+    for (size_t m = 0; m < 9; ++m) {
+      gsl::at(sum, m) +=
+          gsl::at(face.delta, k - 2) * ldu / lr * modes.get(k, m)[0];
+    }
+  }
+  double sum_norm = 0.0;
+  for (size_t m = 0; m < 9; ++m) {
+    sum_norm += square(gsl::at(sum, m));
+  }
+  return std::sqrt(sum_norm / du_norm);
+}
+}  // namespace
+
+SPECTRE_TEST_CASE(
+    "Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.HllemOnsetFaceDebug",
+    "[Unit][GrMhd]") {
+  const auto eos =
+      EquationsOfState::IdealFluid<true>{1.6666666666666667}
+          .promote_to_3d_eos();
+  const std::array<OnsetFace, 2> faces{{
+      {"r11 t=0.908605",
+       0.0739495689947152,
+       4.1023613607110926e-11,
+       1.601853001252123,
+       1.0000000000683726,
+       {{-0.05116278175661949, 0.779525872675541, 0.0}},
+       {{0.00278603535805616, 0.08398031806776235, 0.0}},
+       {{-1.0, -0.0, -0.0}},
+       {{-0.18497596655023824, 6.038612320205473, 0.0,
+         -0.004523156336791348, -0.13773474610353464, 0.0,
+         0.5838771806964465, 5.435743842823654, 0.003367510859097023}},
+       {{-1.0, -0.13928721262125857, 0.048059416529945165,
+         0.051162701484856764, 0.05116278175661949, 0.051162862029309815,
+         0.05611554607193812, 0.2379628798632529, 1.0}},
+       {{-1.0, -0.13928721262125215, 0.04805941652994516,
+         0.0511626942564261, 0.05116278175661949, 0.05116286925773412,
+         0.05611554607193812, 0.23796287986325287, 1.0}},
+       {{0.898925812937611, 0.8923992667019697, 0.8923990978817103,
+         0.8923989290595002, 0.881982895126304}},
+       1.569},
+      {"r22 t=0.444207",
+       0.04081258816629474,
+       6.998697404971646e-11,
+       1.8818672361803628,
+       1.000000000116645,
+       {{-0.03628591428785676, 0.8463516215222865, 0.0}},
+       {{0.0027237308471549228, 0.0847106112069555, 0.0}},
+       {{-1.0, -0.0, -0.0}},
+       {{-0.07907010954432901, 4.2053738446693165, 0.0,
+         -0.0005836930236142153, -0.26424205686560154, 0.0,
+         0.3840084708241124, 3.8000530658914156, 0.011406889864836216}},
+       {{-1.0, -0.18246362986265566, 0.03363938890301627,
+         0.036285834109478235, 0.03628591428785676, 0.036285994467432345,
+         0.04150311145989474, 0.25161262840343335, 1.0}},
+       {{-1.0, -0.18246362986265557, 0.03363938890301627,
+         0.036285834104437885, 0.03628591428785676, 0.036285994472472674,
+         0.04150311145989474, 0.2516126284034333, 1.0}},
+       {{0.9487841411417267, 0.9447549370274345, 0.9447548149561171,
+         0.9447546928829773, 0.9368116494375865}},
+       0.7332},
+  }};
+  for (const auto& face : faces) {
+    const double with_double =
+        onset_face_antidiffusion(face, face.speeds_double, *eos);
+    const double with_oracle =
+        onset_face_antidiffusion(face, face.speeds_oracle, *eos);
+    Parallel::printf(
+        "HLLEM onset face %s: |sum delta P dU|/|dU| analytic eigenvectors at "
+        "double speeds %.6e, at oracle speeds %.6e, exact (oracle) %.4e\n",
+        face.name, with_double, with_oracle, face.oracle_value);
+    CHECK(std::isfinite(with_double));
+    CHECK(std::isfinite(with_oracle));
+  }
+}

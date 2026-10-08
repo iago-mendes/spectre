@@ -69,6 +69,18 @@ std::ostream& operator<<(std::ostream& os, const HllemWaves waves) {
   }
 }
 
+std::ostream& operator<<(std::ostream& os,
+                         const HllemEigensystem eigensystem) {
+  switch (eigensystem) {
+    case HllemEigensystem::Analytic:
+      return os << "Analytic";
+    case HllemEigensystem::Numeric:
+      return os << "Numeric";
+    default:
+      ERROR("Unknown HllemEigensystem");
+  }
+}
+
 namespace {
 // Indices (MhdSpeed enum order) of the internal waves the anti-diffusion
 // restores. Contact=4 (Entropy), Alfven={2,6}, Slow={3,5}; the outer fast
@@ -144,12 +156,16 @@ Hllem::Hllem(const HllemWaves waves_to_restore,
              const bool use_complementary_projection,
              const double degeneracy_tolerance,
              const double magnetic_field_magnitude_for_hydro,
-             const double light_speed_density_cutoff)
+             const double light_speed_density_cutoff,
+             const HllemEigensystem eigensystem,
+             const double max_projector_norm)
     : waves_to_restore_(waves_to_restore),
       use_complementary_projection_(use_complementary_projection),
       degeneracy_tolerance_(degeneracy_tolerance),
       magnetic_field_magnitude_for_hydro_(magnetic_field_magnitude_for_hydro),
-      light_speed_density_cutoff_(light_speed_density_cutoff) {}
+      light_speed_density_cutoff_(light_speed_density_cutoff),
+      eigensystem_(eigensystem),
+      max_projector_norm_(max_projector_norm) {}
 
 Hllem::Hllem(CkMigrateMessage* /*unused*/) {}
 
@@ -164,6 +180,8 @@ void Hllem::pup(PUP::er& p) {
   p | degeneracy_tolerance_;
   p | magnetic_field_magnitude_for_hydro_;
   p | light_speed_density_cutoff_;
+  p | eigensystem_;
+  p | max_projector_norm_;
 }
 
 double Hllem::dg_package_data(
@@ -855,6 +873,79 @@ void Hllem::dg_boundary_terms(
       b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, flat_metric, unit_normal,
       equation_of_state, false);
 
+  // DEBUG (hllem_degeneracy_debug): numeric characteristics. Replace the
+  // restored waves' speeds and eigenvectors by LAPACK dgeev's for the flux
+  // Jacobian at the SAME averaged state. The nine eigenvalues are sorted; for
+  // an admissible state the characteristic speeds interlace (Anton et al.
+  // 2010, Eq. 42), so sorted order IS the MhdSpeed order. An exact
+  // degeneracy needs no special treatment: a semisimple multiple eigenvalue
+  // comes out of dgeev split only by O(eps |A| kappa), so the speed-gap guard
+  // below drops the whole cluster (HLL there), as the analytic path would
+  // with exact speeds. A complex pair (dgeev's answer near a defective
+  // cluster) has equal real parts, so the gap guard drops it too. A point
+  // where dgeev throws, the matrix is non-finite, or some |Im lambda| > 1e-6
+  // restores no wave at all (`numeric_failed`). The outer fast bounds stay
+  // analytic.
+  tnsr::i<DataVector, 9> numeric_speeds{};
+  DataVector numeric_failed{num_points, 0.0};
+  if (eigensystem_ == HllemEigensystem::Numeric) {
+    const ScopedFpeState numeric_fpe(false);
+    numeric_speeds = mhd_speeds;
+    tnsr::II<DataVector, 3, Frame::Inertial> inv_flat_metric{num_points, 0.0};
+    for (size_t i = 0; i < 3; ++i) {
+      inv_flat_metric.get(i, i) = 1.0;
+    }
+    tnsr::iJ<DataVector, 9> jacobian{num_points};
+    flux_jacobian_mhd(make_not_null(&jacobian), v_avg, b_avg, rho_avg,
+                      eps_avg, ye_avg, w_avg, enthalpy_avg, flat_metric,
+                      inv_flat_metric, unit_normal, equation_of_state);
+    blaze::StaticMatrix<double, 9, 9> mat{};
+    blaze::StaticVector<std::complex<double>, 9> eigenvalues{};
+    blaze::StaticMatrix<std::complex<double>, 9, 9> left{};
+    blaze::StaticMatrix<std::complex<double>, 9, 9> right{};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      bool ok = true;
+      for (size_t row = 0; row < 9; ++row) {
+        for (size_t col = 0; col < 9; ++col) {
+          mat(row, col) = jacobian.get(row, col)[pt];
+          ok = ok and std::isfinite(mat(row, col));
+        }
+      }
+      if (ok) {
+        try {
+          blaze::geev(mat, left, eigenvalues, right);
+        } catch (const std::exception& /*e*/) {
+          ok = false;
+        }
+      }
+      std::array<size_t, 9> order{};
+      for (size_t i = 0; i < 9; ++i) {
+        gsl::at(order, i) = i;
+        ok = ok and std::isfinite(eigenvalues[i].real()) and
+             std::abs(eigenvalues[i].imag()) <= 1.0e-6;
+      }
+      if (not ok) {
+        numeric_failed[pt] = 1.0;
+        continue;
+      }
+      std::sort(order.begin(), order.end(),
+                [&eigenvalues](const size_t a, const size_t b) {
+                  return eigenvalues[a].real() < eigenvalues[b].real();
+                });
+      for (size_t i = 0; i < 9; ++i) {
+        const size_t s = gsl::at(order, i);
+        numeric_speeds.get(i)[pt] = eigenvalues[s].real();
+        for (size_t n = 0; n < 9; ++n) {
+          // the convention of numerical_characteristics (and Marquina)
+          modes.get(i, n)[pt] = right(n, s).real();
+          projectors.get(i, n)[pt] = left(n, s).real();
+        }
+      }
+    }
+  }
+  const tnsr::i<DataVector, 9>& restore_speeds =
+      eigensystem_ == HllemEigensystem::Numeric ? numeric_speeds : mhd_speeds;
+
   // conserved-variable jump in the eigenvector ordering
   // [S_x,S_y,S_z, B_x,B_y,B_z, D, Tau, Phi]
   std::array<DataVector, 9> du{};
@@ -901,8 +992,9 @@ void Hllem::dg_boundary_terms(
       }
     }
   }
+  DataVector kappa_dropped{num_points, 0.0};
   for (const size_t wave : restored_waves) {
-    const DataVector& lam = mhd_speeds.get(wave);
+    const DataVector& lam = restore_speeds.get(wave);
     const DataVector lambdap = max(lam, 0.0);
     const DataVector lambdam = min(lam, 0.0);
     const DataVector delta = 1.0 - lambdam / (fast_lambda_min - 1.0e-14) -
@@ -923,7 +1015,8 @@ void Hllem::dg_boundary_terms(
         continue;
       }
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (std::abs(lam[pt] - mhd_speeds.get(j)[pt]) < degeneracy_tolerance_) {
+        if (std::abs(lam[pt] - restore_speeds.get(j)[pt]) <
+            degeneracy_tolerance_) {
           wave_ok[pt] = 0.0;
           restored_wave_dropped[pt] = 1.0;
         }
@@ -947,6 +1040,29 @@ void Hllem::dg_boundary_terms(
         wave_ok[pt] = 0.0;
         restored_wave_dropped[pt] = 1.0;
       }
+      if (numeric_failed[pt] > 0.0) {
+        wave_ok[pt] = 0.0;
+        restored_wave_dropped[pt] = 1.0;
+      }
+    }
+    // DEBUG: conditioning guard, |l| |r| / |l.r| = ||r l^T / (l.r)||_2, the
+    // norm of the wave's spectral projector (eigenvalue condition number).
+    if (max_projector_norm_ < 1.0e300) {
+      DataVector norm_l{num_points, 0.0};
+      DataVector norm_r{num_points, 0.0};
+      for (size_t n = 0; n < 9; ++n) {
+        norm_l += square(projectors.get(wave, n));
+        norm_r += square(modes.get(wave, n));
+      }
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (wave_ok[pt] > 0.0 and
+            not(sqrt(norm_l[pt] * norm_r[pt]) <=
+                max_projector_norm_ * std::abs(diagonal[pt]))) {
+          wave_ok[pt] = 0.0;
+          restored_wave_dropped[pt] = 1.0;
+          kappa_dropped[pt] += 1.0;
+        }
+      }
     }
     const DataVector inv_diagonal =
         wave_ok / (diagonal + (1.0 - wave_ok));  // 1/diag where ok, else 0
@@ -968,7 +1084,7 @@ void Hllem::dg_boundary_terms(
       DataVector gap{num_points, std::numeric_limits<double>::max()};
       for (size_t j = 0; j < 9; ++j) {
         if (j != wave) {
-          gap = min(gap, abs(lam - mhd_speeds.get(j)));
+          gap = min(gap, abs(lam - restore_speeds.get(j)));
         }
       }
       gsl::at(pr_gap, k) = gap;
@@ -1098,6 +1214,10 @@ void Hllem::dg_boundary_terms(
       }
     }
     summary[17] = static_cast<double>(selected.size());
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      summary[18] += numeric_failed[pt];
+      summary[19] += kappa_dropped[pt];
+    }
     ProbeFiles& files = probe_files(probe_dir);
     std::fwrite(summary.data(), sizeof(double), summary.size(), files.sum);
     if (not selected.empty()) {
@@ -1156,7 +1276,7 @@ void Hllem::dg_boundary_terms(
         put(get(ye_avg)[pt]);
         // 20-28 speeds, 29-30 fast bounds
         for (size_t i = 0; i < 9; ++i) {
-          put(mhd_speeds.get(i)[pt]);
+          put(restore_speeds.get(i)[pt]);
         }
         put(fast_lambda_min[pt]);
         put(fast_lambda_max[pt]);
@@ -1259,13 +1379,34 @@ bool operator==(const Hllem& lhs, const Hllem& rhs) {
          lhs.degeneracy_tolerance_ == rhs.degeneracy_tolerance_ and
          lhs.magnetic_field_magnitude_for_hydro_ ==
              rhs.magnetic_field_magnitude_for_hydro_ and
-         lhs.light_speed_density_cutoff_ == rhs.light_speed_density_cutoff_;
+         lhs.light_speed_density_cutoff_ ==
+             rhs.light_speed_density_cutoff_ and
+         lhs.eigensystem_ == rhs.eigensystem_ and
+         lhs.max_projector_norm_ == rhs.max_projector_norm_;
 }
 bool operator!=(const Hllem& lhs, const Hllem& rhs) { return not(lhs == rhs); }
 
 // NOLINTNEXTLINE
 PUP::able::PUP_ID Hllem::my_PUP_ID = 0;
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections
+
+template <>
+grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem
+Options::create_from_yaml<
+    grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem>::
+    create<void>(const Options::Option& options) {
+  namespace bc = grmhd::ValenciaDivClean::BoundaryCorrections;
+  const auto type_read = options.parse_as<std::string>();
+  if (type_read == "Analytic") {
+    return bc::HllemEigensystem::Analytic;
+  } else if (type_read == "Numeric") {
+    return bc::HllemEigensystem::Numeric;
+  }
+  PARSE_ERROR(options.context(), "Failed to convert \""
+                                     << type_read
+                                     << "\" to HllemEigensystem. Must be "
+                                        "Analytic or Numeric.");
+}
 
 template <>
 grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves

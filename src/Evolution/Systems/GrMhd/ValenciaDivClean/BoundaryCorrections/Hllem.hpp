@@ -136,6 +136,20 @@ enum class HllemWaves {
 };
 std::ostream& operator<<(std::ostream& os, HllemWaves waves);
 
+/// DEBUG (branch hllem_degeneracy_debug): where the restored waves' speeds and
+/// eigenvectors come from.
+enum class HllemEigensystem {
+  /// The analytic speeds (`characteristic_speeds_mhd`, quartic for the
+  /// magnetosonic pairs) and eigenvectors (`characteristic_eigenvectors_mhd`).
+  Analytic,
+  /// The eigenvalues and left/right eigenvectors of `flux_jacobian_mhd` at the
+  /// same averaged state, from LAPACK `dgeev` (blaze::geev), sorted by
+  /// eigenvalue into the MhdSpeed order. Only the restored waves use them; the
+  /// outer fast bounds stay analytic.
+  Numeric
+};
+std::ostream& operator<<(std::ostream& os, HllemEigensystem eigensystem);
+
 /*!
  * \brief The HLLEM Riemann solver (Einfeldt-Munz-Roe-Sjogreen 1991; Dumbser &
  * Balsara 2016) for the GRMHD GLM-Valencia system.
@@ -254,10 +268,25 @@ class Hllem final : public evolution::BoundaryCorrection {
         "the characteristic speeds."};
     using type = double;
   };
+  struct Eigensystem {
+    using type = HllemEigensystem;
+    static constexpr Options::String help = {
+        "DEBUG: Analytic or Numeric (dgeev of the flux Jacobian) speeds and "
+        "eigenvectors for the restored waves."};
+  };
+  struct MaxProjectorNorm {
+    using type = double;
+    static type lower_bound() { return 1.0; }
+    static constexpr Options::String help = {
+        "DEBUG: drop a restored wave where its spectral projector is "
+        "ill-conditioned, |l| |r| / |l.r| > this (the eigenvalue condition "
+        "number; scale-invariant, unlike the 1e-12 floor on l.r). 1e300 "
+        "switches the guard off."};
+  };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
                  DegeneracyTolerance, MagneticFieldMagnitudeForHydro,
-                 LightSpeedDensityCutoff>;
+                 LightSpeedDensityCutoff, Eigensystem, MaxProjectorNorm>;
   static constexpr Options::String help = {
       "Computes the HLLEM boundary correction term for the GRMHD system."};
 
@@ -270,7 +299,9 @@ class Hllem final : public evolution::BoundaryCorrection {
 
   Hllem(HllemWaves waves_to_restore, bool use_complementary_projection,
         double degeneracy_tolerance, double magnetic_field_magnitude_for_hydro,
-        double light_speed_density_cutoff);
+        double light_speed_density_cutoff,
+        HllemEigensystem eigensystem = HllemEigensystem::Analytic,
+        double max_projector_norm = 1.0e300);
 
   /// \cond
   explicit Hllem(CkMigrateMessage* /*unused*/);
@@ -449,11 +480,27 @@ class Hllem final : public evolution::BoundaryCorrection {
       std::numeric_limits<double>::signaling_NaN()};
   double light_speed_density_cutoff_{
       std::numeric_limits<double>::signaling_NaN()};
+  HllemEigensystem eigensystem_{HllemEigensystem::Analytic};
+  double max_projector_norm_{1.0e300};
 };
 bool operator!=(const Hllem& lhs, const Hllem& rhs);
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections
 
 /// \cond
+template <>
+struct Options::create_from_yaml<
+    grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem> {
+  template <typename Metavariables>
+  static grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem create(
+      const Options::Option& options) {
+    return create<void>(options);
+  }
+};
+template <>
+grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem
+Options::create_from_yaml<
+    grmhd::ValenciaDivClean::BoundaryCorrections::HllemEigensystem>::
+    create<void>(const Options::Option& options);
 template <>
 struct Options::create_from_yaml<
     grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves> {
