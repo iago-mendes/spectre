@@ -79,6 +79,15 @@ SPECTRE_TEST_CASE("Unit.Domain.CoordinateMaps.Interval", "[Domain][Unit]") {
   CHECK(get<0>(logarithmic_map_right(point_1)) == approx(-0.190267286625263));
   CHECK(get<0>(logarithmic_map_right(point_2)) == approx(1.836599930886074));
   CHECK(get<0>(logarithmic_map_right(point_3)) == approx(2.652547353227159));
+  // Points at or beyond the singularity are not in the image of the map
+  CHECK_FALSE(logarithmic_map_left.inverse({{-3.2}}).has_value());
+  CHECK_FALSE(logarithmic_map_left.inverse({{-4.0}}).has_value());
+  CHECK_FALSE(logarithmic_map_right.inverse({{2.8}}).has_value());
+  CHECK_FALSE(logarithmic_map_right.inverse({{3.5}}).has_value());
+  // Points beyond the target interval but not beyond the singularity map to
+  // logical coordinates outside the source interval
+  CHECK(logarithmic_map_left.inverse({{-3.15}}).value()[0] < -1.0);
+  CHECK(logarithmic_map_right.inverse({{2.75}}).value()[0] > 2.0);
 
   test_coordinate_map(-1.0, 2.0, -3.1, 2.7,
                       CoordinateMaps::Distribution::Inverse, -3.2);

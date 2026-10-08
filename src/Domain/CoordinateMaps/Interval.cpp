@@ -112,10 +112,15 @@ std::optional<std::array<double, 1>> Interval::inverse(
           0.5 * (log((b_ - singularity_pos) / (a_ - singularity_pos)));
       const double singularity_sign =
           std::min(a_, b_) > singularity_pos ? 1. : -1.;
-      return {{{0.5 * ((B_ - A_) *
-                           (log(singularity_sign *
-                                (target_coords[0] - singularity_pos)) -
-                            logarithmic_zero) /
+      const double log_argument =
+          singularity_sign * (target_coords[0] - singularity_pos);
+      // Points at or beyond the singularity are not in the image of the map.
+      // Return early rather than taking the log of a non-positive number,
+      // e.g. when a point is located in the wrong block.
+      if (log_argument <= 0.) {
+        return std::nullopt;
+      }
+      return {{{0.5 * ((B_ - A_) * (log(log_argument) - logarithmic_zero) /
                            logarithmic_rate +
                        B_ + A_)}}};
     }
