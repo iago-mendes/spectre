@@ -1022,7 +1022,7 @@ void test_mhd_speeds_interlace() {
       }
     }
   }
-  CHECK(states_checked == 2 * 2 * 2 * 6 * 7 * 4);
+  CHECK(states_checked == 2 * 2 * 3 * 6 * 7 * 4);  // 3 slow-speed methods
 }
 
 // Regression test for an abort of a Del Zanna et al. (2003) jet run, "reduced
