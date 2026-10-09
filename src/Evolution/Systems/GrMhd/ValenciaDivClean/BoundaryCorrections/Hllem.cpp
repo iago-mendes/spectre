@@ -1567,6 +1567,16 @@ void Hllem::dg_boundary_terms(
     std::array<double, 9> result{};
     hllem_grouped::Stats stats{};
     for (size_t pt = 0; pt < num_points; ++pt) {
+      // dU = 0 exactly (uniform regions, the transverse faces of a 1D
+      // problem): the anti-diffusion is exactly +0 either way (Z (p(T11) 0)
+      // sums to +0), so skip the Schur work. Bitwise the same evolution.
+      bool zero_jump = true;
+      for (size_t n = 0; n < 9; ++n) {
+        zero_jump = zero_jump and gsl::at(du, n)[pt] == 0.0;
+      }
+      if (zero_jump) {
+        continue;
+      }
       for (size_t row = 0; row < 9; ++row) {
         for (size_t col = 0; col < 9; ++col) {
           gsl::at(matrix, 9 * row + col) = jacobian.get(row, col)[pt];
