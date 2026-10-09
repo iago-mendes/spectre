@@ -938,7 +938,9 @@ void test_mhd_speeds_interlace() {
            {grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
                 ReducedQuadratic,
             grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
-                ReducedQuadraticThenNewton}) {
+                ReducedQuadraticThenNewton,
+            grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
+                ReducedQuadraticComoving}) {
         for (const auto& velocity : velocities) {
           double v_squared = 0.0;
           for (size_t i = 0; i < 3; ++i) {
@@ -1187,6 +1189,8 @@ void test_superluminal_interface_sound_speed() {
        {grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::ReducedQuadratic,
         grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
             ReducedQuadraticThenNewton,
+        grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
+            ReducedQuadraticComoving,
         grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::Toms748}) {
     CHECK_THROWS_WITH(
         speeds_at(rho_avg, eps_avg, p_avg, b_field_avg, method),

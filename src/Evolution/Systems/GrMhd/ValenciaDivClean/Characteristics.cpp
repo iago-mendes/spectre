@@ -985,7 +985,9 @@ void characteristic_speeds_mhd(
     // that precision.
     if (slow_speed_method == SlowMagnetosonicSpeedMethod::ReducedQuadratic or
         slow_speed_method ==
-            SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton) {
+            SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton or
+        slow_speed_method ==
+            SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving) {
       const double b_i = c3[point] + fast_minus[point] + fast_plus[point];
       const double c_i = c2[point] +
                          b_i * (fast_minus[point] + fast_plus[point]) -
@@ -1125,6 +1127,105 @@ void characteristic_speeds_mhd(
           0.05 * tolerance, 0.05 * tolerance, /* max_iterations */ 100);
       slow_plus[point] = -c3[point] - slow_minus[point] - fast_minus[point] -
                          fast_plus[point];
+    }
+
+    // ---- slow pair: re-solve in the comoving variable mu = lambda - v_n ----
+    // The deflation above inherits the fast roots' error (Newton accepts them
+    // at an ABSOLUTE |Q| < 1e-14, i.e. up to 1e-14/|Q'(fast)|, ~2e-12 on warm
+    // faces), and a near-double slow pair amplifies it by
+    // 1/(slow_plus - slow_minus): with B_n -> 0 the slow speeds come out
+    // ~1e-8 off against a slow-entropy gap of 1e-6..1e-5, which makes the
+    // analytic slow eigenvectors wrong (the HLLEM "ambient blobs" of the Del
+    // Zanna jet; measured in research experiments/slow_root_accuracy). The
+    // magnetosonic quartic written in mu (Anton et al. 2010, N_4, times
+    // c_s^2/(rho h)),
+    //   F(mu) = c_s^2 Bc^2 - (c_s^2 + b^2) W^2 mu^2 + (1 - c_s^2) W^4 mu^4/G,
+    //   Bc = B_n/W - (B.v) W mu,   G = 1 - (v_n + mu)^2,
+    // has no O(1) cancellation near mu = 0, so its slow roots are located to
+    // relative round-off. Seeds: the closed form that zeroes its first two
+    // terms (exact when the mu^4 term is negligible, i.e. near the
+    // slow/entropy degeneracy; exactly 0 at B_n = 0) and the deflation result
+    // (good when the slow root is far from v_n). The seed with the smaller
+    // Newton step goes first; if its root leaves this slot's interlacing
+    // interval the other seed is tried, and if neither lands the deflation
+    // result is kept.
+    if (slow_speed_method ==
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving) {
+      const double cs2_i = get(sound_speed_squared)[point];
+      const double w_i = get(lorentz_factor)[point];
+      const double w2_i = square(w_i);
+      // B quantities are already divided by sqrt(rho h) here
+      const double bn_i = get(normal_magnetic_field)[point];
+      const double bv_i = get(magnetic_field_dot_spatial_velocity)[point];
+      const double b2_i = get(comoving_magnetic_field_squared)[point];
+      const double bn_over_w = bn_i / w_i;
+      const double bv_w = bv_i * w_i;
+      const double mu2_coef = (cs2_i + b2_i) * w2_i;
+      const double mu4_coef = (1.0 - cs2_i) * square(w2_i);
+      const auto newton_step = [&](const double mu) {
+        const double bc = bn_over_w - bv_w * mu;
+        const double lam = vn_i + mu;
+        const double inv_g = 1.0 / ((1.0 - lam) * (1.0 + lam));
+        const double mu2 = square(mu);
+        const double f = cs2_i * square(bc) - mu2_coef * mu2 +
+                         mu4_coef * square(mu2) * inv_g;
+        const double df =
+            -2.0 * cs2_i * bc * bv_w - 2.0 * mu2_coef * mu +
+            mu4_coef * mu2 * inv_g * (4.0 * mu + 2.0 * mu2 * lam * inv_g);
+        if (f == 0.0) {
+          return 0.0;  // at a root (e.g. B_n = 0, mu = 0)
+        }
+        // a stationary point off a root gives no usable step (e.g. a
+        // deflation that returned slow_minus = slow_plus = v_n with B.v = 0)
+        return df == 0.0 ? std::numeric_limits<double>::infinity() : f / df;
+      };
+      const double cs_i = sqrt(cs2_i);
+      const double t_i = sqrt(cs2_i + b2_i);
+      const double num = cs_i * bn_i / w2_i;
+      // cs (B.v) -/+ t never vanishes: t^2 - cs^2 (B.v)^2 >= cs^2 > 0
+      const double seed_1 = num / (cs_i * bv_i + t_i);
+      const double seed_2 = num / (cs_i * bv_i - t_i);
+      const std::array<double, 2> closed{
+          {std::min(seed_1, seed_2), std::max(seed_1, seed_2)}};
+      const std::array<double, 2> deflated{
+          {slow_minus[point] - vn_i, slow_plus[point] - vn_i}};
+      const double slack =
+          4.0 * std::numeric_limits<double>::epsilon() *
+          (std::abs(alfven_minus_i) + std::abs(alfven_plus_i) + std::abs(vn_i));
+      const std::array<double, 2> lower{
+          {alfven_minus_i - vn_i - slack, -slack}};
+      const std::array<double, 2> upper{{slack, alfven_plus_i - vn_i + slack}};
+      std::array<double, 2> polished{};
+      for (size_t j = 0; j < 2; ++j) {
+        const std::array<double, 2> seeds{
+            {gsl::at(closed, j), gsl::at(deflated, j)}};
+        const std::array<double, 2> first_steps{
+            {newton_step(seeds[0]), newton_step(seeds[1])}};
+        const std::array<size_t, 2> order =
+            std::abs(first_steps[0]) <= std::abs(first_steps[1])
+                ? std::array<size_t, 2>{{0, 1}}
+                : std::array<size_t, 2>{{1, 0}};
+        gsl::at(polished, j) = vn_i + gsl::at(deflated, j);
+        for (const size_t c : order) {
+          double mu = gsl::at(seeds, c);
+          double step = gsl::at(first_steps, c);
+          for (size_t iter = 0;
+               iter < 4 and step != 0.0 and std::isfinite(step); ++iter) {
+            mu -= step;
+            if (std::abs(step) <=
+                4.0 * std::numeric_limits<double>::epsilon() * std::abs(mu)) {
+              break;
+            }
+            step = newton_step(mu);
+          }
+          if (mu >= gsl::at(lower, j) and mu <= gsl::at(upper, j)) {
+            gsl::at(polished, j) = vn_i + mu;
+            break;
+          }
+        }
+      }
+      slow_minus[point] = std::min(polished[0], polished[1]);
+      slow_plus[point] = std::max(polished[0], polished[1]);
     }
 
     ASSERT(std::abs(evaluate_quartic(slow_minus[point], point)) <

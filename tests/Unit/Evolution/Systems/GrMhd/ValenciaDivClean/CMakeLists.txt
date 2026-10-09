@@ -44,6 +44,7 @@ set(LIBRARY_SOURCES
   Test_PrimitiveFromConservative.cpp
   Test_QuadrupoleFormula.cpp
   Test_SetVariablesNeededFixingToFalse.cpp
+  Test_SlowSpeedsComoving.cpp
   Test_Sources.cpp
   Test_System.cpp
   Test_Tags.cpp
