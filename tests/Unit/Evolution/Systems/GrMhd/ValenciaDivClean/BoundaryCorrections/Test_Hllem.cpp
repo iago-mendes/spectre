@@ -1471,7 +1471,8 @@ void test_grouped_eigensystem(
   const auto solver = [](const bc::HllemWaves waves,
                          const bc::HllemEigensystem eigensystem,
                          const bool use_complementary_projection = false) {
-    const bool grouped = eigensystem == bc::HllemEigensystem::Grouped;
+    const bool grouped = eigensystem == bc::HllemEigensystem::Grouped or
+                         eigensystem == bc::HllemEigensystem::GroupedWithFast;
     return bc::Hllem{waves,
                      use_complementary_projection,
                      grouped ? 1.0e-4 : 1.0e-10,
@@ -1566,7 +1567,17 @@ void test_grouped_eigensystem(
       CHECK(gsl::at(forward, n) == approx(-gsl::at(backward, n)));
     }
   }
+  // G3.2a: GroupedWithFast = Grouped where no fast wave shares a group
+  if (not exactly_degenerate) {
+    for (const auto waves : {bc::HllemWaves::All, bc::HllemWaves::ContactSlow,
+                             bc::HllemWaves::Contact}) {
+      CHECK(run(waves, bc::HllemEigensystem::GroupedWithFast) ==
+            run(waves, bc::HllemEigensystem::Grouped));
+    }
+  }
   // the option value is distinct
+  CHECK(solver(bc::HllemWaves::All, bc::HllemEigensystem::GroupedWithFast) !=
+        solver(bc::HllemWaves::All, bc::HllemEigensystem::Grouped));
   CHECK(solver(bc::HllemWaves::All, bc::HllemEigensystem::Grouped) !=
         bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8,
                   bc::HllemEigensystem::Numeric, 1.0e3});
@@ -1755,6 +1766,97 @@ void test_grouped_synthetic_jordan() {
           err = std::max(
               err, std::abs(gsl::at(result, n) - gsl::at(expected_split, n)));
         }
+        CHECK(err <= 1.0e-10 * du_norm);
+      }
+    }
+  }
+  // G3.2a: a near-Jordan block at ranks 5, 6, 7 (Alfven+, fast+ ... in the
+  // MhdSpeed order), inside the fan. Grouped drops it (it holds a fast wave
+  // that All does not restore); GroupedWithFast restores it whole.
+  for (const double eps : {1.0e-3, 1.0e-4, 1.0e-6}) {
+    CAPTURE(eps);
+    const double c0 = 0.4;
+    const std::array<double, 9> diag{
+        {-0.9, -0.5, -0.3, -0.1, 0.1, c0, c0 + eps, c0 + 2.0 * eps, 0.95}};
+    std::array<std::array<double, 9>, 9> j_matrix{};
+    for (size_t i = 0; i < 9; ++i) {
+      gsl::at(gsl::at(j_matrix, i), i) = gsl::at(diag, i);
+    }
+    gsl::at(gsl::at(j_matrix, 5), 6) = 1.0;
+    gsl::at(gsl::at(j_matrix, 6), 7) = 1.0;
+    std::array<double, 81> a{};
+    for (size_t i = 0; i < 9; ++i) {
+      for (size_t j = 0; j < 9; ++j) {
+        double sum = 0.0;
+        for (size_t k = 0; k < 9; ++k) {
+          for (size_t l = 0; l < 9; ++l) {
+            sum += gsl::at(gsl::at(s_matrix, i), k) *
+                   gsl::at(gsl::at(j_matrix, k), l) * s_inv(l, j);
+          }
+        }
+        gsl::at(a, 9 * i + j) = sum;
+      }
+    }
+    // every block here is on its own side of 0; the 5-7 block is positive
+    const auto reference = [&](const bool with_block) {
+      std::array<double, 9> x{};
+      for (size_t i = 0; i < 9; ++i) {
+        for (size_t j = 0; j < 9; ++j) {
+          gsl::at(x, i) += s_inv(i, j) * gsl::at(du, j);
+        }
+      }
+      std::array<double, 9> y{};
+      for (size_t i = 2; i <= 7; ++i) {
+        const bool in_block = i >= 5;
+        if (in_block and not with_block) {
+          continue;
+        }
+        const double ls = gsl::at(diag, i) < 0.0 ? lambda_min - 1.0e-14
+                                                 : lambda_max + 1.0e-14;
+        double jx = 0.0;
+        for (size_t k = 2; k <= 7; ++k) {
+          if ((k >= 5) == in_block and (in_block or k == i)) {
+            jx += gsl::at(gsl::at(j_matrix, i), k) * gsl::at(x, k);
+          }
+        }
+        gsl::at(y, i) = gsl::at(x, i) - jx / ls;
+      }
+      std::array<double, 9> out{};
+      for (size_t i = 0; i < 9; ++i) {
+        for (size_t j = 0; j < 9; ++j) {
+          gsl::at(out, i) += gsl::at(gsl::at(s_matrix, i), j) * gsl::at(y, j);
+        }
+      }
+      return out;
+    };
+    const std::array<bool, 9> all{
+        {false, false, true, true, true, true, true, false, false}};
+    for (const bool with_fast : {false, true}) {
+      for (const double sign : {1.0, -1.0}) {
+        CAPTURE(with_fast);
+        CAPTURE(sign);
+        std::array<double, 9> result{};
+        hg::Stats stats{};
+        hg::antidiffusion(make_not_null(&result), make_not_null(&stats), a,
+                          sign, du, lambda_min, lambda_max, all, 1.0e-4, 1.0e3,
+                          with_fast);
+        CHECK_FALSE(stats.failed);
+        CHECK(stats.group_size[7] == 3);
+        CHECK(stats.dropped_groups == (with_fast ? 0 : 1));
+        CHECK(stats.restored[7] == with_fast);
+        // ranks 2-4 are restored either way, as singletons
+        CHECK(stats.restored[2]);
+        const auto expected = reference(with_fast);
+        double err = 0.0;
+        for (size_t n = 0; n < 9; ++n) {
+          err = std::max(err,
+                         std::abs(gsl::at(result, n) - gsl::at(expected, n)));
+        }
+        Parallel::printf(
+            "HLLEM grouped synthetic block holding fast+: eps %.0e, %s, sign "
+            "%+.0f: |error|/|dU| %.2e\n",
+            eps, with_fast ? "GroupedWithFast" : "Grouped", sign,
+            err / du_norm);
         CHECK(err <= 1.0e-10 * du_norm);
       }
     }
@@ -1952,6 +2054,20 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
     CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*grouped_from_yaml) !=
                 bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8,
                           bc::HllemEigensystem::Grouped, 1.0e3});
+    const auto grouped_fast_from_yaml =
+        TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
+                                           bc::Hllem>(
+            "Hllem:\n"
+            "  WavesToRestore: All\n"
+            "  UseComplementaryProjection: false\n"
+            "  DegeneracyTolerance: 1.0e-4\n"
+            "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
+            "  LightSpeedDensityCutoff: 1.0e-8\n"
+            "  Eigensystem: GroupedWithFast\n"
+            "  MaxProjectorNorm: 1.0e3\n");
+    CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*grouped_fast_from_yaml) !=
+                bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8,
+                          bc::HllemEigensystem::GroupedWithFast, 1.0e3});
     const auto numeric_from_yaml =
         TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
                                            bc::Hllem>(

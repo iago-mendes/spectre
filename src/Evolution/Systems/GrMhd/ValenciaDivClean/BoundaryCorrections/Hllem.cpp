@@ -209,7 +209,8 @@ void antidiffusion(const gsl::not_null<std::array<double, 9>*> result,
                    const std::array<double, 81>& jacobian, const double sign,
                    const std::array<double, 9>& du, const double lambda_min,
                    const double lambda_max, const std::array<bool, 9>& restored,
-                   const double tau, const double max_projector_norm) {
+                   const double tau, const double max_projector_norm,
+                   const bool restore_groups_with_fast) {
   const ScopedFpeState fpe(false);
   result->fill(0.0);
   *stats = Stats{};
@@ -332,19 +333,32 @@ void antidiffusion(const gsl::not_null<std::array<double, 9>*> result,
       const size_t m = hi - lo;
       bool any_restored = false;
       bool all_restored = true;
+      bool has_fast = false;
       std::vector<double> nodes(m);
       double centre_b = 0.0;
       for (size_t r = lo; r < hi; ++r) {
         const size_t wave = wave_of(r);
         gsl::at(stats->group_size, wave) = m;
         any_restored = any_restored or gsl::at(restored, wave);
-        all_restored = all_restored and gsl::at(restored, wave);
+        // GroupedWithFast: a fast wave grouped with a restored wave counts as
+        // restored (a GLM wave never does)
+        const bool fast_ok = restore_groups_with_fast and m > 1 and
+                             (wave == 1 or wave == dim - 2);
+        has_fast = has_fast or fast_ok;
+        all_restored = all_restored and (gsl::at(restored, wave) or fast_ok);
         nodes[r - lo] = sign * gsl::at(mu, r);
         centre_b += gsl::at(mu, r);
       }
       std::sort(nodes.begin(), nodes.end());
+      // The fan edge is the averaged state's own fast speed, so a grouped
+      // fast wave may sit on it: then the closed fan, widened by 1e-8 of its
+      // width, is used (delta there is ~0).
+      const double fan_slack =
+          has_fast ? 1.0e-8 * (lambda_max - lambda_min) : 0.0;
       const bool in_fan =
-          lambda_min < nodes.front() and nodes.back() < lambda_max;
+          has_fast ? (lambda_min - fan_slack <= nodes.front() and
+                      nodes.back() <= lambda_max + fan_slack)
+                   : (lambda_min < nodes.front() and nodes.back() < lambda_max);
       if (not any_restored) {
         continue;
       }
@@ -477,6 +491,8 @@ std::ostream& operator<<(std::ostream& os,
       return os << "Numeric";
     case HllemEigensystem::Grouped:
       return os << "Grouped";
+    case HllemEigensystem::GroupedWithFast:
+      return os << "GroupedWithFast";
     default:
       ERROR("Unknown HllemEigensystem");
   }
@@ -1274,7 +1290,8 @@ void Hllem::dg_boundary_terms(
   // The complementary projection is used only as a per-point fallback where
   // those eigenvectors genuinely collapse (below).
   // (Grouped needs no individual eigenvector at all.)
-  const bool grouped = eigensystem_ == HllemEigensystem::Grouped;
+  const bool grouped = eigensystem_ == HllemEigensystem::Grouped or
+                       eigensystem_ == HllemEigensystem::GroupedWithFast;
   if (not grouped) {
     characteristic_eigenvectors_mhd(
         make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
@@ -1569,7 +1586,8 @@ void Hllem::dg_boundary_terms(
       hllem_grouped::antidiffusion(
           make_not_null(&result), make_not_null(&stats), matrix, sign, jump,
           fast_lambda_min[pt], fast_lambda_max[pt], restored_flags,
-          degeneracy_tolerance_, max_projector_norm_);
+          degeneracy_tolerance_, max_projector_norm_,
+          eigensystem_ == HllemEigensystem::GroupedWithFast);
       for (size_t n = 0; n < 9; ++n) {
         gsl::at(antidiff, n)[pt] = coeff[pt] * gsl::at(result, n);
       }
@@ -1935,11 +1953,14 @@ Options::create_from_yaml<
     return bc::HllemEigensystem::Numeric;
   } else if (type_read == "Grouped") {
     return bc::HllemEigensystem::Grouped;
+  } else if (type_read == "GroupedWithFast") {
+    return bc::HllemEigensystem::GroupedWithFast;
   }
   PARSE_ERROR(options.context(), "Failed to convert \""
                                      << type_read
                                      << "\" to HllemEigensystem. Must be "
-                                        "Analytic, Numeric or Grouped.");
+                                        "Analytic, Numeric, Grouped or "
+                                        "GroupedWithFast.");
 }
 
 template <>

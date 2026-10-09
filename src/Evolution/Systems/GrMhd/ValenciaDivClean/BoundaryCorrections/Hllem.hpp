@@ -165,7 +165,13 @@ enum class HllemEigensystem {
   /// not applied. A group is restored only if every wave in it is in
   /// `WavesToRestore` and inside the fan; otherwise it is dropped (HLL for
   /// it). `UseComplementaryProjection` is ignored.
-  Grouped
+  Grouped,
+  /// DEBUG (umbrella gamma): as `Grouped`, but a group that holds a restored
+  /// wave together with fast waves (the cold seven-wave group of the jet's
+  /// nozzle rim) is restored as a whole, fast members included, instead of
+  /// dropped; the fast members may sit on the fan edge. A group holding a
+  /// GLM wave is still dropped.
+  GroupedWithFast
 };
 std::ostream& operator<<(std::ostream& os, HllemEigensystem eigensystem);
 
@@ -252,7 +258,9 @@ struct Stats {
  *    nearer neighbour (umbrella beta's rule);
  * 5. a group is restored iff all its waves are in `restored`, all its
  *    eigenvalues lie strictly inside \f$(\lambda_{min}, \lambda_{max})\f$
- *    and \f$\|P_S\| \le K\f$;
+ *    and \f$\|P_S\| \le K\f$ (with `restore_groups_with_fast`, the fast
+ *    waves of a group of two or more count as restored and may lie on the
+ *    closed fan widened by 1e-8 of its width);
  * 6. \f$\delta\f$ is applied to \f$T_{11}\f$: for a group on one side of 0
  *    exactly \f$I - T_{11}/\lambda_{side}\f$; for a group straddling 0 the
  *    Newton interpolant with the exact divided differences of the kinked
@@ -271,7 +279,8 @@ void antidiffusion(gsl::not_null<std::array<double, 9>*> result,
                    const std::array<double, 81>& jacobian, double sign,
                    const std::array<double, 9>& du, double lambda_min,
                    double lambda_max, const std::array<bool, 9>& restored,
-                   double tau, double max_projector_norm);
+                   double tau, double max_projector_norm,
+                   bool restore_groups_with_fast = false);
 }  // namespace hllem_grouped
 
 class Hllem final : public evolution::BoundaryCorrection {
@@ -363,7 +372,9 @@ class Hllem final : public evolution::BoundaryCorrection {
         "each group of near-degenerate waves restored as a block through its "
         "spectral projector and delta as a matrix function (then "
         "DegeneracyTolerance is the relative gap that starts a group and "
-        "MaxProjectorNorm the group projector bound K)."};
+        "MaxProjectorNorm the group projector bound K), or GroupedWithFast: "
+        "as Grouped, but a group holding fast waves with restored ones is "
+        "restored whole instead of dropped."};
   };
   struct MaxProjectorNorm {
     using type = double;
