@@ -968,6 +968,25 @@ void characteristic_speeds_mhd(
     const double alfven_minus_eps_i = alfven_minus_i + eps;
     const double alfven_plus_i = alfven_plus[point];
     const double alfven_plus_eps_i = alfven_plus_i + eps;
+    // DEBUG (zeta): the state of this point, printed by the FPE handler if
+    // anything below traps (Balsara 1 raised an FPE inside this function on
+    // binary 253e7dd09; the state was not recorded).
+    const double capture_cs2 = get(sound_speed_squared)[point];
+    const double capture_w = get(lorentz_factor)[point];
+    const double capture_bn = get(normal_magnetic_field)[point];
+    const double capture_bv = get(magnetic_field_dot_spatial_velocity)[point];
+    const double capture_b2 = get(comoving_magnetic_field_squared)[point];
+    const double capture_fast_minus = fast_minus[point];
+    const double capture_fast_plus = fast_plus[point];
+    CAPTURE_FOR_ERROR(point);
+    CAPTURE_FOR_ERROR(vn_i);
+    CAPTURE_FOR_ERROR(capture_cs2);
+    CAPTURE_FOR_ERROR(capture_w);
+    CAPTURE_FOR_ERROR(capture_bn);
+    CAPTURE_FOR_ERROR(capture_bv);
+    CAPTURE_FOR_ERROR(capture_b2);
+    CAPTURE_FOR_ERROR(capture_fast_minus);
+    CAPTURE_FOR_ERROR(capture_fast_plus);
 
     const double N_vn = evaluate_quartic(vn_i, point);
     const double N_alfven_minus = evaluate_quartic(alfven_minus_i, point);
@@ -1167,17 +1186,29 @@ void characteristic_speeds_mhd(
         const double lam = vn_i + mu;
         const double inv_g = 1.0 / ((1.0 - lam) * (1.0 + lam));
         const double mu2 = square(mu);
-        const double f = cs2_i * square(bc) - mu2_coef * mu2 +
-                         mu4_coef * square(mu2) * inv_g;
+        const double t1 = cs2_i * square(bc);
+        const double t2 = mu2_coef * mu2;
+        const double t3 = mu4_coef * square(mu2) * inv_g;
+        const double f = t1 - t2 + t3;
         const double df =
             -2.0 * cs2_i * bc * bv_w - 2.0 * mu2_coef * mu +
             mu4_coef * mu2 * inv_g * (4.0 * mu + 2.0 * mu2 * lam * inv_g);
-        if (f == 0.0) {
-          return 0.0;  // at a root (e.g. B_n = 0, mu = 0)
+        // at a root to working precision (e.g. B_n = 0, mu = 0, or next to a
+        // slow/Alfven near-double root, where the step test never passes)
+        if (std::abs(f) <= 8.0 * std::numeric_limits<double>::epsilon() *
+                               (std::abs(t1) + std::abs(t2) + std::abs(t3))) {
+          return 0.0;
         }
         // a stationary point off a root gives no usable step (e.g. a
         // deflation that returned slow_minus = slow_plus = v_n with B.v = 0)
         return df == 0.0 ? std::numeric_limits<double>::infinity() : f / df;
+      };
+      // F is evaluated only inside the light cone: outside it G = 1 - lambda^2
+      // <= 0 and the evaluation can divide by zero or overflow (a Newton
+      // iterate from a poor deflation seed left it on Balsara-1 faces with
+      // B_n ~ 1e-8 and raised an FPE).
+      const auto inside_light_cone = [&vn_i](const double mu) {
+        return std::abs(vn_i + mu) < 1.0;
       };
       const double cs_i = sqrt(cs2_i);
       const double t_i = sqrt(cs2_i + b2_i);
@@ -1200,7 +1231,12 @@ void characteristic_speeds_mhd(
         const std::array<double, 2> seeds{
             {gsl::at(closed, j), gsl::at(deflated, j)}};
         const std::array<double, 2> first_steps{
-            {newton_step(seeds[0]), newton_step(seeds[1])}};
+            {inside_light_cone(seeds[0])
+                 ? newton_step(seeds[0])
+                 : std::numeric_limits<double>::infinity(),
+             inside_light_cone(seeds[1])
+                 ? newton_step(seeds[1])
+                 : std::numeric_limits<double>::infinity()}};
         const std::array<size_t, 2> order =
             std::abs(first_steps[0]) <= std::abs(first_steps[1])
                 ? std::array<size_t, 2>{{0, 1}}
@@ -1216,9 +1252,19 @@ void characteristic_speeds_mhd(
           bool converged = step == 0.0;
           for (size_t iter = 0;
                iter < 8 and step != 0.0 and std::isfinite(step); ++iter) {
+            // never step out of the light cone: halve the step instead
+            size_t halvings = 0;
+            while (not inside_light_cone(mu - step) and halvings < 60) {
+              step *= 0.5;
+              ++halvings;
+            }
             mu -= step;
-            if (std::abs(step) <=
-                4.0 * std::numeric_limits<double>::epsilon() * std::abs(mu)) {
+            if (not inside_light_cone(mu)) {
+              break;
+            }
+            if (halvings == 0 and
+                std::abs(step) <= 4.0 * std::numeric_limits<double>::epsilon() *
+                                      std::abs(mu)) {
               converged = true;
               break;
             }

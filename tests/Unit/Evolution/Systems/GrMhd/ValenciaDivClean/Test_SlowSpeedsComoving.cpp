@@ -38,8 +38,9 @@ tnsr::i<DataVector, 9> slow_test_speeds(
     const double rho, const double eps, const double h, const double w,
     const std::array<double, 3>& v, const std::array<double, 3>& b,
     const std::array<double, 3>& n,
-    const grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod method) {
-  const EquationsOfState::IdealFluid<true> eos(1.6666666666666667, 0.0);
+    const grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod method,
+    const double adiabatic_index = 1.6666666666666667) {
+  const EquationsOfState::IdealFluid<true> eos(adiabatic_index, 0.0);
   tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{1_st, 0.0};
   tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{1_st, 0.0};
   tnsr::i<DataVector, 3> unit_normal{1_st, 0.0};
@@ -143,6 +144,29 @@ void test_slow_speeds_comoving() {
       CAPTURE(i);
       CHECK(comoving.get(i)[0] == reduced.get(i)[0]);
     }
+  }
+  // A Balsara-1 state (Gamma = 2, t = 0.4, normal z, B_n ~ 2e-7) where the
+  // reduced quadratic returns slow_minus = slow_plus (1.2025e-7) and a Newton
+  // iteration from that seed leaves the light cone (|lambda| up to 6.8e3)
+  // unless it is guarded; run with FPEs trapping. 60-digit slow speeds from
+  // analysis/rmhd_speed_oracle.py.
+  {
+    const auto speeds = slow_test_speeds(
+        0.6953676820816324, 0.6997190337712661, 2.3994380675425324,
+        1.0474884323238665,
+        {{0.29653056001033645, -0.02617931983258507, 1.2840727654936489e-07}},
+        {{0.500000427349988, 0.7161462537884182, 1.9845159331757503e-07}},
+        {{0.0, 0.0, 1.0}},
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving, 2.0);
+    const double vn = 1.284072765493648850494078e-07;
+    const double exact_minus = 1.322726028842970510357819e-08;
+    const double exact_plus = 2.272776457004750699634155e-07;
+    const double sm = get<MhdSpeed::SlowMagnetosonicMinus>(speeds)[0];
+    const double sp = get<MhdSpeed::SlowMagnetosonicPlus>(speeds)[0];
+    CAPTURE(sm);
+    CAPTURE(sp);
+    CHECK(std::abs(sm - exact_minus) <= 1.0e-6 * std::abs(exact_minus - vn));
+    CHECK(std::abs(sp - exact_plus) <= 1.0e-6 * std::abs(exact_plus - vn));
   }
   // B_n = 0: the slow pair is v_n exactly (at rest and moving)
   for (const auto& vel : {std::array<double, 3>{{0.0, 0.0, 0.0}},
