@@ -199,13 +199,17 @@ double quartic_root_uncertainty(const double c0, const double c1,
                                 const double x) {
   const double derivative =
       std::abs(((4.0 * x + 3.0 * c3) * x + 2.0 * c2) * x + c1);
-  if (not(derivative > 0.0)) {
-    // A genuine multiple root: the ordering carries no information at all.
-    return std::numeric_limits<double>::infinity();
-  }
   const double noise =
       8.0 * std::numeric_limits<double>::epsilon() *
       std::max({1.0, std::abs(c0), std::abs(c1), std::abs(c2), std::abs(c3)});
+  // A genuine multiple root, or a derivative so small that noise/derivative
+  // (and the slack summed from two of them) would overflow: the ordering
+  // carries no information at all. (A subnormal B_n = 3.5e-323 on a Balsara-1
+  // transverse face gave slow roots +-3e-323 and |Q'| = 4.4e-323, and the
+  // slack 4 (4e307 + 4e307) overflowed.)
+  if (not(derivative > 1.0e-300 * noise)) {
+    return std::numeric_limits<double>::infinity();
+  }
   return noise / derivative;
 }
 
@@ -1273,7 +1277,11 @@ void characteristic_speeds_mhd(
           }
           if (converged and mu >= gsl::at(lower, j) and
               mu <= gsl::at(upper, j)) {
-            gsl::at(polished, j) = vn_i + mu;
+            // a subnormal offset (from a subnormal B_n) is v_n itself, as
+            // for B_n = 0: keeps a = W (v_n - lambda) off the subnormal range
+            gsl::at(polished, j) =
+                vn_i +
+                (std::abs(mu) < std::numeric_limits<double>::min() ? 0.0 : mu);
             break;
           }
         }
@@ -1877,8 +1885,14 @@ void characteristic_eigenvectors_mhd(
 
       get(f_1v) =
           W * (-get(G) +
-               get(B) * get(G) * get(B_n) * W /
-                   floored_denominator(get(Z) * square(a_denom), get(Z)) +
+               // B G B_n W / (Z a^2) as (B/a)(B_n/a) G W / Z: for the slow
+               // wave near the slow/entropy degeneracy B ~ B_n and a ~ B_n,
+               // so the ratio is finite as B_n -> 0. Flooring Z a^2 at
+               // 1e-12 Z instead bound whenever |a| < 1e-6 and made the slow
+               // left eigenvector wrong by 80-130 % on Del Zanna jet ambient
+               // faces with B_r ~ 1e-6 (research
+               // experiments/delzanna_jet/ambient_blobs, alpha's probe L2).
+               (get(B) / a_denom) * (get(B_n) / a_denom) * get(G) * W / get(Z) +
                get(script_G) * square(W) * (kappa_i + rho) /
                    (get(Z) * rho * cs2_denom));
       get(g_1B) = get(script_G) * kappa_i * W /
