@@ -6,11 +6,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 #include <cstddef>
 #include <exception>
+#include <limits>
 #include <ostream>
 #include <pup.h>
+#include <utility>
 
 #include <memory>
 #include <optional>
@@ -37,12 +38,410 @@
 #include "Options/Options.hpp"
 #include "Options/ParseOptions.hpp"
 #include "PointwiseFunctions/Hydro/SpecificEnthalpy.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
 
+#include <blaze/math/blas/Types.h>
+#include <blaze/util/Types.h>
+
+// LAPACK routines of the Grouped eigensystem (no blaze wrappers exist for
+// them). Fortran LOGICAL arguments are passed as blas_int_t.
+extern "C" {
+void dgees_(char* jobvs, char* sort,
+            blaze::blas_int_t (*select)(const double*, const double*),
+            blaze::blas_int_t* n, double* a, blaze::blas_int_t* lda,
+            blaze::blas_int_t* sdim, double* wr, double* wi, double* vs,
+            blaze::blas_int_t* ldvs, double* work, blaze::blas_int_t* lwork,
+            blaze::blas_int_t* bwork, blaze::blas_int_t* info,
+            blaze::fortran_charlen_t njobvs, blaze::fortran_charlen_t nsort);
+void dtrsen_(char* job, char* compq, const blaze::blas_int_t* select,
+             blaze::blas_int_t* n, double* t, blaze::blas_int_t* ldt, double* q,
+             blaze::blas_int_t* ldq, double* wr, double* wi,
+             blaze::blas_int_t* m, double* s, double* sep, double* work,
+             blaze::blas_int_t* lwork, blaze::blas_int_t* iwork,
+             blaze::blas_int_t* liwork, blaze::blas_int_t* info,
+             blaze::fortran_charlen_t njob, blaze::fortran_charlen_t ncompq);
+void dtrsyl_(char* trana, char* tranb, blaze::blas_int_t* isgn,
+             blaze::blas_int_t* m, blaze::blas_int_t* n, const double* a,
+             blaze::blas_int_t* lda, const double* b, blaze::blas_int_t* ldb,
+             double* c, blaze::blas_int_t* ldc, double* scale,
+             blaze::blas_int_t* info, blaze::fortran_charlen_t ntrana,
+             blaze::fortran_charlen_t ntranb);
+}
+
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
+
+// ---- DEBUG (umbrella gamma): group-wise HLLEM anti-diffusion -------------
+namespace hllem_grouped {
+namespace {
+constexpr size_t dim = 9;
+// column-major 9x9
+using Matrix = std::array<double, dim * dim>;
+using blas_int = blaze::blas_int_t;
+
+struct Block {
+  bool ok = false;
+  size_t m = 0;
+  Matrix t{};  // Schur form with the group on top
+  Matrix z{};  // its Schur vectors
+  Matrix y{};  // T11 Y - Y T22 = T12, m x (9 - m), leading dimension 9
+  double norm = std::numeric_limits<double>::infinity();
+};
+
+// The group of ranks [lo, hi) moved to the top of the Schur form (t0, z0).
+Block make_block(const Matrix& t0, const Matrix& z0,
+                 const std::array<size_t, dim>& rank, const size_t lo,
+                 const size_t hi) {
+  Block block{};
+  block.m = hi - lo;
+  block.t = t0;
+  block.z = z0;
+  if (block.m == dim) {
+    block.ok = true;
+    block.norm = 1.0;
+    return block;
+  }
+  std::array<blas_int, dim> select{};
+  for (size_t i = 0; i < dim; ++i) {
+    gsl::at(select, i) =
+        (gsl::at(rank, i) >= lo and gsl::at(rank, i) < hi) ? 1 : 0;
+  }
+  char job = 'N';
+  char compq = 'V';
+  blas_int n = dim;
+  blas_int ld = dim;
+  blas_int m_out = 0;
+  std::array<double, dim> wr{};
+  std::array<double, dim> wi{};
+  double s_cond = 0.0;
+  double sep = 0.0;
+  std::array<double, dim> work{};
+  blas_int lwork = dim;
+  blas_int iwork = 0;
+  blas_int liwork = 1;
+  blas_int info = 0;
+  dtrsen_(&job, &compq, select.data(), &n, block.t.data(), &ld, block.z.data(),
+          &ld, wr.data(), wi.data(), &m_out, &s_cond, &sep, work.data(), &lwork,
+          &iwork, &liwork, &info, 1, 1);
+  if (info != 0 or static_cast<size_t>(m_out) != block.m) {
+    return block;
+  }
+  const size_t m = block.m;
+  const size_t k = dim - m;
+  for (size_t j = 0; j < k; ++j) {
+    for (size_t i = 0; i < m; ++i) {
+      gsl::at(block.y, i + dim * j) = gsl::at(block.t, i + dim * (m + j));
+    }
+  }
+  char tran = 'N';
+  blas_int isgn = -1;
+  blas_int mm = static_cast<blas_int>(m);
+  blas_int nn = static_cast<blas_int>(k);
+  double scale = 1.0;
+  info = 0;
+  dtrsyl_(&tran, &tran, &isgn, &mm, &nn, block.t.data(), &ld,
+          block.t.data() + m + dim * m, &ld, block.y.data(), &ld, &scale, &info,
+          1, 1);
+  // info = 1: close eigenvalues, a perturbed solution (large Y) is returned
+  if (info < 0 or not(scale > 0.0)) {
+    return block;
+  }
+  double sum = 1.0;
+  for (size_t j = 0; j < k; ++j) {
+    for (size_t i = 0; i < m; ++i) {
+      double& entry = gsl::at(block.y, i + dim * j);
+      entry /= scale;
+      sum += entry * entry;
+    }
+  }
+  const double norm = std::sqrt(sum);
+  if (std::isfinite(norm)) {
+    block.ok = true;
+    block.norm = norm;
+  }
+  return block;
+}
+
+// x / lambda_side(x), so that delta(x) = 1 - g(x)
+double g_side(const double x, const double lambda_min,
+              const double lambda_max) {
+  return x < 0.0 ? x / (lambda_min - 1.0e-14) : x / (lambda_max + 1.0e-14);
+}
+
+// Newton coefficients of the interpolant of delta at the ascending nodes,
+// with the divided differences of the piecewise-linear g taken exactly: a
+// difference over nodes all on one side of 0 is the slope (first order) or
+// zero (higher order).
+std::vector<double> newton_coefficients(const std::vector<double>& nodes,
+                                        const double lambda_min,
+                                        const double lambda_max) {
+  const size_t m = nodes.size();
+  std::vector<double> previous(m);
+  for (size_t i = 0; i < m; ++i) {
+    previous[i] = g_side(nodes[i], lambda_min, lambda_max);
+  }
+  std::vector<double> coefficients{1.0 - previous[0]};
+  for (size_t order = 1; order < m; ++order) {
+    std::vector<double> current(m - order);
+    for (size_t i = 0; i + order < m; ++i) {
+      const double a = nodes[i];
+      const double b = nodes[i + order];
+      if ((a < 0.0) == (b < 0.0)) {
+        current[i] = order == 1 ? (a < 0.0 ? 1.0 / (lambda_min - 1.0e-14)
+                                           : 1.0 / (lambda_max + 1.0e-14))
+                                : 0.0;
+      } else {
+        current[i] = (previous[i + 1] - previous[i]) / (b - a);
+      }
+    }
+    coefficients.push_back(-current[0]);
+    previous = std::move(current);
+  }
+  return coefficients;
+}
+}  // namespace
+
+void antidiffusion(const gsl::not_null<std::array<double, 9>*> result,
+                   const gsl::not_null<Stats*> stats,
+                   const std::array<double, 81>& jacobian, const double sign,
+                   const std::array<double, 9>& du, const double lambda_min,
+                   const double lambda_max, const std::array<bool, 9>& restored,
+                   const double tau, const double max_projector_norm) {
+  const ScopedFpeState fpe(false);
+  result->fill(0.0);
+  *stats = Stats{};
+  const auto fail = [&result, &stats]() {
+    result->fill(0.0);
+    stats->failed = true;
+    stats->restored.fill(false);
+  };
+  Matrix t0{};
+  for (size_t row = 0; row < dim; ++row) {
+    for (size_t col = 0; col < dim; ++col) {
+      const double entry = sign * gsl::at(jacobian, dim * row + col);
+      if (not std::isfinite(entry)) {
+        fail();
+        return;
+      }
+      gsl::at(t0, row + dim * col) = entry;
+    }
+  }
+  for (const double x : du) {
+    if (not std::isfinite(x)) {
+      fail();
+      return;
+    }
+  }
+  Matrix z0{};
+  {
+    char jobvs = 'V';
+    char sort = 'N';
+    blas_int n = dim;
+    blas_int ld = dim;
+    blas_int sdim = 0;
+    std::array<double, dim> wr{};
+    std::array<double, dim> wi{};
+    std::array<double, 8 * dim> work{};
+    blas_int lwork = 8 * dim;
+    std::array<blas_int, dim> bwork{};
+    blas_int info = 0;
+    dgees_(&jobvs, &sort, nullptr, &n, t0.data(), &ld, &sdim, wr.data(),
+           wi.data(), z0.data(), &ld, work.data(), &lwork, bwork.data(), &info,
+           1, 1);
+    if (info != 0) {
+      fail();
+      return;
+    }
+    for (size_t i = 0; i < dim * dim; ++i) {
+      if (not std::isfinite(gsl::at(t0, i)) or
+          not std::isfinite(gsl::at(z0, i))) {
+        fail();
+        return;
+      }
+    }
+    // keep the eigenvalues in the diagonal order of t0
+    std::array<size_t, dim> order{};
+    for (size_t i = 0; i < dim; ++i) {
+      gsl::at(order, i) = i;
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [&wr](const size_t a, const size_t b) {
+                       return gsl::at(wr, a) < gsl::at(wr, b);
+                     });
+    std::array<size_t, dim> rank{};
+    std::array<double, dim> mu{};  // B's eigenvalues (real parts), ascending
+    for (size_t r = 0; r < dim; ++r) {
+      gsl::at(rank, gsl::at(order, r)) = r;
+      gsl::at(mu, r) = gsl::at(wr, gsl::at(order, r));
+    }
+    const auto wave_of = [sign](const size_t r) {
+      return sign > 0.0 ? r : dim - 1 - r;
+    };
+    for (size_t r = 0; r < dim; ++r) {
+      gsl::at(stats->eigenvalues, wave_of(r)) = sign * gsl::at(mu, r);
+    }
+
+    // groups of ranks [lo, hi)
+    const double gap_tolerance = tau * (lambda_max - lambda_min);
+    std::vector<std::pair<size_t, size_t>> groups{{0, 1}};
+    for (size_t r = 1; r < dim; ++r) {
+      if (gsl::at(mu, r) - gsl::at(mu, r - 1) <= gap_tolerance) {
+        groups.back().second = r + 1;
+      } else {
+        groups.emplace_back(r, r + 1);
+      }
+    }
+    std::vector<Block> blocks{};
+    blocks.reserve(groups.size());
+    for (const auto& [lo, hi] : groups) {
+      blocks.push_back(make_block(t0, z0, rank, lo, hi));
+    }
+    while (groups.size() > 1) {
+      size_t worst = 0;
+      for (size_t j = 1; j < blocks.size(); ++j) {
+        if (not(blocks[j].norm <= blocks[worst].norm)) {
+          worst = j;
+        }
+      }
+      if (blocks[worst].norm <= max_projector_norm) {
+        break;
+      }
+      const double inf = std::numeric_limits<double>::infinity();
+      const double left = worst > 0
+                              ? gsl::at(mu, groups[worst].first) -
+                                    gsl::at(mu, groups[worst - 1].second - 1)
+                              : inf;
+      const double right = worst + 1 < groups.size()
+                               ? gsl::at(mu, groups[worst + 1].first) -
+                                     gsl::at(mu, groups[worst].second - 1)
+                               : inf;
+      const size_t a = left <= right ? worst - 1 : worst;
+      groups[a].second = groups[a + 1].second;
+      groups.erase(groups.begin() + static_cast<std::ptrdiff_t>(a + 1));
+      blocks.erase(blocks.begin() + static_cast<std::ptrdiff_t>(a + 1));
+      blocks[a] = make_block(t0, z0, rank, groups[a].first, groups[a].second);
+      ++stats->merges;
+    }
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+      const auto [lo, hi] = groups[g];
+      const Block& block = blocks[g];
+      const size_t m = hi - lo;
+      bool any_restored = false;
+      bool all_restored = true;
+      std::vector<double> nodes(m);
+      double centre_b = 0.0;
+      for (size_t r = lo; r < hi; ++r) {
+        const size_t wave = wave_of(r);
+        gsl::at(stats->group_size, wave) = m;
+        any_restored = any_restored or gsl::at(restored, wave);
+        all_restored = all_restored and gsl::at(restored, wave);
+        nodes[r - lo] = sign * gsl::at(mu, r);
+        centre_b += gsl::at(mu, r);
+      }
+      std::sort(nodes.begin(), nodes.end());
+      const bool in_fan =
+          lambda_min < nodes.front() and nodes.back() < lambda_max;
+      if (not any_restored) {
+        continue;
+      }
+      if (not(all_restored and in_fan and block.ok and
+              block.norm <= max_projector_norm)) {
+        ++stats->dropped_groups;
+        continue;
+      }
+      const size_t k = dim - m;
+      // top = (Z^T du)_1 + Y (Z^T du)_2: P_S du in Schur coordinates
+      std::array<double, dim> w{};
+      for (size_t i = 0; i < dim; ++i) {
+        for (size_t row = 0; row < dim; ++row) {
+          gsl::at(w, i) += gsl::at(block.z, row + dim * i) * gsl::at(du, row);
+        }
+      }
+      std::vector<double> top(m);
+      for (size_t i = 0; i < m; ++i) {
+        top[i] = gsl::at(w, i);
+        for (size_t j = 0; j < k; ++j) {
+          top[i] += gsl::at(block.y, i + dim * j) * gsl::at(w, m + j);
+        }
+      }
+      // T11 of A = s * T11 of B
+      const auto apply_t11 = [&block, m, sign](const std::vector<double>& x) {
+        std::vector<double> out(m, 0.0);
+        for (size_t j = 0; j < m; ++j) {
+          for (size_t i = 0; i < m; ++i) {
+            out[i] += sign * gsl::at(block.t, i + dim * j) * x[j];
+          }
+        }
+        return out;
+      };
+      const double centre = sign * centre_b / static_cast<double>(m);
+      const double lambda_side =
+          centre < 0.0 ? lambda_min - 1.0e-14 : lambda_max + 1.0e-14;
+      const std::vector<double> t_top = apply_t11(top);
+      std::vector<double> u(m);
+      for (size_t i = 0; i < m; ++i) {
+        u[i] = top[i] - t_top[i] / lambda_side;
+      }
+      // The largest change of delta across the group caused by the kink at
+      // 0, relative: below 1e-12 the linearization is exact to that level
+      // and the Newton form would only divide by a tiny spread.
+      const double kink =
+          (nodes.back() - nodes.front()) *
+          (1.0 / std::abs(lambda_min - 1.0e-14) + 1.0 / (lambda_max + 1.0e-14));
+      if ((nodes.front() < 0.0) != (nodes.back() < 0.0) and kink > 1.0e-12) {
+        ++stats->newton_groups;
+        const std::vector<double> coefficients =
+            newton_coefficients(nodes, lambda_min, lambda_max);
+        std::vector<double> newton(m);
+        std::vector<double> product = top;
+        for (size_t i = 0; i < m; ++i) {
+          newton[i] = coefficients[0] * top[i];
+        }
+        for (size_t j = 1; j < m; ++j) {
+          const std::vector<double> t_product = apply_t11(product);
+          for (size_t i = 0; i < m; ++i) {
+            product[i] = t_product[i] - nodes[j - 1] * product[i];
+            newton[i] += coefficients[j] * product[i];
+          }
+        }
+        double difference = 0.0;
+        double top_norm = 0.0;
+        for (size_t i = 0; i < m; ++i) {
+          difference += square(newton[i] - u[i]);
+          top_norm += square(top[i]);
+        }
+        // Keep the Newton form unless it departs from the linearization by
+        // more than a well-conditioned group allows (kink K |P_S dU|): near
+        // a Jordan block straddling 0 the exact value is unbounded.
+        if (difference <=
+            square(std::min(1.0, kink * max_projector_norm)) * top_norm) {
+          u = newton;
+        } else {
+          ++stats->newton_rejected;
+        }
+      }
+      for (size_t row = 0; row < dim; ++row) {
+        for (size_t i = 0; i < m; ++i) {
+          gsl::at(*result, row) += gsl::at(block.z, row + dim * i) * u[i];
+        }
+      }
+      for (size_t r = lo; r < hi; ++r) {
+        gsl::at(stats->restored, wave_of(r)) = true;
+      }
+    }
+  }
+  for (const double x : *result) {
+    if (not std::isfinite(x)) {
+      fail();
+      return;
+    }
+  }
+}
+}  // namespace hllem_grouped
 
 std::ostream& operator<<(std::ostream& os, const HllemWaves waves) {
   switch (waves) {
@@ -76,6 +475,8 @@ std::ostream& operator<<(std::ostream& os,
       return os << "Analytic";
     case HllemEigensystem::Numeric:
       return os << "Numeric";
+    case HllemEigensystem::Grouped:
+      return os << "Grouped";
     default:
       ERROR("Unknown HllemEigensystem");
   }
@@ -872,10 +1273,14 @@ void Hllem::dg_boundary_terms(
   // what distinguishes ContactSlow from ContactAlfven (the M&M Fig 13 knob).
   // The complementary projection is used only as a per-point fallback where
   // those eigenvectors genuinely collapse (below).
-  characteristic_eigenvectors_mhd(
-      make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
-      b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, flat_metric, unit_normal,
-      equation_of_state, false);
+  // (Grouped needs no individual eigenvector at all.)
+  const bool grouped = eigensystem_ == HllemEigensystem::Grouped;
+  if (not grouped) {
+    characteristic_eigenvectors_mhd(
+        make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
+        b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, flat_metric, unit_normal,
+        equation_of_state, false);
+  }
 
   // DEBUG (hllem_degeneracy_debug): numeric characteristics. Replace the
   // restored waves' speeds and eigenvectors by LAPACK dgeev's for the flux
@@ -947,8 +1352,12 @@ void Hllem::dg_boundary_terms(
       }
     }
   }
+  if (grouped) {
+    // the probe records the Jacobian's eigenvalues (filled below)
+    numeric_speeds = mhd_speeds;
+  }
   const tnsr::i<DataVector, 9>& restore_speeds =
-      eigensystem_ == HllemEigensystem::Numeric ? numeric_speeds : mhd_speeds;
+      eigensystem_ == HllemEigensystem::Analytic ? mhd_speeds : numeric_speeds;
 
   // conserved-variable jump in the eigenvector ordering
   // [S_x,S_y,S_z, B_x,B_y,B_z, D, Tau, Phi]
@@ -1001,7 +1410,9 @@ void Hllem::dg_boundary_terms(
     }
   }
   DataVector kappa_dropped{num_points, 0.0};
-  for (const size_t wave : restored_waves) {
+  const std::vector<size_t> per_wave_restored =
+      grouped ? std::vector<size_t>{} : restored_waves;
+  for (const size_t wave : per_wave_restored) {
     const DataVector& lam = restore_speeds.get(wave);
     const DataVector lambdap = max(lam, 0.0);
     const DataVector lambdam = min(lam, 0.0);
@@ -1110,7 +1521,92 @@ void Hllem::dg_boundary_terms(
     }
   }
 
-  if (use_complementary_projection_) {
+  // DEBUG (umbrella gamma): Eigensystem Grouped. Each group of
+  // near-degenerate waves is restored as a block, delta(A) P_S dU, from a
+  // reordered real Schur form of the flux Jacobian at the same averaged state
+  // (hllem_grouped::antidiffusion). The decomposition is done on s A with s
+  // fixed by the sign of the first nonzero normal component, so that the two
+  // sides of a face (normals n and -n) make the same discrete choices. The
+  // probe (if on) records per wave 2..6: restored as part of a group (ok), the
+  // gap to the nearest other eigenvalue, in-fan, in-fan with gap >= tau *
+  // fan width; slot 18 counts failed points, slot 19 dropped groups.
+  if (grouped) {
+    const ScopedFpeState grouped_fpe(false);
+    tnsr::II<DataVector, 3, Frame::Inertial> inv_flat_metric{num_points, 0.0};
+    for (size_t i = 0; i < 3; ++i) {
+      inv_flat_metric.get(i, i) = 1.0;
+    }
+    tnsr::iJ<DataVector, 9> jacobian{num_points};
+    flux_jacobian_mhd(make_not_null(&jacobian), v_avg, b_avg, rho_avg, eps_avg,
+                      ye_avg, w_avg, enthalpy_avg, flat_metric, inv_flat_metric,
+                      unit_normal, equation_of_state);
+    std::array<bool, 9> restored_flags{};
+    restored_flags.fill(false);
+    for (const size_t wave : restored_waves) {
+      gsl::at(restored_flags, wave) = true;
+    }
+    std::array<double, 81> matrix{};
+    std::array<double, 9> jump{};
+    std::array<double, 9> result{};
+    hllem_grouped::Stats stats{};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      for (size_t row = 0; row < 9; ++row) {
+        for (size_t col = 0; col < 9; ++col) {
+          gsl::at(matrix, 9 * row + col) = jacobian.get(row, col)[pt];
+        }
+      }
+      for (size_t n = 0; n < 9; ++n) {
+        gsl::at(jump, n) = gsl::at(du, n)[pt];
+      }
+      double sign = 1.0;
+      for (size_t i = 0; i < 3; ++i) {
+        const double ni = unit_normal.get(i)[pt];
+        if (ni != 0.0) {
+          sign = ni > 0.0 ? 1.0 : -1.0;
+          break;
+        }
+      }
+      hllem_grouped::antidiffusion(
+          make_not_null(&result), make_not_null(&stats), matrix, sign, jump,
+          fast_lambda_min[pt], fast_lambda_max[pt], restored_flags,
+          degeneracy_tolerance_, max_projector_norm_);
+      for (size_t n = 0; n < 9; ++n) {
+        gsl::at(antidiff, n)[pt] = coeff[pt] * gsl::at(result, n);
+      }
+      numeric_failed[pt] = stats.failed ? 1.0 : 0.0;
+      kappa_dropped[pt] = static_cast<double>(stats.dropped_groups);
+      if (not stats.failed) {
+        for (size_t i = 0; i < 9; ++i) {
+          numeric_speeds.get(i)[pt] = gsl::at(stats.eigenvalues, i);
+        }
+      }
+      if (probe_dir != nullptr) {
+        for (size_t k = 0; k < 5; ++k) {
+          const size_t wave = k + 2;
+          const double lam = gsl::at(stats.eigenvalues, wave);
+          double gap = std::numeric_limits<double>::max();
+          for (size_t j = 0; j < 9; ++j) {
+            if (j != wave) {
+              gap =
+                  std::min(gap, std::abs(lam - gsl::at(stats.eigenvalues, j)));
+            }
+          }
+          const bool in_fan =
+              lam < fast_lambda_max[pt] and lam > fast_lambda_min[pt];
+          gsl::at(pr_ok, k)[pt] = gsl::at(stats.restored, wave) ? 1.0 : 0.0;
+          gsl::at(pr_gap, k)[pt] = gap;
+          gsl::at(pr_fan, k)[pt] = in_fan ? 1.0 : 0.0;
+          gsl::at(pr_gapok, k)[pt] =
+              (in_fan and gap >= degeneracy_tolerance_ * (fast_lambda_max[pt] -
+                                                          fast_lambda_min[pt]))
+                  ? 1.0
+                  : 0.0;
+        }
+      }
+    }
+  }
+
+  if (use_complementary_projection_ and not grouped) {
     // Complementary-projection fallback (Fedkiw-Merriman-Osher 1997). Where a
     // restored wave collapsed above, its individual eigenvector is unusable so
     // the per-wave term was dropped (leaving plain HLL there -- exactly the M&M
@@ -1133,21 +1629,36 @@ void Hllem::dg_boundary_terms(
     // {0,8} travel at the light speed, are OUT OF the fluid HLL fan, and are
     // handled by the (diffusive) HLL flux -- projecting them out here would
     // corrupt the complement, so they are skipped per point when out of fan.
+    //
+    // DEBUG (umbrella gamma, 2026-10-08): the projection of dU onto an outer
+    // wave is r_k (l_k.dU)/(l_k.r_k). It used to omit the 1/(l_k.r_k) (the
+    // analytic eigenvectors are biorthogonal but not biorthonormal; fast
+    // l.r = -4.7e-4 on the r22 jet onset face), so the "fluid" vector was not
+    // a projection. Where |l_k.r_k| < 1e-12 for an in-fan outer wave the
+    // block is not applied at that point.
     std::array<DataVector, 9> cdu = du;
+    DataVector complement_ok{num_points, 1.0};
     const std::array<size_t, 4> nondegenerate_waves{{0, 1, 7, 8}};
     for (const size_t k : nondegenerate_waves) {
       const DataVector& lam_k = mhd_speeds.get(k);
       DataVector ldu{num_points, 0.0};
+      DataVector lr{num_points, 0.0};
       for (size_t n = 0; n < 9; ++n) {
         ldu += projectors.get(k, n) * gsl::at(du, n);
+        lr += projectors.get(k, n) * modes.get(k, n);
       }
-      for (size_t n = 0; n < 9; ++n) {
-        const DataVector contrib = ldu * modes.get(k, n);
-        for (size_t pt = 0; pt < num_points; ++pt) {
-          if (lam_k[pt] < fast_lambda_max[pt] and
-              lam_k[pt] > fast_lambda_min[pt]) {
-            gsl::at(cdu, n)[pt] -= contrib[pt];
-          }
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (not(lam_k[pt] < fast_lambda_max[pt] and
+                lam_k[pt] > fast_lambda_min[pt])) {
+          continue;
+        }
+        if (not std::isfinite(lr[pt]) or std::abs(lr[pt]) < 1.0e-12) {
+          complement_ok[pt] = 0.0;
+          continue;
+        }
+        const double strength = ldu[pt] / lr[pt];
+        for (size_t n = 0; n < 9; ++n) {
+          gsl::at(cdu, n)[pt] -= strength * modes.get(k, n)[pt];
         }
       }
     }
@@ -1156,7 +1667,7 @@ void Hllem::dg_boundary_terms(
     for (size_t n = 0; n < 9; ++n) {
       const DataVector block = coeff * delta_c * gsl::at(cdu, n);
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (restored_wave_dropped[pt] > 0.0) {
+        if (restored_wave_dropped[pt] > 0.0 and complement_ok[pt] > 0.0) {
           gsl::at(antidiff, n)[pt] = block[pt];
         }
       }
@@ -1422,11 +1933,13 @@ Options::create_from_yaml<
     return bc::HllemEigensystem::Analytic;
   } else if (type_read == "Numeric") {
     return bc::HllemEigensystem::Numeric;
+  } else if (type_read == "Grouped") {
+    return bc::HllemEigensystem::Grouped;
   }
   PARSE_ERROR(options.context(), "Failed to convert \""
                                      << type_read
                                      << "\" to HllemEigensystem. Must be "
-                                        "Analytic or Numeric.");
+                                        "Analytic, Numeric or Grouped.");
 }
 
 template <>

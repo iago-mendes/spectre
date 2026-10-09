@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <string>
 
 #include "DataStructures/DataVector.hpp"
@@ -1344,7 +1345,8 @@ std::array<double, 10> run_hllem(
     const bc::Hllem& solver, const InterfaceState& state_int,
     const InterfaceState& state_ext,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const std::array<double, 3>& normal_direction) {
+    const std::array<double, 3>& normal_direction,
+    const ::dg::Formulation formulation = ::dg::Formulation::StrongInertial) {
   const size_t num_points = 1;
   const Scalar<DataVector> lapse{num_points, 1.0};
   const tnsr::I<DataVector, 3> shift{num_points, 0.0};
@@ -1379,25 +1381,22 @@ std::array<double, 10> run_hllem(
   solver.dg_boundary_terms(
       make_not_null(&c_d), make_not_null(&c_ye), make_not_null(&c_tau),
       make_not_null(&c_s), make_not_null(&c_b), make_not_null(&c_phi),
-      interior.tilde_d, interior.tilde_ye, interior.tilde_tau,
-      interior.tilde_s, interior.tilde_b, interior.tilde_phi,
-      interior.nf_tilde_d, interior.nf_tilde_ye, interior.nf_tilde_tau,
-      interior.nf_tilde_s, interior.nf_tilde_b, interior.nf_tilde_phi,
-      interior.largest_outgoing, interior.largest_ingoing,
-      interior.fast_outgoing, interior.fast_ingoing,
+      interior.tilde_d, interior.tilde_ye, interior.tilde_tau, interior.tilde_s,
+      interior.tilde_b, interior.tilde_phi, interior.nf_tilde_d,
+      interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
+      interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
+      interior.largest_ingoing, interior.fast_outgoing, interior.fast_ingoing,
       interior.interface_unit_normal, interior.metric_flatness,
-      interior.rest_mass_density, interior.spatial_velocity,
-      interior.pressure, interior.lorentz_factor,
-      interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
-      exterior.tilde_tau, exterior.tilde_s, exterior.tilde_b,
-      exterior.tilde_phi, exterior.nf_tilde_d, exterior.nf_tilde_ye,
-      exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
-      exterior.nf_tilde_phi, exterior.largest_outgoing,
+      interior.rest_mass_density, interior.spatial_velocity, interior.pressure,
+      interior.lorentz_factor, interior.specific_internal_energy,
+      exterior.tilde_d, exterior.tilde_ye, exterior.tilde_tau, exterior.tilde_s,
+      exterior.tilde_b, exterior.tilde_phi, exterior.nf_tilde_d,
+      exterior.nf_tilde_ye, exterior.nf_tilde_tau, exterior.nf_tilde_s,
+      exterior.nf_tilde_b, exterior.nf_tilde_phi, exterior.largest_outgoing,
       exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
       exterior.interface_unit_normal, exterior.metric_flatness,
-      exterior.rest_mass_density, exterior.spatial_velocity,
-      exterior.pressure, exterior.lorentz_factor,
-      exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
+      exterior.rest_mass_density, exterior.spatial_velocity, exterior.pressure,
+      exterior.lorentz_factor, exterior.specific_internal_energy, formulation,
       equation_of_state);
   return flatten_correction(c_d, c_ye, c_tau, c_phi, c_s, c_b);
 }
@@ -1452,6 +1451,328 @@ void test_numeric_eigensystem(
                   bc::HllemEigensystem::Numeric, 1.0e4} !=
         bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
                   bc::HllemEigensystem::Numeric, 1.0e300});
+}
+
+// DEBUG (umbrella gamma): Eigensystem Grouped. On an interface whose waves
+// are all well separated every group is one wave, and the group form
+// delta(A) P_S dU IS the per-wave term: Grouped must equal Analytic and
+// Numeric for every wave set (expectation G1.1 of
+// experiments/hllem_grouped/STATE.md). On a B_n = 0 interface the five fluid
+// waves are exactly degenerate and form one group: All restores it as a block,
+// which is what the complementary projection does there (G1.4), and every
+// wave set that splits the group drops it, i.e. equals None. Conservation of
+// the weak-form flux under swapping the sides is checked in flat space (G1.5).
+void test_grouped_eigensystem(
+    const InterfaceState& state_int, const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction, const std::string& what,
+    const bool exactly_degenerate) {
+  CAPTURE(what);
+  const auto solver = [](const bc::HllemWaves waves,
+                         const bc::HllemEigensystem eigensystem,
+                         const bool use_complementary_projection = false) {
+    const bool grouped = eigensystem == bc::HllemEigensystem::Grouped;
+    return bc::Hllem{waves,
+                     use_complementary_projection,
+                     grouped ? 1.0e-4 : 1.0e-10,
+                     1.0e-30,
+                     1.0e-8,
+                     eigensystem,
+                     grouped ? 1.0e3 : 1.0e300};
+  };
+  const auto run = [&](const bc::HllemWaves waves,
+                       const bc::HllemEigensystem eigensystem,
+                       const bool use_complementary_projection = false) {
+    return run_hllem(solver(waves, eigensystem, use_complementary_projection),
+                     state_int, state_ext, equation_of_state, normal_direction);
+  };
+  const auto none = run(bc::HllemWaves::None, bc::HllemEigensystem::Analytic);
+  // G1.6: None is untouched by the eigensystem choice (it returns before any
+  // eigensystem is built)
+  CHECK(run(bc::HllemWaves::None, bc::HllemEigensystem::Grouped) == none);
+  double worst = 0.0;
+  for (const auto waves :
+       {bc::HllemWaves::Contact, bc::HllemWaves::ContactSlow,
+        bc::HllemWaves::ContactAlfven, bc::HllemWaves::All,
+        bc::HllemWaves::Slow, bc::HllemWaves::Alfven,
+        bc::HllemWaves::AllWithFast, bc::HllemWaves::ContactAlfvenFast}) {
+    CAPTURE(waves);
+    const auto analytic = run(waves, bc::HllemEigensystem::Analytic);
+    const auto numeric = run(waves, bc::HllemEigensystem::Numeric);
+    const auto grouped = run(waves, bc::HllemEigensystem::Grouped);
+    double scale = 0.0;
+    for (size_t n = 0; n < 10; ++n) {
+      scale = std::max(scale, std::abs(gsl::at(none, n)));
+      scale =
+          std::max(scale, std::abs(gsl::at(analytic, n) - gsl::at(none, n)));
+    }
+    CAPTURE(scale);
+    Approx approx = Approx::custom().epsilon(1.0e-10).scale(scale);
+    for (size_t n = 0; n < 10; ++n) {
+      CAPTURE(n);
+      CHECK(std::isfinite(gsl::at(grouped, n)));
+      if (not exactly_degenerate) {
+        CHECK(gsl::at(grouped, n) == approx(gsl::at(analytic, n)));
+        CHECK(gsl::at(grouped, n) == approx(gsl::at(numeric, n)));
+        worst = std::max(
+            worst,
+            std::abs(gsl::at(grouped, n) - gsl::at(analytic, n)) / scale);
+      } else if (waves == bc::HllemWaves::All) {
+        // the whole fluid group restored as a block = the complementary
+        // projection (with the 1/(l.r) fix), which fires at every point here
+        const auto complement =
+            run(waves, bc::HllemEigensystem::Analytic, true);
+        CHECK(gsl::at(grouped, n) == approx(gsl::at(complement, n)));
+        worst = std::max(
+            worst,
+            std::abs(gsl::at(grouped, n) - gsl::at(complement, n)) / scale);
+      } else if (waves != bc::HllemWaves::AllWithFast and
+                 waves != bc::HllemWaves::ContactAlfvenFast) {
+        // the wave set splits the five-fold group: dropped
+        CHECK(gsl::at(grouped, n) == approx(gsl::at(none, n)));
+      }
+    }
+    if (exactly_degenerate and waves == bc::HllemWaves::All) {
+      // and the block restores something: Grouped All is not HLL here
+      double restored = 0.0;
+      for (size_t n = 0; n < 10; ++n) {
+        restored = std::max(restored,
+                            std::abs(gsl::at(grouped, n) - gsl::at(none, n)));
+      }
+      CHECK(restored > 1.0e-3 * scale);
+    }
+  }
+  Parallel::printf(
+      "HLLEM Grouped (%s): max |Grouped - %s| / scale = %.2e\n", what,
+      exactly_degenerate ? "complementary projection" : "Analytic", worst);
+  // G1.5: weak-form flux leaving one side = flux entering the other
+  for (const auto waves : {bc::HllemWaves::All, bc::HllemWaves::ContactSlow}) {
+    const auto hllem = solver(waves, bc::HllemEigensystem::Grouped);
+    const auto forward =
+        run_hllem(hllem, state_int, state_ext, equation_of_state,
+                  normal_direction, ::dg::Formulation::WeakInertial);
+    const std::array<double, 3> reversed_normal{
+        {-normal_direction[0], -normal_direction[1], -normal_direction[2]}};
+    const auto backward =
+        run_hllem(hllem, state_ext, state_int, equation_of_state,
+                  reversed_normal, ::dg::Formulation::WeakInertial);
+    double scale = 0.0;
+    for (size_t n = 0; n < 10; ++n) {
+      scale = std::max(scale, std::abs(gsl::at(forward, n)));
+    }
+    Approx approx = Approx::custom().epsilon(1.0e-12).scale(scale);
+    for (size_t n = 0; n < 10; ++n) {
+      CAPTURE(n);
+      CHECK(gsl::at(forward, n) == approx(-gsl::at(backward, n)));
+    }
+  }
+  // the option value is distinct
+  CHECK(solver(bc::HllemWaves::All, bc::HllemEigensystem::Grouped) !=
+        bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Numeric, 1.0e3});
+}
+
+// The free function on a synthetic 9x9 matrix A = S J S^-1 whose block J_S
+// (eigenvalues c, c + eps, c + 2 eps, ones above the diagonal) is a perturbed
+// Jordan block: its individual eigenvectors have C ~ 1/eps^2, but the group's
+// anti-diffusion is S [I - J_S / lambda_side] S^-1 dU (on one side of 0),
+// known from the block structure to round-off whatever eps (G1.3). A group
+// that straddles 0 has an unbounded exact value; there the linearization
+// about its centre is returned. Splitting the group drops it.
+void test_grouped_synthetic_jordan() {
+  namespace hg = bc::hllem_grouped;
+  // well-conditioned, non-orthogonal S
+  std::array<std::array<double, 9>, 9> s_matrix{};
+  for (size_t i = 0; i < 9; ++i) {
+    for (size_t j = 0; j < 9; ++j) {
+      gsl::at(gsl::at(s_matrix, i), j) =
+          (i == j ? 1.0 : 0.0) +
+          0.15 * std::sin(1.0 + 1.7 * static_cast<double>(i) +
+                          2.3 * static_cast<double>(j * j));
+    }
+  }
+  // S^-1 by Gauss-Jordan with partial pivoting
+  std::array<std::array<double, 18>, 9> aug{};
+  for (size_t i = 0; i < 9; ++i) {
+    for (size_t j = 0; j < 9; ++j) {
+      gsl::at(gsl::at(aug, i), j) = gsl::at(gsl::at(s_matrix, i), j);
+      gsl::at(gsl::at(aug, i), 9 + j) = i == j ? 1.0 : 0.0;
+    }
+  }
+  for (size_t c = 0; c < 9; ++c) {
+    size_t piv = c;
+    for (size_t r = c + 1; r < 9; ++r) {
+      if (std::abs(gsl::at(gsl::at(aug, r), c)) >
+          std::abs(gsl::at(gsl::at(aug, piv), c))) {
+        piv = r;
+      }
+    }
+    std::swap(gsl::at(aug, c), gsl::at(aug, piv));
+    const double d = gsl::at(gsl::at(aug, c), c);
+    for (size_t j = 0; j < 18; ++j) {
+      gsl::at(gsl::at(aug, c), j) /= d;
+    }
+    for (size_t r = 0; r < 9; ++r) {
+      if (r != c) {
+        const double f = gsl::at(gsl::at(aug, r), c);
+        for (size_t j = 0; j < 18; ++j) {
+          gsl::at(gsl::at(aug, r), j) -= f * gsl::at(gsl::at(aug, c), j);
+        }
+      }
+    }
+  }
+  const auto s_inv = [&aug](const size_t i, const size_t j) {
+    return gsl::at(gsl::at(aug, i), 9 + j);
+  };
+  const std::array<double, 9> du{
+      {0.3, -1.1, 0.7, 0.25, -0.4, 0.9, -0.6, 0.15, 0.5}};
+  double du_norm = 0.0;
+  for (const double x : du) {
+    du_norm += x * x;
+  }
+  du_norm = std::sqrt(du_norm);
+  const double lambda_min = -0.6;
+  const double lambda_max = 0.8;
+  for (const double centre : {0.2, -0.25, 0.0}) {
+    for (const double eps : {1.0e-3, 1.0e-4, 1.0e-6, 1.0e-8}) {
+      CAPTURE(centre);
+      CAPTURE(eps);
+      // J: -0.9, -0.5 | block at centre (ranks 2, 3, 4) | 0.35, 0.5, 0.7, 0.95
+      // (for centre 0.0 the block's eigenvalues are -eps/2, eps/2, 3 eps/2:
+      // it straddles 0, and its centre eps/2 is on the positive side; the
+      // trace, hence the centre, is accurate in double even where the
+      // individual eigenvalues are not)
+      const double c0 = centre == 0.0 ? -0.5 * eps : centre;
+      std::array<std::array<double, 9>, 9> j_matrix{};
+      const std::array<double, 9> diag{
+          {-0.9, -0.5, c0, c0 + eps, c0 + 2.0 * eps, 0.35, 0.5, 0.7, 0.95}};
+      for (size_t i = 0; i < 9; ++i) {
+        gsl::at(gsl::at(j_matrix, i), i) = gsl::at(diag, i);
+      }
+      gsl::at(gsl::at(j_matrix, 2), 3) = 1.0;
+      gsl::at(gsl::at(j_matrix, 3), 4) = 1.0;
+      std::array<double, 81> a{};
+      for (size_t i = 0; i < 9; ++i) {
+        for (size_t j = 0; j < 9; ++j) {
+          double sum = 0.0;
+          for (size_t k = 0; k < 9; ++k) {
+            for (size_t l = 0; l < 9; ++l) {
+              sum += gsl::at(gsl::at(s_matrix, i), k) *
+                     gsl::at(gsl::at(j_matrix, k), l) * s_inv(l, j);
+            }
+          }
+          gsl::at(a, 9 * i + j) = sum;
+        }
+      }
+      // reference: S D S^-1 dU, D = blockdiag over restored groups of
+      // I - J_g / lambda_side(centre of g), zero elsewhere
+      const auto reference = [&](const std::array<bool, 9>& keep) {
+        std::array<double, 9> x{};
+        for (size_t i = 0; i < 9; ++i) {
+          for (size_t j = 0; j < 9; ++j) {
+            gsl::at(x, i) += s_inv(i, j) * gsl::at(du, j);
+          }
+        }
+        const double block_centre = c0 + eps;
+        const auto side = [lambda_min, lambda_max](const double x0) {
+          return x0 < 0.0 ? lambda_min - 1.0e-14 : lambda_max + 1.0e-14;
+        };
+        std::array<double, 9> y{};
+        for (size_t i = 0; i < 9; ++i) {
+          if (not gsl::at(keep, i)) {
+            continue;
+          }
+          const double ls =
+              (i >= 2 and i <= 4) ? side(block_centre) : side(gsl::at(diag, i));
+          double jx = 0.0;
+          for (size_t k = 0; k < 9; ++k) {
+            if (gsl::at(keep, k) and
+                ((i >= 2 and i <= 4) == (k >= 2 and k <= 4))) {
+              jx += gsl::at(gsl::at(j_matrix, i), k) * gsl::at(x, k);
+            }
+          }
+          gsl::at(y, i) = gsl::at(x, i) - jx / ls;
+        }
+        std::array<double, 9> out{};
+        for (size_t i = 0; i < 9; ++i) {
+          for (size_t j = 0; j < 9; ++j) {
+            gsl::at(out, i) += gsl::at(gsl::at(s_matrix, i), j) * gsl::at(y, j);
+          }
+        }
+        return out;
+      };
+      for (const double sign : {1.0, -1.0}) {
+        CAPTURE(sign);
+        std::array<double, 9> result{};
+        hg::Stats stats{};
+        const std::array<bool, 9> all{
+            {false, false, true, true, true, true, true, false, false}};
+        hg::antidiffusion(make_not_null(&result), make_not_null(&stats), a,
+                          sign, du, lambda_min, lambda_max, all, 1.0e-4, 1.0e3);
+        CHECK_FALSE(stats.failed);
+        CHECK(stats.group_size[3] == 3);
+        CHECK(stats.restored[2]);
+        CHECK(stats.restored[3]);
+        CHECK(stats.restored[4]);
+        CHECK(stats.dropped_groups == 0);
+        if (eps == 1.0e-3) {
+          // gaps 1e-3 > tau (lambda_max - lambda_min) = 1.4e-4: the group is
+          // formed by the projector-norm bound, not by the gap
+          CHECK(stats.merges >= 1);
+        }
+        const auto expected = reference(all);
+        double err = 0.0;
+        for (size_t n = 0; n < 9; ++n) {
+          err = std::max(err,
+                         std::abs(gsl::at(result, n) - gsl::at(expected, n)));
+        }
+        Parallel::printf(
+            "HLLEM grouped synthetic Jordan block: centre %+.2f eps %.0e sign "
+            "%+.0f: |error|/|dU| %.2e (merges %zu, Newton %zu, rejected "
+            "%zu)\n",
+            centre, eps, sign, err / du_norm, stats.merges, stats.newton_groups,
+            stats.newton_rejected);
+        CHECK(err <= 1.0e-10 * du_norm);
+        if (centre == 0.0 and eps == 1.0e-4) {
+          // straddles 0 near a Jordan block: the bounded linearization (for
+          // smaller eps the computed eigenvalues, perturbed by ~1e-16^(1/3),
+          // need not straddle 0; the result is the linearization either way)
+          CHECK(stats.newton_groups == 1);
+          CHECK(stats.newton_rejected == 1);
+        }
+        // a wave set that splits the group drops it (HLL for the group)
+        const std::array<bool, 9> split{
+            {false, false, false, true, true, true, true, false, false}};
+        hg::antidiffusion(make_not_null(&result), make_not_null(&stats), a,
+                          sign, du, lambda_min, lambda_max, split, 1.0e-4,
+                          1.0e3);
+        CHECK(stats.dropped_groups == 1);
+        CHECK_FALSE(stats.restored[3]);
+        const auto expected_split = reference(
+            {{false, false, false, false, false, true, true, false, false}});
+        err = 0.0;
+        for (size_t n = 0; n < 9; ++n) {
+          err = std::max(
+              err, std::abs(gsl::at(result, n) - gsl::at(expected_split, n)));
+        }
+        CHECK(err <= 1.0e-10 * du_norm);
+      }
+    }
+  }
+  // G1.7: a non-finite matrix gives no anti-diffusion and the failure flag
+  std::array<double, 81> bad{};
+  bad[40] = std::numeric_limits<double>::quiet_NaN();
+  std::array<double, 9> result{};
+  result.fill(1.0);
+  hg::Stats stats{};
+  hg::antidiffusion(make_not_null(&result), make_not_null(&stats), bad, 1.0, du,
+                    lambda_min, lambda_max,
+                    {{true, true, true, true, true, true, true, true, true}},
+                    1.0e-4, 1.0e3);
+  CHECK(stats.failed);
+  for (const double x : result) {
+    CHECK(x == 0.0);
+  }
 }
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
@@ -1591,6 +1912,46 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
         make_state(4.0, 0.2, {{0.0, -0.1, 0.25}}, {{0.0, 0.3, -0.2}},
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}}, "numeric: B_n = 0", true);
+    test_grouped_eigensystem(
+        make_state(1.0, 1.0, {{0.2, -0.3, 0.1}}, {{0.5, 0.3, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}}, "grouped: generic interface, +x", false);
+    test_grouped_eigensystem(
+        make_state(1.0, 1.0, {{0.2, -0.3, 0.1}}, {{0.5, 0.3, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{-1.0, 0.0, 0.0}}, "grouped: generic interface, -x", false);
+    test_grouped_eigensystem(
+        make_state(0.5, 0.3, {{0.1, 0.35, -0.2}}, {{-0.2, 0.6, 0.3}},
+                   pair_adiabatic_index, 1),
+        make_state(1.3, 0.9, {{-0.3, 0.1, 0.05}}, {{0.4, 0.1, -0.5}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{0.0, -0.6, 0.8}}, "grouped: generic interface, oblique",
+        false);
+    test_grouped_eigensystem(
+        make_state(1.0, 1.0, {{0.0, 0.2, -0.3}}, {{0.0, 0.4, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{0.0, -0.1, 0.25}}, {{0.0, 0.3, -0.2}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}}, "grouped: B_n = 0", true);
+    test_grouped_synthetic_jordan();
+    const auto grouped_from_yaml =
+        TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
+                                           bc::Hllem>(
+            "Hllem:\n"
+            "  WavesToRestore: All\n"
+            "  UseComplementaryProjection: false\n"
+            "  DegeneracyTolerance: 1.0e-4\n"
+            "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
+            "  LightSpeedDensityCutoff: 1.0e-8\n"
+            "  Eigensystem: Grouped\n"
+            "  MaxProjectorNorm: 1.0e3\n");
+    CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*grouped_from_yaml) !=
+                bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8,
+                          bc::HllemEigensystem::Grouped, 1.0e3});
     const auto numeric_from_yaml =
         TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
                                            bc::Hllem>(
@@ -1628,6 +1989,17 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                 bc::HllemEigensystem::Numeric, 1.0e4},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges);
+  // DEBUG (umbrella gamma): and the grouped eigensystem (in curved space the
+  // helper's random metric makes this the HLL fallback; flat-space
+  // conservation is checked in test_grouped_eigensystem)
+  for (const auto waves : {bc::HllemWaves::All, bc::HllemWaves::ContactSlow}) {
+    TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+        make_not_null(&gen),
+        bc::Hllem{waves, false, 1.0e-4, 1.0e-30, 1.0e-8,
+                  bc::HllemEigensystem::Grouped, 1.0e3},
+        Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+        volume_data, ranges);
+  }
 
   // HLLEM must preserve a stationary contact exactly at ANY jump strength, not
   // just in the linear limit -- that is the property that puts it on the same
@@ -1690,7 +2062,64 @@ struct OnsetFace {
   std::array<double, 9> du, speeds_double, speeds_oracle;
   std::array<double, 5> delta;
   double oracle_value;
+  // DEBUG (umbrella gamma): the fast fan of the record and the 60-digit
+  // sum_k delta_k P_k dU over waves 2..6 (umbrella beta's oracle,
+  // analysis/hllem_cluster_antidiffusion.py, delta at the 60-digit speeds;
+  // components below 1e-60 written as 0)
+  double lambda_min, lambda_max;
+  std::array<double, 9> exact;
 };
+
+// The group-wise anti-diffusion at the recorded averaged state, with the
+// Jacobian from flux_jacobian_mhd, restored waves 2..6, tau = 1e-4, K = 1e3;
+// returns |result - exact| / |dU|.
+double grouped_face_error(
+    const OnsetFace& face, const double sign,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
+  const size_t num_points = 1;
+  tnsr::I<DataVector, 3, Frame::Inertial> v{num_points};
+  tnsr::I<DataVector, 3, Frame::Inertial> b{num_points};
+  tnsr::i<DataVector, 3> n{num_points};
+  tnsr::ii<DataVector, 3, Frame::Inertial> metric{num_points, 0.0};
+  tnsr::II<DataVector, 3, Frame::Inertial> inv_metric{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    v.get(i) = gsl::at(face.v, i);
+    b.get(i) = gsl::at(face.b, i);
+    n.get(i) = gsl::at(face.n, i);
+    metric.get(i, i) = 1.0;
+    inv_metric.get(i, i) = 1.0;
+  }
+  tnsr::iJ<DataVector, 9> jacobian{num_points};
+  grmhd::ValenciaDivClean::flux_jacobian_mhd(
+      make_not_null(&jacobian), v, b, Scalar<DataVector>{num_points, face.rho},
+      Scalar<DataVector>{num_points, face.eps},
+      Scalar<DataVector>{num_points, 0.5},
+      Scalar<DataVector>{num_points, face.w},
+      Scalar<DataVector>{num_points, face.h}, metric, inv_metric, n,
+      equation_of_state);
+  std::array<double, 81> matrix{};
+  for (size_t row = 0; row < 9; ++row) {
+    for (size_t col = 0; col < 9; ++col) {
+      gsl::at(matrix, 9 * row + col) = jacobian.get(row, col)[0];
+    }
+  }
+  std::array<double, 9> result{};
+  bc::hllem_grouped::Stats stats{};
+  bc::hllem_grouped::antidiffusion(
+      make_not_null(&result), make_not_null(&stats), matrix, sign, face.du,
+      face.lambda_min, face.lambda_max,
+      {{false, false, true, true, true, true, true, false, false}}, 1.0e-4,
+      1.0e3);
+  CHECK_FALSE(stats.failed);
+  CHECK(stats.dropped_groups == 0);
+  double err = 0.0;
+  double du_norm = 0.0;
+  for (size_t m = 0; m < 9; ++m) {
+    err += square(gsl::at(result, m) - gsl::at(face.exact, m));
+    du_norm += square(gsl::at(face.du, m));
+  }
+  return std::sqrt(err / du_norm);
+}
 
 double onset_face_antidiffusion(
     const OnsetFace& face, const std::array<double, 9>& speeds,
@@ -1759,18 +2188,22 @@ SPECTRE_TEST_CASE(
        {{-0.05116278175661949, 0.779525872675541, 0.0}},
        {{0.00278603535805616, 0.08398031806776235, 0.0}},
        {{-1.0, -0.0, -0.0}},
-       {{-0.18497596655023824, 6.038612320205473, 0.0,
-         -0.004523156336791348, -0.13773474610353464, 0.0,
-         0.5838771806964465, 5.435743842823654, 0.003367510859097023}},
-       {{-1.0, -0.13928721262125857, 0.048059416529945165,
-         0.051162701484856764, 0.05116278175661949, 0.051162862029309815,
-         0.05611554607193812, 0.2379628798632529, 1.0}},
-       {{-1.0, -0.13928721262125215, 0.04805941652994516,
-         0.0511626942564261, 0.05116278175661949, 0.05116286925773412,
-         0.05611554607193812, 0.23796287986325287, 1.0}},
+       {{-0.18497596655023824, 6.038612320205473, 0.0, -0.004523156336791348,
+         -0.13773474610353464, 0.0, 0.5838771806964465, 5.435743842823654,
+         0.003367510859097023}},
+       {{-1.0, -0.13928721262125857, 0.048059416529945165, 0.051162701484856764,
+         0.05116278175661949, 0.051162862029309815, 0.05611554607193812,
+         0.2379628798632529, 1.0}},
+       {{-1.0, -0.13928721262125215, 0.04805941652994516, 0.0511626942564261,
+         0.05116278175661949, 0.05116286925773412, 0.05611554607193812,
+         0.23796287986325287, 1.0}},
        {{0.898925812937611, 0.8923992667019697, 0.8923990978817103,
          0.8923989290595002, 0.881982895126304}},
-       1.569},
+       1.569,
+       -0.3589564056414867,
+       0.47548655029279674,
+       {{0.5558821280546862, -6.207912535177633, 0.0, 0.0, -6.75146839547588,
+         0.0, -8.804009869707805, -1.2770557056380283, 0.0}}},
       {"r22 t=0.444207",
        0.04081258816629474,
        6.998697404971646e-11,
@@ -1779,18 +2212,23 @@ SPECTRE_TEST_CASE(
        {{-0.03628591428785676, 0.8463516215222865, 0.0}},
        {{0.0027237308471549228, 0.0847106112069555, 0.0}},
        {{-1.0, -0.0, -0.0}},
-       {{-0.07907010954432901, 4.2053738446693165, 0.0,
-         -0.0005836930236142153, -0.26424205686560154, 0.0,
-         0.3840084708241124, 3.8000530658914156, 0.011406889864836216}},
-       {{-1.0, -0.18246362986265566, 0.03363938890301627,
-         0.036285834109478235, 0.03628591428785676, 0.036285994467432345,
-         0.04150311145989474, 0.25161262840343335, 1.0}},
-       {{-1.0, -0.18246362986265557, 0.03363938890301627,
-         0.036285834104437885, 0.03628591428785676, 0.036285994472472674,
-         0.04150311145989474, 0.2516126284034333, 1.0}},
+       {{-0.07907010954432901, 4.2053738446693165, 0.0, -0.0005836930236142153,
+         -0.26424205686560154, 0.0, 0.3840084708241124, 3.8000530658914156,
+         0.011406889864836216}},
+       {{-1.0, -0.18246362986265566, 0.03363938890301627, 0.036285834109478235,
+         0.03628591428785676, 0.036285994467432345, 0.04150311145989474,
+         0.25161262840343335, 1.0}},
+       {{-1.0, -0.18246362986265557, 0.03363938890301627, 0.036285834104437885,
+         0.03628591428785676, 0.036285994472472674, 0.04150311145989474,
+         0.2516126284034333, 1.0}},
        {{0.9487841411417267, 0.9447549370274345, 0.9447548149561171,
          0.9447546928829773, 0.9368116494375865}},
-       0.7332},
+       0.7332,
+       -0.5928795003936618,
+       0.6568158701800577,
+       {{0.07223792152921098, -0.37672786575916783, 0.0, 0.0,
+         -3.2737730169810764, 0.0, -2.378960263796581, 0.9318098569398983,
+         0.0}}},
       {"r11 warm t=0.046151 r=0.7273 z=0.1705",
        0.09999824442625359,
        0.1499870287246698,
@@ -1799,11 +2237,24 @@ SPECTRE_TEST_CASE(
        {{1.4886464166628985e-07, 0.9900003442994056, 0.0}},
        {{6.53467670814331e-05, 0.10002948841721129, 0.0}},
        {{-1.0, -0.0, -0.0}},
-       {{8.562793787599554e-06, -1.118493919705088e-08, 0.0, -8.645580893004155e-05, -1.765717530027855e-05, 0.0, 0.0, -1.7774237299761353e-06, 8.620909356009006e-05}},
-       {{-1.0, -0.06809927881126582, -2.9366077412369604e-06, -2.433463195864813e-06, -1.4886464166628985e-07, 3.4895440632046945e-06, 4.696045518453119e-06, 0.06809763493068052, 1.0}},
-       {{-1.0, -0.06809927880703849, -2.936607741236954e-06, -2.529190954153832e-06, -1.4886464166628985e-07, 3.5852718276624e-06, 4.696045518453109e-06, 0.06809763492644702, 1.0}},
-       {{0.9999579437668894, 0.9999651494838776, 0.9999978680550405, 0.9999500247516144, 0.999932745929851}},
-       2.674},
+       {{8.562793787599554e-06, -1.118493919705088e-08, 0.0,
+         -8.645580893004155e-05, -1.765717530027855e-05, 0.0, 0.0,
+         -1.7774237299761353e-06, 8.620909356009006e-05}},
+       {{-1.0, -0.06809927881126582, -2.9366077412369604e-06,
+         -2.433463195864813e-06, -1.4886464166628985e-07,
+         3.4895440632046945e-06, 4.696045518453119e-06, 0.06809763493068052,
+         1.0}},
+       {{-1.0, -0.06809927880703849, -2.936607741236954e-06,
+         -2.529190954153832e-06, -1.4886464166628985e-07, 3.5852718276624e-06,
+         4.696045518453109e-06, 0.06809763492644702, 1.0}},
+       {{0.9999579437668894, 0.9999651494838776, 0.9999978680550405,
+         0.9999500247516144, 0.999932745929851}},
+       2.674,
+       -0.06982574339258867,
+       0.06982544711491832,
+       {{-4.118426467062369e-09, 0.00024000863163792092, 0.0, 0.0,
+         7.140782702244135e-05, 0.0, 2.6380206243430847e-05,
+         0.00021448556834453963, 0.0}}},
       {"r11 warm t=0.046151 r=1.0909 z=0.5114",
        10.005414371093302,
        0.0015075546033608148,
@@ -1812,11 +2263,23 @@ SPECTRE_TEST_CASE(
        {{0.0016969365807974707, -0.0020467506086178184, 0.0}},
        {{-4.285304317982756e-05, 0.0962214144871043, 0.0}},
        {{-1.0, -0.0, -0.0}},
-       {{0.0319509350730833, -0.039638485840919425, 0.0, 0.00040382735156674186, -0.007443935011635511, 0.0, 0.0001349631944957963, -0.0006362114913396888, -0.002732978419911954}},
-       {{-1.0, -0.052599100500320704, -0.0017104600711831284, -0.0017077773327704858, -0.0016969365807974707, -0.001686094745160557, -0.0016834114085899562, 0.049214021430991864, 1.0}},
-       {{-1.0, -0.05259910049678032, -0.0017104600711831284, -0.0017077955488618542, -0.0016969365807974707, -0.0016860765283845723, -0.0016834114085899562, 0.04921402142676686, 1.0}},
-       {{0.9680079284145733, 0.9680581057678996, 0.9682608688250464, 0.968463652150806, 0.968513840691948}},
-       5.495},
+       {{0.0319509350730833, -0.039638485840919425, 0.0, 0.00040382735156674186,
+         -0.007443935011635511, 0.0, 0.0001349631944957963,
+         -0.0006362114913396888, -0.002732978419911954}},
+       {{-1.0, -0.052599100500320704, -0.0017104600711831284,
+         -0.0017077773327704858, -0.0016969365807974707, -0.001686094745160557,
+         -0.0016834114085899562, 0.049214021430991864, 1.0}},
+       {{-1.0, -0.05259910049678032, -0.0017104600711831284,
+         -0.0017077955488618542, -0.0016969365807974707, -0.0016860765283845723,
+         -0.0016834114085899562, 0.04921402142676686, 1.0}},
+       {{0.9680079284145733, 0.9680581057678996, 0.9682608688250464,
+         0.968463652150806, 0.968513840691948}},
+       5.495,
+       -0.05346512390157229,
+       0.05153866574875781,
+       {{0.00048247895469410746, -0.03921126197431268, 0.0, 0.0,
+         -0.004503514166165595, 0.0, 0.2804240134930424, 0.00029694814231430547,
+         0.0}}},
       {"r11 warm t=0.074996 r=1.0909 z=1.1932",
        9.99961253058517,
        0.0014999727004265408,
@@ -1825,11 +2288,25 @@ SPECTRE_TEST_CASE(
        {{2.4853492458673613e-06, 4.2756008938835445e-07, 0.0}},
        {{3.0567170218039805e-05, 0.10054344328856227, 0.0}},
        {{-1.0, -0.0, -0.0}},
-       {{-1.670140058830047e-05, -3.16439214576129e-06, 0.0, -8.56690138745834e-05, 0.0010283448978338633, 0.0, -4.271605291705782e-11, 0.00010339067528796972, 0.0004982695957971671}},
-       {{-1.0, -0.05165716054652363, -1.2134800090065717e-05, -1.009017457654435e-05, -2.4853492458673613e-06, 5.11947624780926e-06, 7.164101860691043e-06, 0.05165220311071793, 1.0}},
-       {{-1.0, -0.05165716054476314, -1.2134800090065719e-05, -1.0102124663355852e-05, -2.4853492458673613e-06, 5.131426335089906e-06, 7.164101860691044e-06, 0.05165220310895697, 1.0}},
-       {{0.9997655380961462, 0.9998050432208297, 0.999951979454824, 0.9999010780056022, 0.9998615703619229}},
-       33.56},
+       {{-1.670140058830047e-05, -3.16439214576129e-06, 0.0,
+         -8.56690138745834e-05, 0.0010283448978338633, 0.0,
+         -4.271605291705782e-11, 0.00010339067528796972,
+         0.0004982695957971671}},
+       {{-1.0, -0.05165716054652363, -1.2134800090065717e-05,
+         -1.009017457654435e-05, -2.4853492458673613e-06, 5.11947624780926e-06,
+         7.164101860691043e-06, 0.05165220311071793, 1.0}},
+       {{-1.0, -0.05165716054476314, -1.2134800090065719e-05,
+         -1.0102124663355852e-05, -2.4853492458673613e-06,
+         5.131426335089906e-06, 7.164101860691044e-06, 0.05165220310895697,
+         1.0}},
+       {{0.9997655380961462, 0.9998050432208297, 0.999951979454824,
+         0.9999010780056022, 0.9998615703619229}},
+       33.56,
+       -0.05175595647141101,
+       0.05175265904184724,
+       {{-9.06435897044063e-08, 4.703130304451778e-05, 0.0, 0.0,
+         0.0006399988769869374, 0.0, -0.0386082624792348,
+         -3.2173828702675836e-05, 0.0}}},
   }};
   for (const auto& face : faces) {
     const double with_double =
@@ -1842,5 +2319,18 @@ SPECTRE_TEST_CASE(
         face.name, with_double, with_oracle, face.oracle_value);
     CHECK(std::isfinite(with_double));
     CHECK(std::isfinite(with_oracle));
+    // G1.2 (experiments/hllem_grouped/STATE.md): the group-wise form
+    // reproduces the 60-digit value; the per-wave sum above is off by up to
+    // 4e9 |dU| on the two cold onset faces
+    const bool onset = face.name.find("warm") == std::string::npos;
+    for (const double sign : {1.0, -1.0}) {
+      const double error = grouped_face_error(face, sign, *eos);
+      Parallel::printf(
+          "HLLEM onset face %s: Grouped (sign %+.0f) |error|/|dU| = %.2e "
+          "(per-wave analytic, double speeds: |sum|/|dU| = %.3e, exact "
+          "%.4e)\n",
+          face.name, sign, error, with_double, face.oracle_value);
+      CHECK(error <= (onset ? 1.0e-12 : 1.0e-10));
+    }
   }
 }

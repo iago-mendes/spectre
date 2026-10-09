@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -146,7 +148,24 @@ enum class HllemEigensystem {
   /// same averaged state, from LAPACK `dgeev` (blaze::geev), sorted by
   /// eigenvalue into the MhdSpeed order. Only the restored waves use them; the
   /// outer fast bounds stay analytic.
-  Numeric
+  Numeric,
+  /// DEBUG (umbrella gamma): no individual eigenvector at all. The restored
+  /// anti-diffusion is \f$\sum_S \delta(A) P_S \Delta U\f$ over GROUPS S of
+  /// near-degenerate waves, \f$P_S\f$ the group's spectral (Riesz) projector
+  /// and \f$\delta(A)\f$ Einfeldt's coefficient as a matrix function, both
+  /// from a reordered real Schur form of `flux_jacobian_mhd` at the averaged
+  /// state (`hllem_grouped::antidiffusion`). For a group of well-separated
+  /// waves this is the per-wave sum; for a near-Jordan group it stays bounded
+  /// where the individual \f$P_k\f$ do not. In this mode
+  /// `DegeneracyTolerance` is the relative gap \f$\tau\f$ below which
+  /// neighbouring eigenvalues start in one group (gap \f$\le \tau
+  /// (\lambda_+ - \lambda_-)\f$, the fast fan), and `MaxProjectorNorm` is the
+  /// bound K on a group's projector norm above which it is merged into its
+  /// nearer neighbour; the per-wave speed-gap and condition-number guards are
+  /// not applied. A group is restored only if every wave in it is in
+  /// `WavesToRestore` and inside the fan; otherwise it is dropped (HLL for
+  /// it). `UseComplementaryProjection` is ignored.
+  Grouped
 };
 std::ostream& operator<<(std::ostream& os, HllemEigensystem eigensystem);
 
@@ -188,6 +207,73 @@ std::ostream& operator<<(std::ostream& os, HllemEigensystem eigensystem);
  * M&M tests) with an HLL fallback for curved backgrounds and non-finite
  * results.
  */
+/// DEBUG (umbrella gamma): the group-wise HLLEM anti-diffusion of
+/// `HllemEigensystem::Grouped`, one face point at a time.
+namespace hllem_grouped {
+/// What `antidiffusion` did at one point (for the unit tests and the probe).
+struct Stats {
+  /// non-finite matrix, LAPACK failure or non-finite result: zero returned
+  bool failed = false;
+  /// groups that hold a restored wave but were not restored
+  size_t dropped_groups = 0;
+  /// merges forced by the projector-norm bound
+  size_t merges = 0;
+  /// groups straddling 0 evaluated in Newton form, and those of them that
+  /// fell back to the linearization of delta about the group centre
+  size_t newton_groups = 0;
+  size_t newton_rejected = 0;
+  /// per MhdSpeed index (ascending real part, A frame): eigenvalue, size of
+  /// its group, whether it was restored
+  std::array<double, 9> eigenvalues{};
+  std::array<size_t, 9> group_size{};
+  std::array<bool, 9> restored{};
+};
+
+/*!
+ * \brief The group-wise anti-diffusion of a 9x9 matrix A.
+ *
+ * Returns \f$\sum_S \delta(A) P_S \Delta U\f$ over the restored groups S
+ * (without HLLEM's factor \f$\lambda_+\lambda_-/(\lambda_+-\lambda_-)\f$).
+ *
+ * `jacobian` is row-major, `jacobian[9 * row + col]` \f$= A_{row}{}^{col}\f$,
+ * in the variables [S_i, B^i, D, tau, phi]. The decomposition is done on
+ * \f$B = s A\f$ (`sign` \f$s = \pm 1\f$, chosen from the face normal so
+ * that the two sides of a face make the same discrete choices); rank r of
+ * B's ascending eigenvalues is MhdSpeed r (s = 1) or 8 - r (s = -1).
+ * Steps:
+ * 1. real Schur form of B (`dgees`); eigenvalues sorted by real part;
+ * 2. groups: runs of sorted eigenvalues with gaps \f$\le \tau
+ *    (\lambda_{max} - \lambda_{min})\f$;
+ * 3. per group: `dtrsen` moves it to the top, `dtrsyl` solves
+ *    \f$T_{11} Y - Y T_{22} = T_{12}\f$, \f$P_S = Z [[I, Y], [0, 0]] Z^T\f$,
+ *    \f$\|P_S\| \approx \sqrt{1 + \|Y\|_F^2}\f$ (an upper bound on the
+ *    2-norm, within a factor 3); a failed reordering counts as infinite;
+ * 4. while some group has \f$\|P_S\| > K\f$, the worst is merged into its
+ *    nearer neighbour (umbrella beta's rule);
+ * 5. a group is restored iff all its waves are in `restored`, all its
+ *    eigenvalues lie strictly inside \f$(\lambda_{min}, \lambda_{max})\f$
+ *    and \f$\|P_S\| \le K\f$;
+ * 6. \f$\delta\f$ is applied to \f$T_{11}\f$: for a group on one side of 0
+ *    exactly \f$I - T_{11}/\lambda_{side}\f$; for a group straddling 0 the
+ *    Newton interpolant with the exact divided differences of the kinked
+ *    \f$\delta\f$, kept only if it differs from the linearization about the
+ *    group centre by at most \f$\min(1, \kappa K) \|P_S \Delta U\|\f$,
+ *    \f$\kappa\f$ = spread \f$\times (1/|\lambda_{min}| +
+ *    1/\lambda_{max})\f$ (near a Jordan block straddling 0 the exact value is
+ *    unbounded; the linearization is the bounded fallback); for
+ *    \f$\kappa \le 10^{-12}\f$ the linearization directly.
+ *
+ * \f$\delta(x) = 1 - \min(x,0)/(\lambda_{min} - 10^{-14}) -
+ * \max(x,0)/(\lambda_{max} + 10^{-14})\f$, as in the per-wave path.
+ */
+void antidiffusion(gsl::not_null<std::array<double, 9>*> result,
+                   gsl::not_null<Stats*> stats,
+                   const std::array<double, 81>& jacobian, double sign,
+                   const std::array<double, 9>& du, double lambda_min,
+                   double lambda_max, const std::array<bool, 9>& restored,
+                   double tau, double max_projector_norm);
+}  // namespace hllem_grouped
+
 class Hllem final : public evolution::BoundaryCorrection {
  public:
   struct LargestOutgoingCharSpeed : db::SimpleTag {
@@ -241,7 +327,8 @@ class Hllem final : public evolution::BoundaryCorrection {
     static constexpr Options::String help = {
         "Speed-gap below which neighbouring waves are treated as degenerate "
         "and handled by the complementary projection (or dropped, without "
-        "it)."};
+        "it). With Eigensystem: Grouped, the gap relative to the fast fan "
+        "width below which neighbouring eigenvalues start in one group."};
   };
   struct UseComplementaryProjection {
     static constexpr Options::String help = {
@@ -272,7 +359,11 @@ class Hllem final : public evolution::BoundaryCorrection {
     using type = HllemEigensystem;
     static constexpr Options::String help = {
         "DEBUG: Analytic or Numeric (dgeev of the flux Jacobian) speeds and "
-        "eigenvectors for the restored waves."};
+        "eigenvectors for the restored waves, or Grouped: no eigenvectors, "
+        "each group of near-degenerate waves restored as a block through its "
+        "spectral projector and delta as a matrix function (then "
+        "DegeneracyTolerance is the relative gap that starts a group and "
+        "MaxProjectorNorm the group projector bound K)."};
   };
   struct MaxProjectorNorm {
     using type = double;
@@ -281,7 +372,9 @@ class Hllem final : public evolution::BoundaryCorrection {
         "DEBUG: drop a restored wave where its spectral projector is "
         "ill-conditioned, |l| |r| / |l.r| > this (the eigenvalue condition "
         "number; scale-invariant, unlike the 1e-12 floor on l.r). 1e300 "
-        "switches the guard off."};
+        "switches the guard off. With Eigensystem: Grouped, the bound on a "
+        "group's projector norm above which the group is merged into its "
+        "nearer neighbour."};
   };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
