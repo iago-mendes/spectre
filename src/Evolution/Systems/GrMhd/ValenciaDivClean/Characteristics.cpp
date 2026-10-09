@@ -1209,16 +1209,24 @@ void characteristic_speeds_mhd(
         for (const size_t c : order) {
           double mu = gsl::at(seeds, c);
           double step = gsl::at(first_steps, c);
+          // Accept a root only if Newton CONVERGED: the interval then
+          // identifies it as this slot's slow root. (Accepting an
+          // unconverged iterate inside the interval failed the residual
+          // ASSERT below on the Del Zanna jet at t ~ 15, |Q| = 3.4e-8.)
+          bool converged = step == 0.0;
           for (size_t iter = 0;
-               iter < 4 and step != 0.0 and std::isfinite(step); ++iter) {
+               iter < 8 and step != 0.0 and std::isfinite(step); ++iter) {
             mu -= step;
             if (std::abs(step) <=
                 4.0 * std::numeric_limits<double>::epsilon() * std::abs(mu)) {
+              converged = true;
               break;
             }
             step = newton_step(mu);
+            converged = step == 0.0;
           }
-          if (mu >= gsl::at(lower, j) and mu <= gsl::at(upper, j)) {
+          if (converged and mu >= gsl::at(lower, j) and
+              mu <= gsl::at(upper, j)) {
             gsl::at(polished, j) = vn_i + mu;
             break;
           }
@@ -1234,6 +1242,18 @@ void characteristic_speeds_mhd(
                    10.0 * tolerance,
            "Failed to find slow magnetosonic speeds: slow_minus = "
                << slow_minus[point] << ", slow_plus = " << slow_plus[point]
+               << ", method = " << static_cast<int>(slow_speed_method)
+               << ", cs^2 = " << get(sound_speed_squared)[point]
+               << ", v_n = " << vn_i << ", W = " << get(lorentz_factor)[point]
+               << ", B_n/sqrt(rho h) = " << get(normal_magnetic_field)[point]
+               << ", (B.v)/sqrt(rho h) = "
+               << get(magnetic_field_dot_spatial_velocity)[point]
+               << ", b^2/(rho h) = "
+               << get(comoving_magnetic_field_squared)[point]
+               << ", fast = " << fast_minus[point] << ", " << fast_plus[point]
+               << ", alfven = " << alfven_minus_i << ", " << alfven_plus_i
+               << ", c0..c3 = " << c0[point] << ", " << c1[point] << ", "
+               << c2[point] << ", " << c3[point]
                << ", quartic(slow_minus) = "
                << evaluate_quartic(slow_minus[point], point)
                << ", quartic(slow_plus) = "
