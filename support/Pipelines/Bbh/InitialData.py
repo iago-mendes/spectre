@@ -267,6 +267,7 @@ def generate_id(
     run_convergence_tests: bool = False,
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -332,6 +333,11 @@ def generate_id(
         convergence tests starts from the solution at the nearest polynomial
         order that is already solved instead of the background. The volume data
         then also holds the fields the next solve imports. (default: False)
+      elliptic_absolute_residual: Absolute residual at which the elliptic
+        solver's Newton iterations stop. The linear solver's absolute residual
+        is set ten times smaller. Every solve of the control loop and of the
+        convergence tests uses it. (default: None, i.e., the input file
+        template's values, 1e-8 and 1e-9)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -510,6 +516,7 @@ def generate_id(
         run_convergence_tests=run_convergence_tests,
         numeric_initial_guess=numeric_initial_guess,
         numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+        elliptic_absolute_residual=elliptic_absolute_residual,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -708,6 +715,16 @@ def generate_id(
         " nearest polynomial order that is already solved instead of the"
         " background."
     ),
+)
+@click.option(
+    "--elliptic-absolute-residual",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "Absolute residual at which the elliptic solver's Newton iterations"
+        " stop, in every solve of the control loop and the convergence tests."
+        " The linear solver's is set ten times smaller."
+    ),
+    show_default="the input file template's, 1e-8",
 )
 @click.option(
     "--pipeline-dir",

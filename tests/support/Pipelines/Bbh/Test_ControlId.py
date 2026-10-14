@@ -544,6 +544,26 @@ class TestControlId(unittest.TestCase):
         self.assertEqual(result, 5)
         self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8])
 
+    def test_elliptic_absolute_residual(self):
+        # Every solve of the test gets the elliptic solver's tolerance, and
+        # none gets it by default
+        for kwargs, expected in (
+            ({}, None),
+            (dict(elliptic_absolute_residual=1.0e-10), 1.0e-10),
+        ):
+            _, _, generate_id = self.run_convergence_test(
+                polynomial_order=6,
+                mode="final",
+                control_params=["MassA"],
+                tolerance=1.0e-4,
+                **kwargs,
+            )
+            self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8])
+            for call in generate_id.mock_calls:
+                self.assertEqual(
+                    call.kwargs["elliptic_absolute_residual"], expected
+                )
+
 
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)

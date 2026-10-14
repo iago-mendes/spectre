@@ -453,6 +453,7 @@ def _convergence_test(
     output_filename: Union[str, Path],
     max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -600,6 +601,7 @@ def _convergence_test(
                 polynomial_order=P,
                 negative_expansion_bc=negative_expansion_bc,
                 numeric_initial_guess_in_tests=numeric_initial_guess,
+                elliptic_absolute_residual=elliptic_absolute_residual,
                 initial_guess_file_glob=initial_guess_file_glob,
                 redirect_output=True,
             )
@@ -684,6 +686,7 @@ def control_id(
     final_convergence_test_max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
 ):
     """Control BBH physical parameters.
 
@@ -798,6 +801,10 @@ def control_id(
       numeric_initial_guess_in_tests: Start every solve of the convergence
         tests from the solution at the nearest polynomial order that is already
         solved. See '_convergence_test'. (Default: False)
+      elliptic_absolute_residual: Absolute residual at which the elliptic
+        solver's Newton iterations stop in every solve of the control loop and
+        the convergence tests (the linear solver's is ten times smaller).
+        (Default: None, i.e., the input file template's)
     """
 
     assert (
@@ -929,6 +936,7 @@ def control_id(
                 negative_expansion_bc=negative_expansion_bc,
                 numeric_initial_guess=numeric_initial_guess,
                 numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+                elliptic_absolute_residual=elliptic_absolute_residual,
                 # Start from the solution of the previous solve. The excisions
                 # move between solves, so the importer extrapolates into them.
                 initial_guess_file_glob=(
@@ -990,6 +998,7 @@ def control_id(
             mode="initial",
             output_filename=output_filename,
             numeric_initial_guess=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
         )
 
     # Initialize Jacobian as an identity matrix
@@ -1345,6 +1354,7 @@ def control_id(
             output_filename=output_filename,
             max_polynomial_order=final_convergence_test_max_polynomial_order,
             numeric_initial_guess=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
         )
 
     return control_run_dir

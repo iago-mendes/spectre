@@ -385,6 +385,59 @@ class TestInitialData(unittest.TestCase):
         self.assertIn("ConformalFactorMinusOne", observed_fields)
         self.assertIn("LapseTimesConformalFactorMinusOne", observed_fields)
 
+    def test_elliptic_absolute_residual(self):
+        target_params = {
+            "MassA": 0.6,
+            "MassB": 0.4,
+            "DimensionlessSpinA": [0.0, 0.0, 0.0],
+            "DimensionlessSpinB": [0.0, 0.0, 0.0],
+        }
+        common_kwargs = dict(
+            separation=20.0,
+            orbital_angular_velocity=0.01,
+            radial_expansion_velocity=-1.0e-5,
+            polynomial_order=5,
+            control=True,
+            executable=str(self.bin_dir / "SolveXcts"),
+            scheduler=None,
+            submit=False,
+        )
+
+        def read_tolerances(run_dir):
+            with open(
+                run_dir / "0000_InitialData/InitialData.yaml", "r"
+            ) as open_input_file:
+                metadata, input_file = yaml.safe_load_all(open_input_file)
+            return (
+                metadata["Next"]["With"].get("elliptic_absolute_residual"),
+                input_file["NonlinearSolver"]["NewtonRaphson"][
+                    "ConvergenceCriteria"
+                ]["AbsoluteResidual"],
+                input_file["LinearSolver"]["Gmres"]["ConvergenceCriteria"][
+                    "AbsoluteResidual"
+                ],
+            )
+
+        # By default the input file template's tolerances are used
+        generate_id(
+            target_params, run_dir=self.test_dir / "Default", **common_kwargs
+        )
+        self.assertEqual(
+            read_tolerances(self.test_dir / "Default"), (None, 1.0e-8, 1.0e-9)
+        )
+        # The option sets the Newton tolerance, the linear solver's ten times
+        # smaller, and passes it on to the control loop
+        generate_id(
+            target_params,
+            run_dir=self.test_dir / "Tight",
+            elliptic_absolute_residual=1.0e-10,
+            **common_kwargs,
+        )
+        self.assertEqual(
+            read_tolerances(self.test_dir / "Tight"),
+            (1.0e-10, 1.0e-10, 1.0e-11),
+        )
+
 
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)

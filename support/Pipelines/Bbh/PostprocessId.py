@@ -57,6 +57,7 @@ def postprocess_id(
     final_convergence_test_max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -120,6 +121,9 @@ def postprocess_id(
       numeric_initial_guess_in_tests: Start every solve of the convergence
         tests from the solution at the nearest polynomial order that is already
         solved. (Default: False)
+      elliptic_absolute_residual: Absolute residual at which the elliptic
+        solver's Newton iterations stop in every later solve. (Default: the
+        input file template's)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -207,6 +211,7 @@ def postprocess_id(
             ),
             numeric_initial_guess=numeric_initial_guess,
             numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
@@ -315,6 +320,15 @@ def postprocess_id(
         " until one does."
     ),
     show_default="max(8, P + 2), i.e., no climb",
+)
+@click.option(
+    "--elliptic-absolute-residual",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "Absolute residual at which the elliptic solver's Newton iterations"
+        " stop in every later solve."
+    ),
+    show_default="the input file template's, 1e-8",
 )
 @scheduler_options
 def postprocess_id_command(**kwargs):
