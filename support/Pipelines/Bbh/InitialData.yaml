@@ -1,6 +1,15 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
+{% if elliptic_absolute_residual | default(None) %}
+{% set newton_absolute_residual =
+  "%.1e" | format(elliptic_absolute_residual) %}
+{% set linear_absolute_residual =
+  "%.1e" | format(elliptic_absolute_residual / 10.0) %}
+{% else %}
+{% set newton_absolute_residual = "1.e-8" %}
+{% set linear_absolute_residual = "1.e-9" %}
+{% endif %}
 Executable: SolveXcts
 {{ TargetParams }}
 ExpectedOutput:
@@ -33,6 +42,9 @@ Next:
 {% endif %}
 {% if numeric_initial_guess_in_tests | default(False) %}
     numeric_initial_guess_in_tests: True
+{% endif %}
+{% if elliptic_absolute_residual | default(None) %}
+    elliptic_absolute_residual: {{ newton_absolute_residual }}
 {% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
@@ -220,7 +232,7 @@ NonlinearSolver:
     ConvergenceCriteria:
       MaxIterations: 20
       RelativeResidual: 0.
-      AbsoluteResidual: 1.e-8
+      AbsoluteResidual: {{ newton_absolute_residual }}
     SufficientDecrease: 1.e-4
     MaxGlobalizationSteps: 10
     DampingFactor: 1.
@@ -231,7 +243,7 @@ LinearSolver:
     ConvergenceCriteria:
       MaxIterations: 100
       RelativeResidual: 1.e-3
-      AbsoluteResidual: 1.e-9
+      AbsoluteResidual: {{ linear_absolute_residual }}
     Verbosity: Quiet
 
   Multigrid:
