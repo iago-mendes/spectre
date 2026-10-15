@@ -25,10 +25,10 @@ from spectre.Pipelines.Bbh.ControlId import (
     _optimal_polynomial_order,
     _seeded_solve_failure,
     _watch_seeded_solve,
-    conformal_mass_step,
     control_id,
     control_scales,
     effective_spin,
+    excision_move,
     spin_step_size_constraint,
 )
 from spectre.support.Logging import configure_logging
@@ -765,13 +765,28 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
             )
         return Path(last_run_dir), mock_control_generate_id.calls
 
-    def test_conformal_mass_step(self):
+    def test_excision_move(self):
+        params = lambda x_right, y, radius_right, radius_left: {
+            "XRight": x_right,
+            "XLeft": x_right - 10.0,
+            "CenterOfMassOffset_y": y,
+            "CenterOfMassOffset_z": 0.0,
+            "ExcisionRadiusRight": radius_right,
+            "ExcisionRadiusLeft": radius_left,
+        }
+        # The right excision shrinks from 0.8 to 0.6
         self.assertAlmostEqual(
-            conformal_mass_step(
-                dict(conformal_mass_a=0.8, conformal_mass_b=0.04),
-                dict(conformal_mass_a=0.6, conformal_mass_b=0.05),
+            excision_move(
+                params(1.0, 0.0, 0.8, 0.1), params(1.0, 0.0, 0.6, 0.1)
             ),
             1.0 / 3.0,
+        )
+        # Both centers move by 0.05, half the left (smaller) radius
+        self.assertAlmostEqual(
+            excision_move(
+                params(1.0, 0.0, 0.8, 0.1), params(1.03, 0.04, 0.8, 0.1)
+            ),
+            0.5,
         )
 
     def test_seeded_solve_failure(self):
@@ -821,7 +836,7 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
 
     def test_seeding_threshold(self):
         last_run_dir, calls = self.run_control(
-            numeric_initial_guess_max_mass_step=0.1
+            numeric_initial_guess_max_excision_move=0.1
         )
         previous = dict(
             conformal_mass_a=INITIAL_CONFORMAL_MASS,
@@ -829,7 +844,13 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
         )
         steps = []
         for i, call in enumerate(calls):
-            step = conformal_mass_step(previous, call)
+            # The centers don't move (the center of mass isn't controlled), so
+            # the excision move is the relative change of the radii, which are
+            # proportional to the conformal masses
+            step = max(
+                abs(call[key] - previous[key]) / call[key]
+                for key in ["conformal_mass_a", "conformal_mass_b"]
+            )
             steps.append(step)
             if step < 0.1:
                 self.assertEqual(

@@ -58,7 +58,7 @@ def postprocess_id(
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
-    numeric_initial_guess_max_mass_step: Optional[float] = None,
+    numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     **scheduler_kwargs,
 ):
@@ -126,9 +126,9 @@ def postprocess_id(
       elliptic_absolute_residual: Absolute residual at which the elliptic
         solver's Newton iterations stop in every later solve. (Default: the
         input file template's)
-      numeric_initial_guess_max_mass_step: Start a control solve from the
-        previous solution only if the conformal masses change by less than
-        this fraction. See ControlId.py. (Default: None, no threshold)
+      numeric_initial_guess_max_excision_move: Start a control solve from the
+        previous solution only if the excisions move by less than this fraction
+        of their radii. See ControlId.py. (Default: None, no threshold)
       numeric_initial_guess_fallback: Redo a control solve that started from
         the previous solution from the background if it fails. See
         ControlId.py. (Default: False)
@@ -220,8 +220,8 @@ def postprocess_id(
             numeric_initial_guess=numeric_initial_guess,
             numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
-            numeric_initial_guess_max_mass_step=(
-                numeric_initial_guess_max_mass_step
+            numeric_initial_guess_max_excision_move=(
+                numeric_initial_guess_max_excision_move
             ),
             numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         )

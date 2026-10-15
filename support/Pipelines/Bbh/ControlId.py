@@ -16,7 +16,11 @@ import yaml
 
 import spectre.IO.H5 as spectre_h5
 from spectre.IO.H5 import to_dataframe
-from spectre.Pipelines.Bbh.InitialData import TargetParams, generate_id
+from spectre.Pipelines.Bbh.InitialData import (
+    TargetParams,
+    generate_id,
+    id_parameters,
+)
 from spectre.support.DirectoryStructure import Segment
 
 logger = logging.getLogger(__name__)
@@ -292,20 +296,38 @@ def spin_step_size_constraint(
 SEEDED_SOLVE_MAX_RESIDUAL_GROWTH = 10.0
 
 
-def conformal_mass_step(previous_free_data: Dict, free_data: Dict) -> float:
-    """Largest relative change of the conformal masses between two solves
+def excision_move(previous_id_params: Dict, id_params: Dict) -> float:
+    """How far the excision boundaries move between two solves
 
-    Returns max over both black holes of |M_new - M_old| / M_new, where M is the
-    conformal (Kerr) mass in the free data. The conformal spins are fixed, so
-    each excision radius is proportional to its conformal mass and this is also
-    the relative change of the excision radii. Where the new excision is
-    smaller than the old one, a numeric initial guess from the old solution
-    must be extrapolated into the uncovered shell.
+    Returns max over both black holes of (|c_new - c_old| + |r_new - r_old|) /
+    r_new, where c is the center and r the radius of the excision. The
+    arguments are the parameters of the two solves as 'id_parameters' (in
+    'InitialData.py') computes them from the free data. The radii change with
+    the conformal masses, the centers with the center-of-mass offset. Where the
+    new domain covers part of an old excision, a numeric initial guess from the
+    old solution is extrapolated there.
     """
-    return max(
-        abs(free_data[key] - previous_free_data[key]) / abs(free_data[key])
-        for key in ["conformal_mass_a", "conformal_mass_b"]
-    )
+    moves = []
+    for side in ["Right", "Left"]:
+        center = lambda params: np.array(
+            [
+                params[f"X{side}"],
+                params["CenterOfMassOffset_y"],
+                params["CenterOfMassOffset_z"],
+            ]
+        )
+        radius, previous_radius = (
+            id_params[f"ExcisionRadius{side}"],
+            previous_id_params[f"ExcisionRadius{side}"],
+        )
+        moves.append(
+            (
+                np.linalg.norm(center(id_params) - center(previous_id_params))
+                + abs(radius - previous_radius)
+            )
+            / radius
+        )
+    return max(moves)
 
 
 def _seeded_solve_failure(out_text: str, finished: bool) -> Optional[str]:
@@ -804,7 +826,7 @@ def control_id(
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
-    numeric_initial_guess_max_mass_step: Optional[float] = None,
+    numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
 ):
     """Control BBH physical parameters.
@@ -924,11 +946,12 @@ def control_id(
         solver's Newton iterations stop in every solve of the control loop and
         the convergence tests (the linear solver's is ten times smaller).
         (Default: None, i.e., the input file template's)
-      numeric_initial_guess_max_mass_step: With 'numeric_initial_guess', start
-        a solve from the previous solution only if the step of the free data
-        changes each conformal mass, and so each excision radius, by less than
-        this fraction (see 'conformal_mass_step'); otherwise start it from the
-        background. Large steps happen in the first iterations, where the
+      numeric_initial_guess_max_excision_move: With 'numeric_initial_guess',
+        start a solve from the previous solution only if the step of the free
+        data moves the excision boundaries by less than this fraction of their
+        radii (see 'excision_move'); otherwise start it from the background.
+        Large moves happen in the first iterations (the conformal masses) and
+        when the control of the center of mass starts (the centers), where the
         extrapolation of the old solution into the uncovered part of the old
         excisions can be a worse guess than the background. (Default: None,
         i.e., always start from the previous solution)
@@ -1061,18 +1084,24 @@ def control_id(
             # of the free data is too large. The excisions move between
             # solves, so the importer extrapolates into them.
             seed = numeric_initial_guess
-            if seed and numeric_initial_guess_max_mass_step is not None:
-                mass_step = conformal_mass_step(previous_free_data, free_data)
-                seed = mass_step < numeric_initial_guess_max_mass_step
+            if seed and numeric_initial_guess_max_excision_move is not None:
+                geometry = lambda free_data: id_parameters(
+                    **free_data,
+                    separation=separation,
+                    refinement_level=refinement_level,
+                    polynomial_order=polynomial_order,
+                    negative_expansion_bc=negative_expansion_bc,
+                    target_params=target_params,
+                )
+                move = excision_move(
+                    geometry(previous_free_data), geometry(free_data)
+                )
+                seed = move < numeric_initial_guess_max_excision_move
                 logger.info(
-                    f"Conformal-mass step = {mass_step:e}"
-                    f" ({'<' if seed else '>='}"
-                    f" {numeric_initial_guess_max_mass_step:e}): start from"
-                    + (
-                        " the previous solution."
-                        if seed
-                        else " the background."
-                    )
+                    f"Excision move = {move:e} ({'<' if seed else '>='}"
+                    f" {numeric_initial_guess_max_excision_move:e}): start"
+                    " from the "
+                    + ("previous solution." if seed else "background.")
                 )
 
             # Run ID and find horizons. The run continues the sequence of
