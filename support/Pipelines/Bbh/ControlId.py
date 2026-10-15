@@ -3,6 +3,10 @@
 
 import logging
 import os
+import re
+import signal
+import subprocess
+import threading
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Union
 
@@ -278,6 +282,119 @@ def spin_step_size_constraint(
     if excess(1.0) > 0.0:
         return first_crossing(safe_alpha, 1.0)
     return 1.0
+
+
+# A solve that starts from a numeric initial guess counts as failed if a full
+# Newton step raises the residual more than this factor above the residual of
+# the initial guess (see '_seeded_solve_failure'). Healthy solves from the
+# background have raised it by up to 1.2 (q = 20 with spins, first step), the
+# stalled solve from a numeric guess by 2e5.
+SEEDED_SOLVE_MAX_RESIDUAL_GROWTH = 10.0
+
+
+def conformal_mass_step(previous_free_data: Dict, free_data: Dict) -> float:
+    """Largest relative change of the conformal masses between two solves
+
+    Returns max over both black holes of |M_new - M_old| / M_new, where M is the
+    conformal (Kerr) mass in the free data. The conformal spins are fixed, so
+    each excision radius is proportional to its conformal mass and this is also
+    the relative change of the excision radii. Where the new excision is
+    smaller than the old one, a numeric initial guess from the old solution
+    must be extrapolated into the uncovered shell.
+    """
+    return max(
+        abs(free_data[key] - previous_free_data[key]) / abs(free_data[key])
+        for key in ["conformal_mass_a", "conformal_mass_b"]
+    )
+
+
+def _seeded_solve_failure(out_text: str, finished: bool) -> Optional[str]:
+    """Whether a solve that started from a numeric initial guess went wrong
+
+    Reads the solver output of the solve ('out_text'). Returns a description of
+    the failure, or 'None' if there is none:
+
+    - A full Newton step raised the residual more than
+      'SEEDED_SOLVE_MAX_RESIDUAL_GROWTH' times above the residual of the
+      initial guess (the step overshot far: the guess is far from the
+      solution, where the Newton linearization doesn't hold).
+    - Once the solve has 'finished': the Newton solver didn't converge.
+    """
+    start = re.search(
+        r"NewtonRaphson initialized with residual: (\S+)", out_text
+    )
+    if start is None:
+        return None if not finished else "the solver did not start"
+    start_residual = float(start.group(1))
+    for match in re.finditer(
+        r"NewtonRaphson\((\d+)\): Step with length 1 didn't sufficiently"
+        r" decrease the residual.*?Residual:"
+        r" ([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)",
+        out_text,
+    ):
+        trial_residual = float(match.group(2))
+        if trial_residual > SEEDED_SOLVE_MAX_RESIDUAL_GROWTH * start_residual:
+            return (
+                f"the full step of Newton iteration {match.group(1)} raised the"
+                f" residual to {trial_residual:e}, more than"
+                f" {SEEDED_SOLVE_MAX_RESIDUAL_GROWTH:g} times the residual"
+                f" {start_residual:e} of the initial guess"
+            )
+    if finished and "NewtonRaphson has converged" not in out_text:
+        return "the Newton solver did not converge"
+    return None
+
+
+def _stop_solves_in(run_dir: Path):
+    """Terminate the executables that run in the 'run_dir' (Linux only)"""
+    run_dir = Path(run_dir).resolve()
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            if Path(os.readlink(proc / "cwd")).resolve() != run_dir:
+                continue
+            # The executable, or a wrapper or launcher that runs it
+            cmdline = (proc / "cmdline").read_bytes().split(b"\0")
+            if not any(
+                os.path.basename(arg) == b"SolveXcts" for arg in cmdline
+            ):
+                continue
+            os.kill(int(proc.name), signal.SIGTERM)
+            logger.warning(f"Stopped process {proc.name} in '{run_dir}'.")
+        except (OSError, ValueError):
+            continue
+
+
+def _watch_seeded_solve(
+    segments_dir: Path,
+    previous_segment: Optional[Path],
+    stop: threading.Event,
+    failure: List[str],
+    poll_interval: float = 2.0,
+):
+    """Stop a seeded solve as soon as '_seeded_solve_failure' detects a failure
+
+    Runs in a thread while the solve runs. The solve is the first segment in
+    the 'segments_dir' after the 'previous_segment', and it writes its output
+    to 'spectre.out' in its directory. A detected failure is appended to the
+    'failure' list.
+    """
+    while not stop.wait(poll_interval):
+        last = Segment.last(segments_dir)
+        if last is None or (
+            previous_segment is not None
+            and Path(last.path).resolve() == Path(previous_segment).resolve()
+        ):
+            continue
+        out_file = Path(last.path) / "spectre.out"
+        if not out_file.exists():
+            continue
+        reason = _seeded_solve_failure(
+            out_file.read_text(errors="replace"), finished=False
+        )
+        if reason is not None:
+            failure.append(reason)
+            _stop_solves_in(Path(last.path))
+            return
 
 
 def _measured_params(
@@ -687,6 +804,8 @@ def control_id(
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
+    numeric_initial_guess_max_mass_step: Optional[float] = None,
+    numeric_initial_guess_fallback: bool = False,
 ):
     """Control BBH physical parameters.
 
@@ -805,6 +924,21 @@ def control_id(
         solver's Newton iterations stop in every solve of the control loop and
         the convergence tests (the linear solver's is ten times smaller).
         (Default: None, i.e., the input file template's)
+      numeric_initial_guess_max_mass_step: With 'numeric_initial_guess', start
+        a solve from the previous solution only if the step of the free data
+        changes each conformal mass, and so each excision radius, by less than
+        this fraction (see 'conformal_mass_step'); otherwise start it from the
+        background. Large steps happen in the first iterations, where the
+        extrapolation of the old solution into the uncovered part of the old
+        excisions can be a worse guess than the background. (Default: None,
+        i.e., always start from the previous solution)
+      numeric_initial_guess_fallback: With 'numeric_initial_guess', watch every
+        solve that starts from the previous solution, and redo it from the
+        background if a full Newton step raises the residual more than
+        'SEEDED_SOLVE_MAX_RESIDUAL_GROWTH' times above the residual of the
+        initial guess (the solve is stopped as soon as this happens), if its
+        Newton solver doesn't converge, or if it fails. The output of these
+        solves goes to 'spectre.out' in their directory. (Default: False)
     """
 
     assert (
@@ -898,6 +1032,8 @@ def control_id(
 
     iteration = 0
     control_run_dir = id_run_dir
+    # Free data of the solve in 'control_run_dir'
+    previous_free_data = initial_free_data.copy()
 
     # Function to be minimized
     def Residual(u):
@@ -921,31 +1057,97 @@ def control_id(
                 else:
                     free_data[key] = [next(u_iterator) for _ in range(3)]
 
+            # Start from the solution of the previous solve, unless the step
+            # of the free data is too large. The excisions move between
+            # solves, so the importer extrapolates into them.
+            seed = numeric_initial_guess
+            if seed and numeric_initial_guess_max_mass_step is not None:
+                mass_step = conformal_mass_step(previous_free_data, free_data)
+                seed = mass_step < numeric_initial_guess_max_mass_step
+                logger.info(
+                    f"Conformal-mass step = {mass_step:e}"
+                    f" ({'<' if seed else '>='}"
+                    f" {numeric_initial_guess_max_mass_step:e}): start from"
+                    + (
+                        " the previous solution."
+                        if seed
+                        else " the background."
+                    )
+                )
+
             # Run ID and find horizons. The run continues the sequence of
             # initial-data runs in the 'id_dir', like any other run.
-            generate_id(
-                target_params,
-                **free_data,
-                separation=separation,
-                segments_dir=id_dir,
-                control=False,
-                evolve=False,
-                scheduler=None,
-                refinement_level=refinement_level,
-                polynomial_order=polynomial_order,
-                negative_expansion_bc=negative_expansion_bc,
-                numeric_initial_guess=numeric_initial_guess,
-                numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
-                elliptic_absolute_residual=elliptic_absolute_residual,
-                # Start from the solution of the previous solve. The excisions
-                # move between solves, so the importer extrapolates into them.
-                initial_guess_file_glob=(
-                    str(Path(control_run_dir).resolve() / "BbhVolume*.h5")
-                    if numeric_initial_guess
-                    else None
-                ),
-            )
+            guess_in_tests = numeric_initial_guess_in_tests
+
+            def run_id(initial_guess_file_glob, **kwargs):
+                generate_id(
+                    target_params,
+                    **free_data,
+                    separation=separation,
+                    segments_dir=id_dir,
+                    control=False,
+                    evolve=False,
+                    scheduler=None,
+                    refinement_level=refinement_level,
+                    polynomial_order=polynomial_order,
+                    negative_expansion_bc=negative_expansion_bc,
+                    numeric_initial_guess=numeric_initial_guess,
+                    numeric_initial_guess_in_tests=guess_in_tests,
+                    elliptic_absolute_residual=elliptic_absolute_residual,
+                    initial_guess_file_glob=initial_guess_file_glob,
+                    **kwargs,
+                )
+
+            seed_glob = str(Path(control_run_dir).resolve() / "BbhVolume*.h5")
+            if not seed:
+                run_id(None)
+            elif not numeric_initial_guess_fallback:
+                run_id(seed_glob)
+            else:
+                previous_segment = Segment.last(id_dir)
+                stop, failure = threading.Event(), []
+                watcher = threading.Thread(
+                    target=_watch_seeded_solve,
+                    args=(
+                        id_dir,
+                        previous_segment.path if previous_segment else None,
+                        stop,
+                        failure,
+                    ),
+                    daemon=True,
+                )
+                watcher.start()
+                try:
+                    run_id(seed_glob, redirect_output=True)
+                except subprocess.CalledProcessError as error:
+                    if not failure:
+                        failure.append(
+                            f"the solve exited with code {error.returncode}"
+                        )
+                finally:
+                    stop.set()
+                    watcher.join()
+                if not failure:
+                    seeded_out = Path(Segment.last(id_dir).path) / "spectre.out"
+                    reason = _seeded_solve_failure(
+                        (
+                            seeded_out.read_text(errors="replace")
+                            if seeded_out.exists()
+                            else ""
+                        ),
+                        finished=True,
+                    )
+                    if reason is not None:
+                        failure.append(reason)
+                if failure:
+                    logger.warning(
+                        "The solve from the previous solution failed:"
+                        f" {failure[0]}. Solving again from the background."
+                    )
+                    run_id(None)
             control_run_dir = str(Segment.last(id_dir).path)
+            previous_free_data.clear()
+            previous_free_data.update(free_data)
 
         # Get measured physical parameters
         measured_params = _measured_params(control_run_dir, control_params)

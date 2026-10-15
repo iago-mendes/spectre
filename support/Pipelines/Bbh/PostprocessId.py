@@ -58,6 +58,8 @@ def postprocess_id(
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
+    numeric_initial_guess_max_mass_step: Optional[float] = None,
+    numeric_initial_guess_fallback: bool = False,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -124,6 +126,12 @@ def postprocess_id(
       elliptic_absolute_residual: Absolute residual at which the elliptic
         solver's Newton iterations stop in every later solve. (Default: the
         input file template's)
+      numeric_initial_guess_max_mass_step: Start a control solve from the
+        previous solution only if the conformal masses change by less than
+        this fraction. See ControlId.py. (Default: None, no threshold)
+      numeric_initial_guess_fallback: Redo a control solve that started from
+        the previous solution from the background if it fails. See
+        ControlId.py. (Default: False)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -212,6 +220,10 @@ def postprocess_id(
             numeric_initial_guess=numeric_initial_guess,
             numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
+            numeric_initial_guess_max_mass_step=(
+                numeric_initial_guess_max_mass_step
+            ),
+            numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"
