@@ -362,8 +362,14 @@ def _seeded_solve_failure(out_text: str, finished: bool) -> Optional[str]:
                 f" {SEEDED_SOLVE_MAX_RESIDUAL_GROWTH:g} times the residual"
                 f" {start_residual:e} of the initial guess"
             )
-    if finished and "NewtonRaphson has converged" not in out_text:
-        return "the Newton solver did not converge"
+    if finished:
+        # The solver reports "has converged" also when it stops at its maximum
+        # number of iterations, so check the reason
+        verdicts = re.findall(r"NewtonRaphson has converged in .*", out_text)
+        if not verdicts or "Reached the maximum number of iterations" in (
+            verdicts[-1]
+        ):
+            return "the Newton solver did not converge"
     return None
 
 

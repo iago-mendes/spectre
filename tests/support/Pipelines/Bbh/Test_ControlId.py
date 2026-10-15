@@ -606,7 +606,9 @@ GOOD_SOLVE_OUTPUT = newton_log(
 UNCONVERGED_SOLVE_OUTPUT = newton_log(
     "NewtonRaphson initialized with residual: 1.0e+00",
     ITERATION.format(1, 0) + " step length 1). Remaining residual: 5.0e-01",
-    "NewtonRaphson has reached its maximum number of iterations (1).",
+    # The solver's words when it stops at its maximum number of iterations
+    "NewtonRaphson has converged in 1 iterations: Reached the maximum number"
+    " of iterations (1).",
 )
 
 # A control loop of the conformal masses of a non-spinning binary, where the
