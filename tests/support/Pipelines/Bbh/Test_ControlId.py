@@ -1,14 +1,19 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
+import json
 import logging
 import shutil
+import subprocess
+import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 import numpy.testing as npt
+import yaml
 
 import spectre.IO.H5 as spectre_h5
 from spectre.Informer import unit_test_build_path
@@ -18,6 +23,10 @@ from spectre.Pipelines.Bbh.ControlId import (
     _convergence_errors,
     _convergence_test,
     _optimal_polynomial_order,
+    _seeded_solve_failure,
+    _watch_seeded_solve,
+    conformal_mass_step,
+    control_id,
     control_scales,
     effective_spin,
     spin_step_size_constraint,
@@ -563,6 +572,324 @@ class TestControlId(unittest.TestCase):
                 self.assertEqual(
                     call.kwargs["elliptic_absolute_residual"], expected
                 )
+
+
+# Solver output, one entry per line
+def newton_log(*lines):
+    return "\n".join(lines) + "\n"
+
+
+ITERATION = "NewtonRaphson({}) iteration complete ({} globalization steps,"
+OVERSHOOT = (
+    "NewtonRaphson({}): Step with length {} didn't sufficiently decrease the"
+    " residual (possible overshoot). Residual: {}. Next step length: {}."
+)
+# A solve whose guess is far from the solution (eiger 8211478, control solve
+# 1): the full step of the second Newton iteration raises the residual by 2e5
+STALLED_SOLVE_OUTPUT = newton_log(
+    "NewtonRaphson initialized with residual: 3.005263e+01",
+    ITERATION.format(1, 0) + " step length 1). Remaining residual: 6.709558",
+    OVERSHOOT.format(2, 1, "5.893451e+06", 0.1),
+    OVERSHOOT.format(2, 0.1, "6.962544e+00", 0.05),
+    ITERATION.format(2, 2) + " step length 0.05). Remaining residual: 6.6195",
+)
+# A solve from the background (eiger 8211781, control solve 0, iterations 1
+# and 7) whose first full step raises the residual by a factor 1.2
+GOOD_SOLVE_OUTPUT = newton_log(
+    "NewtonRaphson initialized with residual: 1.619000e+01",
+    OVERSHOOT.format(1, 1, "1.967734e+01", 0.403682),
+    ITERATION.format(1, 1) + " step length 0.403682). Remaining residual: 13.0",
+    ITERATION.format(2, 0) + " step length 1). Remaining residual: 9.87e-12",
+    "NewtonRaphson has converged in 2 iterations: AbsoluteResidual - The"
+    " residual magnitude has decreased to 1e-10 or below (9.87491e-12).",
+)
+UNCONVERGED_SOLVE_OUTPUT = newton_log(
+    "NewtonRaphson initialized with residual: 1.0e+00",
+    ITERATION.format(1, 0) + " step length 1). Remaining residual: 5.0e-01",
+    "NewtonRaphson has reached its maximum number of iterations (1).",
+)
+
+# A control loop of the conformal masses of a non-spinning binary, where the
+# measured Christodoulou mass is the nonlinear function 'mock_mass' of the
+# conformal mass. Starting from INITIAL_CONFORMAL_MASS, the first steps of the
+# free data change the conformal masses by tens of percent and the later ones
+# by less.
+SEEDING_CONTROL_PARAMS = [
+    "MassA",
+    "MassB",
+    "DimensionlessSpinA",
+    "DimensionlessSpinB",
+]
+INITIAL_CONFORMAL_MASS = 0.15
+
+
+def mock_mass(conformal_mass):
+    return conformal_mass + 2.0 * conformal_mass**2
+
+
+def seeding_input_file():
+    kerr = lambda mass: {
+        "KerrSchild": {
+            "Mass": mass,
+            "Spin": [0.0, 0.0, 0.0],
+            "Center": [0.0, 0.0, 0.0],
+        }
+    }
+    horizon = {
+        "Interior": {
+            "ExciseWithBoundaryCondition": {
+                "ApparentHorizon": {"Rotation": [0.0, 0.0, 0.0]}
+            }
+        }
+    }
+    metadata = {
+        "TargetParams": {
+            "MassA": 0.5,
+            "MassB": 0.5,
+            "MassRatio": 1.0,
+            "DimensionlessSpinA": [0.0, 0.0, 0.0],
+            "DimensionlessSpinB": [0.0, 0.0, 0.0],
+        }
+    }
+    body = {
+        "Background": {
+            "Binary": {
+                "XCoords": [-5.0, 5.0],
+                "CenterOfMassOffset": [0.0, 0.0],
+                "ObjectLeft": kerr(INITIAL_CONFORMAL_MASS),
+                "ObjectRight": kerr(INITIAL_CONFORMAL_MASS),
+                "AngularVelocity": 0.01,
+                "Expansion": 0.0,
+                "LinearVelocity": [0.0, 0.0, 0.0],
+            }
+        },
+        "DomainCreator": {
+            "BinaryCompactObject": {"ObjectA": horizon, "ObjectB": horizon}
+        },
+    }
+    return metadata, body
+
+
+def write_seeding_segment(run_dir, free_data, output):
+    run_dir.mkdir(parents=True)
+    (run_dir / "free_data.json").write_text(json.dumps(free_data))
+    if output is not None:
+        (run_dir / "spectre.out").write_text(output)
+
+
+def mock_control_generate_id(
+    target_params, segments_dir, initial_guess_file_glob, **kwargs
+):
+    """Runs the next segment. A solve from a previous solution 'fails' in the
+    ways listed in 'mock_control_generate_id.seeded_failures', one per seeded
+    solve, in order ('None' for a good solve)."""
+    num_segments = len(list(Path(segments_dir).glob("[0-9]*_InitialData")))
+    run_dir = Path(segments_dir) / f"{num_segments:04d}_InitialData"
+    free_data = {
+        key: kwargs[key] for key in ["conformal_mass_a", "conformal_mass_b"]
+    }
+    mock_control_generate_id.calls.append(
+        dict(run_dir=run_dir, glob=initial_guess_file_glob, **free_data)
+    )
+    failure = None
+    if initial_guess_file_glob is not None and (
+        mock_control_generate_id.seeded_failures
+    ):
+        failure = mock_control_generate_id.seeded_failures.pop(0)
+    if failure == "overshoot":
+        write_seeding_segment(run_dir, free_data, STALLED_SOLVE_OUTPUT)
+        raise subprocess.CalledProcessError(returncode=143, cmd="SolveXcts")
+    write_seeding_segment(
+        run_dir,
+        free_data,
+        (
+            UNCONVERGED_SOLVE_OUTPUT
+            if failure == "unconverged"
+            else GOOD_SOLVE_OUTPUT
+        ),
+    )
+
+
+def mock_control_measured_params(run_dir, control_params):
+    free_data = json.loads((Path(run_dir) / "free_data.json").read_text())
+    return {
+        "MassA": mock_mass(free_data["conformal_mass_a"]),
+        "MassB": mock_mass(free_data["conformal_mass_b"]),
+        "DimensionlessSpinA": np.zeros(3),
+        "DimensionlessSpinB": np.zeros(3),
+    }
+
+
+class TestNumericInitialGuessInControl(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdSeeding"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        self.id_dir = self.test_dir / "ID"
+        self.run_dir = self.id_dir / "0000_InitialData"
+        write_seeding_segment(
+            self.run_dir,
+            {
+                "conformal_mass_a": INITIAL_CONFORMAL_MASS,
+                "conformal_mass_b": INITIAL_CONFORMAL_MASS,
+            },
+            GOOD_SOLVE_OUTPUT,
+        )
+        self.input_file = self.run_dir / "InitialData.yaml"
+        with open(self.input_file, "w") as open_input_file:
+            yaml.safe_dump_all(seeding_input_file(), open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def run_control(self, **kwargs):
+        with (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=mock_control_generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_control_measured_params,
+            ),
+        ):
+            last_run_dir = control_id(
+                id_input_file_path=self.input_file,
+                control_params=SEEDING_CONTROL_PARAMS,
+                residual_tolerance=1.0e-8,
+                numeric_initial_guess=True,
+                **kwargs,
+            )
+        return Path(last_run_dir), mock_control_generate_id.calls
+
+    def test_conformal_mass_step(self):
+        self.assertAlmostEqual(
+            conformal_mass_step(
+                dict(conformal_mass_a=0.8, conformal_mass_b=0.04),
+                dict(conformal_mass_a=0.6, conformal_mass_b=0.05),
+            ),
+            1.0 / 3.0,
+        )
+
+    def test_seeded_solve_failure(self):
+        self.assertIn(
+            "Newton iteration 2",
+            _seeded_solve_failure(STALLED_SOLVE_OUTPUT, finished=False),
+        )
+        self.assertIsNone(_seeded_solve_failure(GOOD_SOLVE_OUTPUT, True))
+        self.assertIsNone(_seeded_solve_failure(GOOD_SOLVE_OUTPUT, False))
+        self.assertIsNone(
+            _seeded_solve_failure(UNCONVERGED_SOLVE_OUTPUT, finished=False)
+        )
+        self.assertIn(
+            "did not converge",
+            _seeded_solve_failure(UNCONVERGED_SOLVE_OUTPUT, finished=True),
+        )
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc")
+    def test_watch_seeded_solve(self):
+        # A stand-in for the executable, running in a new segment, whose output
+        # shows an overshooting Newton step: the watcher stops it
+        segment = self.id_dir / "0001_InitialData"
+        segment.mkdir()
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", "SolveXcts"],
+            cwd=segment,
+        )
+        (segment / "spectre.out").write_text(STALLED_SOLVE_OUTPUT)
+        stop, failure = threading.Event(), []
+        _watch_seeded_solve(
+            self.id_dir, self.run_dir, stop, failure, poll_interval=0.1
+        )
+        self.assertEqual(process.wait(timeout=10), -15)
+        self.assertEqual(len(failure), 1)
+        self.assertIn("Newton iteration 2", failure[0])
+
+    def test_seeding_without_threshold(self):
+        # Every solve after the first starts from the previous one
+        last_run_dir, calls = self.run_control()
+        self.assertGreater(len(calls), 3)
+        for i, call in enumerate(calls):
+            self.assertEqual(
+                call["glob"],
+                str(self.id_dir / f"{i:04d}_InitialData" / "BbhVolume*.h5"),
+            )
+        self.assertEqual(last_run_dir, calls[-1]["run_dir"])
+
+    def test_seeding_threshold(self):
+        last_run_dir, calls = self.run_control(
+            numeric_initial_guess_max_mass_step=0.1
+        )
+        previous = dict(
+            conformal_mass_a=INITIAL_CONFORMAL_MASS,
+            conformal_mass_b=INITIAL_CONFORMAL_MASS,
+        )
+        steps = []
+        for i, call in enumerate(calls):
+            step = conformal_mass_step(previous, call)
+            steps.append(step)
+            if step < 0.1:
+                self.assertEqual(
+                    call["glob"],
+                    str(self.id_dir / f"{i:04d}_InitialData" / "BbhVolume*.h5"),
+                )
+            else:
+                self.assertIsNone(call["glob"])
+            previous = call
+        # The first step is large and the last ones are small, so the test
+        # covers both branches
+        self.assertGreater(steps[0], 0.1)
+        self.assertLess(steps[-1], 0.1)
+        # Same control as without the threshold: the guess doesn't change the
+        # (mock) solution
+        _, calls_without = (self.tearDown(), self.setUp(), self.run_control())[
+            2
+        ]
+        self.assertEqual(len(calls), len(calls_without))
+        for call, call_without in zip(calls, calls_without):
+            self.assertEqual(
+                call["conformal_mass_a"], call_without["conformal_mass_a"]
+            )
+
+    def test_seeding_fallback(self):
+        mock_control_generate_id.seeded_failures = [
+            "overshoot",
+            "unconverged",
+        ]
+        last_run_dir, calls = self.run_control(
+            numeric_initial_guess_fallback=True
+        )
+        # Solve 1 from solve 0 overshoots and is redone from the background
+        # (segment 2); solve 2 from segment 2 doesn't converge and is redone
+        # from the background (segment 4); later solves start from the
+        # previous accepted segment
+        self.assertIsNotNone(calls[0]["glob"])
+        self.assertIsNone(calls[1]["glob"])
+        self.assertEqual(
+            calls[1]["conformal_mass_a"], calls[0]["conformal_mass_a"]
+        )
+        self.assertEqual(
+            calls[2]["glob"],
+            str(self.id_dir / "0002_InitialData" / "BbhVolume*.h5"),
+        )
+        self.assertIsNone(calls[3]["glob"])
+        self.assertEqual(
+            calls[3]["conformal_mass_a"], calls[2]["conformal_mass_a"]
+        )
+        self.assertEqual(
+            calls[4]["glob"],
+            str(self.id_dir / "0004_InitialData" / "BbhVolume*.h5"),
+        )
+        self.assertEqual(last_run_dir, calls[-1]["run_dir"])
+        # Without the fallback, the failed solve stops the control loop
+        self.tearDown()
+        self.setUp()
+        mock_control_generate_id.seeded_failures = ["overshoot"]
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_control()
 
 
 if __name__ == "__main__":
