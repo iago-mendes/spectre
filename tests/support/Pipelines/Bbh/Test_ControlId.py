@@ -783,6 +783,13 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
             ),
             1.0 / 3.0,
         )
+        # The right excision grows: the new domain reaches into nothing
+        self.assertEqual(
+            excision_move(
+                params(1.0, 0.0, 0.6, 0.1), params(1.0, 0.0, 0.8, 0.1)
+            ),
+            0.0,
+        )
         # Both centers move by 0.05, half the left (smaller) radius
         self.assertAlmostEqual(
             excision_move(
@@ -847,10 +854,10 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
         steps = []
         for i, call in enumerate(calls):
             # The centers don't move (the center of mass isn't controlled), so
-            # the excision move is the relative change of the radii, which are
-            # proportional to the conformal masses
+            # the excision move is the relative shrinking of the radii, which
+            # are proportional to the conformal masses
             step = max(
-                abs(call[key] - previous[key]) / call[key]
+                max(0.0, previous[key] - call[key]) / call[key]
                 for key in ["conformal_mass_a", "conformal_mass_b"]
             )
             steps.append(step)
@@ -862,9 +869,9 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
             else:
                 self.assertIsNone(call["glob"])
             previous = call
-        # The first step is large and the last ones are small, so the test
-        # covers both branches
-        self.assertGreater(steps[0], 0.1)
+        # Some steps reach deep and the last ones don't, so the test covers
+        # both branches
+        self.assertGreater(max(steps), 0.1)
         self.assertLess(steps[-1], 0.1)
         # Same control as without the threshold: the guess doesn't change the
         # (mock) solution

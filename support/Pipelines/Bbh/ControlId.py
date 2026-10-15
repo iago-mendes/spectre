@@ -297,15 +297,18 @@ SEEDED_SOLVE_MAX_RESIDUAL_GROWTH = 10.0
 
 
 def excision_move(previous_id_params: Dict, id_params: Dict) -> float:
-    """How far the excision boundaries move between two solves
+    """How deep the new domain reaches into the old excisions
 
-    Returns max over both black holes of (|c_new - c_old| + |r_new - r_old|) /
-    r_new, where c is the center and r the radius of the excision. The
-    arguments are the parameters of the two solves as 'id_parameters' (in
-    'InitialData.py') computes them from the free data. The radii change with
-    the conformal masses, the centers with the center-of-mass offset. Where the
-    new domain covers part of an old excision, a numeric initial guess from the
-    old solution is extrapolated there.
+    Returns max over both black holes of
+    (|c_new - c_old| + max(0, r_old - r_new)) / r_new, where c is the center and
+    r the radius of the excision: a bound on the depth, in units of the new
+    excision radius, of the part of the new domain that lies inside the old
+    excision. A numeric initial guess from the old solution is extrapolated
+    there. The arguments are the parameters of the two solves as
+    'id_parameters' (in 'InitialData.py') computes them from the free data. The
+    radii change with the conformal masses, the centers with the
+    center-of-mass offset. A growing excision with a fixed center reaches into
+    nothing (0).
     """
     moves = []
     for side in ["Right", "Left"]:
@@ -323,7 +326,7 @@ def excision_move(previous_id_params: Dict, id_params: Dict) -> float:
         moves.append(
             (
                 np.linalg.norm(center(id_params) - center(previous_id_params))
-                + abs(radius - previous_radius)
+                + max(0.0, previous_radius - radius)
             )
             / radius
         )
@@ -954,13 +957,14 @@ def control_id(
         (Default: None, i.e., the input file template's)
       numeric_initial_guess_max_excision_move: With 'numeric_initial_guess',
         start a solve from the previous solution only if the step of the free
-        data moves the excision boundaries by less than this fraction of their
-        radii (see 'excision_move'); otherwise start it from the background.
-        Large moves happen in the first iterations (the conformal masses) and
-        when the control of the center of mass starts (the centers), where the
-        extrapolation of the old solution into the uncovered part of the old
-        excisions can be a worse guess than the background. (Default: None,
-        i.e., always start from the previous solution)
+        data makes the new domain reach less deep than this fraction of the
+        excision radii into the old excisions (see 'excision_move'); otherwise
+        start it from the background. Deep reaches happen in the first
+        iterations (shrinking excisions) and when the control of the center of
+        mass starts (moving centers); there the extrapolation of the old
+        solution into the old excisions can be a worse guess than the
+        background. (Default: None, i.e., always start from the previous
+        solution)
       numeric_initial_guess_fallback: With 'numeric_initial_guess', watch every
         solve that starts from the previous solution, and redo it from the
         background if a full Newton step raises the residual more than
