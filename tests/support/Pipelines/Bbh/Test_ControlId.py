@@ -489,6 +489,81 @@ class TestControlId(unittest.TestCase):
             )
             self.assertTrue(call.kwargs["numeric_initial_guess_in_tests"])
 
+    def solved_orders(self, generate_id):
+        return [
+            call.kwargs["polynomial_order"] for call in generate_id.mock_calls
+        ]
+
+    def test_final_convergence_test_no_climb_by_default(self):
+        result, _, generate_id = self.run_convergence_test(
+            polynomial_order=6,
+            mode="final",
+            control_params=["CenterOfMass"],
+            tolerance=1.0e-4,
+        )
+        # |1e-2^(P/4) - 1e-2^(8/4)| >= 1e-4 for every P < 8
+        self.assertIsNone(result)
+        self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8])
+
+    def test_final_convergence_test_climbs(self):
+        result, _, generate_id = self.run_convergence_test(
+            polynomial_order=6,
+            mode="final",
+            control_params=["CenterOfMass"],
+            tolerance=1.0e-4,
+            max_polynomial_order=12,
+        )
+        # No P meets the tolerance relative to P=8, so the test climbs to P=9,
+        # where |1e-2^(8/4) - 1e-2^(9/4)| < 1e-4, and stops there
+        self.assertEqual(result, 8)
+        self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8, 9])
+        errors = self.read_convergence_errors("FinalConvergenceTest")
+        self.assertEqual(list(errors["PolynomialOrder"]), [4, 5, 6, 7, 8, 9])
+
+    def test_final_convergence_test_climbs_to_max(self):
+        result, _, generate_id = self.run_convergence_test(
+            polynomial_order=6,
+            mode="final",
+            control_params=["CenterOfMass"],
+            tolerance=1.0e-30,
+            max_polynomial_order=10,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8, 9, 10])
+
+    def test_final_convergence_test_full_ladder_before_climb(self):
+        # A P below the control's meets the tolerance only relative to P=8, so
+        # the whole ladder up to max(8, P + 2) is solved and nothing above it
+        result, _, generate_id = self.run_convergence_test(
+            polynomial_order=6,
+            mode="final",
+            control_params=["MassA"],
+            tolerance=1.0e-9,
+            max_polynomial_order=12,
+        )
+        self.assertEqual(result, 5)
+        self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8])
+
+    def test_elliptic_absolute_residual(self):
+        # Every solve of the test gets the elliptic solver's tolerance, and
+        # none gets it by default
+        for kwargs, expected in (
+            ({}, None),
+            (dict(elliptic_absolute_residual=1.0e-10), 1.0e-10),
+        ):
+            _, _, generate_id = self.run_convergence_test(
+                polynomial_order=6,
+                mode="final",
+                control_params=["MassA"],
+                tolerance=1.0e-4,
+                **kwargs,
+            )
+            self.assertEqual(self.solved_orders(generate_id), [4, 5, 7, 8])
+            for call in generate_id.mock_calls:
+                self.assertEqual(
+                    call.kwargs["elliptic_absolute_residual"], expected
+                )
+
 
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)

@@ -451,8 +451,9 @@ def _convergence_test(
     tolerance: float,
     mode: Literal["initial", "final"],
     output_filename: Union[str, Path],
-    max_polynomial_order: int = CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER,
+    max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -478,11 +479,16 @@ def _convergence_test(
       center of mass is recorded but doesn't enter the selection, because it
       converges slowly with P when it is far from zero (as before control).
       Returns the optimal P, or the 'max_polynomial_order' if none was found.
+      The 'max_polynomial_order' defaults to
+      'CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER'.
 
     - "final": checks the polynomial order that the control loop used. Solves
       at every P from 4 to max(8, polynomial_order + 2) and uses all
-      'control_params' for the selection. The result is informational. Returns
-      the optimal P, or 'None' if none was found.
+      'control_params' for the selection. If no P meets the 'tolerance', it
+      then climbs up one P at a time until one does or the
+      'max_polynomial_order' is reached. By default it doesn't climb. The
+      result is informational. Returns the optimal P, or 'None' if none was
+      found.
 
     With 'numeric_initial_guess', every solve starts from the solution at the
     nearest P that is already solved (the higher one on a tie), interpolated to
@@ -508,8 +514,13 @@ def _convergence_test(
         if not (is_initial and key == "CenterOfMass")
     ] or list(control_params)
 
-    # Polynomial orders to solve at in addition to the 'polynomial_order'
+    # Polynomial orders to solve at in addition to the 'polynomial_order'. The
+    # test stops at the first P that meets the tolerance once it has solved at
+    # every P up to 'stop_after_order'.
     if is_initial:
+        if max_polynomial_order is None:
+            max_polynomial_order = CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER
+        stop_after_order = -1
         logger.info(
             f"{label} convergence test: start at P={polynomial_order}, up to"
             f" P={max_polynomial_order}, tolerance={tolerance:.2e}."
@@ -528,13 +539,24 @@ def _convergence_test(
         )
     else:
         min_order, max_order = 4, max(8, polynomial_order + 2)
+        if max_polynomial_order is None:
+            max_polynomial_order = max_order
+        stop_after_order = max_order
         logger.info(
             f"{label} convergence test: control used P={polynomial_order},"
-            f" solve at P={min_order}..{max_order},"
-            f" tolerance={tolerance:.2e}."
+            f" solve at P={min_order}..{max_order}"
+            + (
+                f", then up to P={max_polynomial_order} until the tolerance"
+                " is met"
+                if max_polynomial_order > max_order
+                else ""
+            )
+            + f", tolerance={tolerance:.2e}."
         )
         candidate_orders = [
-            P for P in range(min_order, max_order + 1) if P != polynomial_order
+            P
+            for P in range(min_order, max(max_order, max_polynomial_order) + 1)
+            if P != polynomial_order
         ]
 
     run_dir_by_order = {polynomial_order: Path(run_dir).resolve()}
@@ -551,6 +573,8 @@ def _convergence_test(
 
     optimal_order = None
     for P in candidate_orders:
+        if optimal_order is not None and P > stop_after_order:
+            break
         P_run_dir = test_dir / f"P{P:02d}"
         initial_guess_file_glob = None
         if numeric_initial_guess:
@@ -577,6 +601,7 @@ def _convergence_test(
                 polynomial_order=P,
                 negative_expansion_bc=negative_expansion_bc,
                 numeric_initial_guess_in_tests=numeric_initial_guess,
+                elliptic_absolute_residual=elliptic_absolute_residual,
                 initial_guess_file_glob=initial_guess_file_glob,
                 redirect_output=True,
             )
@@ -598,8 +623,6 @@ def _convergence_test(
             )
         )
         optimal_order = _optimal_polynomial_order(errors, tolerance)
-        if is_initial and optimal_order is not None:
-            break
 
     if len(measured_params_by_order) > 1:
         _write_convergence_test(
@@ -659,8 +682,11 @@ def control_id(
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    final_convergence_test_tolerance: Optional[float] = None,
+    final_convergence_test_max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
+    elliptic_absolute_residual: Optional[float] = None,
 ):
     """Control BBH physical parameters.
 
@@ -761,6 +787,13 @@ def control_id(
         '_convergence_test' for details. (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
+      final_convergence_test_tolerance: Tolerance of the convergence test
+        after the control loop. (Default: the 'convergence_test_tolerance')
+      final_convergence_test_max_polynomial_order: If no polynomial order of
+        the convergence test after the control loop meets its tolerance, the
+        test climbs up to this polynomial order until one does. (Default:
+        max(8, P + 2), where P is the polynomial order of the control loop,
+        i.e., no climb)
       numeric_initial_guess: Start every solve after the first from the
         solution of the previous solve, interpolated to the new grid and
         extrapolated into the parts of the excisions that the new domain
@@ -768,6 +801,10 @@ def control_id(
       numeric_initial_guess_in_tests: Start every solve of the convergence
         tests from the solution at the nearest polynomial order that is already
         solved. See '_convergence_test'. (Default: False)
+      elliptic_absolute_residual: Absolute residual at which the elliptic
+        solver's Newton iterations stop in every solve of the control loop and
+        the convergence tests (the linear solver's is ten times smaller).
+        (Default: None, i.e., the input file template's)
     """
 
     assert (
@@ -899,6 +936,7 @@ def control_id(
                 negative_expansion_bc=negative_expansion_bc,
                 numeric_initial_guess=numeric_initial_guess,
                 numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
+                elliptic_absolute_residual=elliptic_absolute_residual,
                 # Start from the solution of the previous solve. The excisions
                 # move between solves, so the importer extrapolates into them.
                 initial_guess_file_glob=(
@@ -960,6 +998,7 @@ def control_id(
             mode="initial",
             output_filename=output_filename,
             numeric_initial_guess=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
         )
 
     # Initialize Jacobian as an identity matrix
@@ -1306,10 +1345,16 @@ def control_id(
             refinement_level=refinement_level,
             negative_expansion_bc=negative_expansion_bc,
             control_params=control_params,
-            tolerance=convergence_test_tolerance,
+            tolerance=(
+                convergence_test_tolerance
+                if final_convergence_test_tolerance is None
+                else final_convergence_test_tolerance
+            ),
             mode="final",
             output_filename=output_filename,
+            max_polynomial_order=final_convergence_test_max_polynomial_order,
             numeric_initial_guess=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
         )
 
     return control_run_dir
