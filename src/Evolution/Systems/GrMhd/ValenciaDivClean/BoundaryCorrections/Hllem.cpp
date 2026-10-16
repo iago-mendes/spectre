@@ -511,7 +511,8 @@ namespace {
 // STATE.md). Nothing evolved is changed. Files are flushed every call,
 // so a run that dies with an FPE keeps everything up to its last call.
 constexpr size_t probe_record_size = 156;
-// Summary v2 (file sum2.<proc>.bin): slots 0-19 as v1; 20-24 points with dU != 0
+// Summary v2 (file sum2.<proc>.bin): slots 0-19 as v1; 20-24 points with
+// dU != 0
 // where wave 2..6 is inside the fast fan; 25-29 of those whose speed gap also
 // passes DegeneracyTolerance. With SPECTRE_HLLEM_PROBE_SUMMARY_ONLY set, no
 // per-face records are written.
@@ -953,12 +954,12 @@ void Hllem::dg_boundary_terms(
 
   // --- HLLEM anti-diffusion (flat space; eigensystem at the average state) ---
   // The five-wave eigensystem is built assuming Minkowski (the regime of the
-  // relativistic M&M tests). If the background is curved anywhere on the face we
-  // keep the (conservative) HLL flux and skip the eigensystem entirely -- both
-  // because the anti-diffusion would be masked out anyway and because building
-  // the flat-space eigensystem from curved-metric primitives would feed
-  // superluminal velocities into characteristic_speeds_mhd. (M&M backgrounds are
-  // uniform, so a face is either all-flat or all-curved.)
+  // relativistic M&M tests). If the background is curved anywhere on the face
+  // we keep the (conservative) HLL flux and skip the eigensystem entirely --
+  // both because the anti-diffusion would be masked out anyway and because
+  // building the flat-space eigensystem from curved-metric primitives would
+  // feed superluminal velocities into characteristic_speeds_mhd. (M&M
+  // backgrounds are uniform, so a face is either all-flat or all-curved.)
   if (max(get(metric_flatness_int)) > 1.0e-12 or
       max(get(metric_flatness_ext)) > 1.0e-12) {
     return;
@@ -1652,23 +1653,29 @@ void Hllem::dg_boundary_terms(
     const DataVector delta_c = 1.0 -
                                min(lam_c, 0.0) / (fast_lambda_min - 1.0e-14) -
                                max(lam_c, 0.0) / (fast_lambda_max + 1.0e-14);
-    // Project du onto the fluid subspace via the complement of the
-    // well-conditioned fast waves {1,7}. The GLM/divergence-cleaning waves
-    // {0,8} travel at the light speed, are OUT OF the fluid HLL fan, and are
-    // handled by the (diffusive) HLL flux -- projecting them out here would
-    // corrupt the complement, so they are skipped per point when out of fan.
+    // Project du onto the fluid subspace via the complement of ALL four
+    // outer waves {0,1,7,8}, whether or not they lie inside the fan.
+    //
+    // DEBUG (umbrella gamma, 2026-10-16; umbrella beta's beta6 finding): the
+    // GLM/divergence-cleaning waves {0,8} travel at the light speed, outside
+    // the fluid fan, and used to be skipped here. Their part of dU then stayed
+    // in the "fluid" vector and its B_n, S and tau components were restored
+    // with the contact coefficient (only phi was zeroed below). Projecting
+    // them out leaves them on the HLL flux, as intended; the complement is
+    // then the spectral projector of the fluid group (= Grouped All at an
+    // exactly degenerate B_n = 0 face, Test_Hllem). An outer wave whose
+    // |l.r| < 1e-12 now disables the block wherever it lies.
     //
     // DEBUG (umbrella gamma, 2026-10-08): the projection of dU onto an outer
     // wave is r_k (l_k.dU)/(l_k.r_k). It used to omit the 1/(l_k.r_k) (the
     // analytic eigenvectors are biorthogonal but not biorthonormal; fast
     // l.r = -4.7e-4 on the r22 jet onset face), so the "fluid" vector was not
-    // a projection. Where |l_k.r_k| < 1e-12 for an in-fan outer wave the
+    // a projection. Where |l_k.r_k| < 1e-12 for an outer wave the
     // block is not applied at that point.
     std::array<DataVector, 9> cdu = du;
     DataVector complement_ok{num_points, 1.0};
     const std::array<size_t, 4> nondegenerate_waves{{0, 1, 7, 8}};
     for (const size_t k : nondegenerate_waves) {
-      const DataVector& lam_k = mhd_speeds.get(k);
       DataVector ldu{num_points, 0.0};
       DataVector lr{num_points, 0.0};
       for (size_t n = 0; n < 9; ++n) {
@@ -1676,10 +1683,6 @@ void Hllem::dg_boundary_terms(
         lr += projectors.get(k, n) * modes.get(k, n);
       }
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (not(lam_k[pt] < fast_lambda_max[pt] and
-                lam_k[pt] > fast_lambda_min[pt])) {
-          continue;
-        }
         if (not std::isfinite(lr[pt]) or std::abs(lr[pt]) < 1.0e-12) {
           complement_ok[pt] = 0.0;
           continue;
@@ -1860,7 +1863,8 @@ void Hllem::dg_boundary_terms(
         }
         // 83-91 int, 92-100 ext: rho, p, eps, v(3), B(3)
         for (const bool interior : {true, false}) {
-          put(get(interior ? rest_mass_density_int : rest_mass_density_ext)[pt]);
+          put(get(interior ? rest_mass_density_int
+                           : rest_mass_density_ext)[pt]);
           put(get(interior ? pressure_int : pressure_ext)[pt]);
           put(get(interior ? specific_internal_energy_int
                            : specific_internal_energy_ext)[pt]);

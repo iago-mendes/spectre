@@ -136,7 +136,8 @@ struct Packaged {
   Scalar<DataVector> tilde_d{}, tilde_ye{}, tilde_tau{}, tilde_phi{};
   tnsr::i<DataVector, 3> tilde_s{};
   tnsr::I<DataVector, 3> tilde_b{};
-  Scalar<DataVector> nf_tilde_d{}, nf_tilde_ye{}, nf_tilde_tau{}, nf_tilde_phi{};
+  Scalar<DataVector> nf_tilde_d{}, nf_tilde_ye{}, nf_tilde_tau{},
+      nf_tilde_phi{};
   tnsr::i<DataVector, 3> nf_tilde_s{};
   tnsr::I<DataVector, 3> nf_tilde_b{};
   Scalar<DataVector> largest_outgoing{}, largest_ingoing{}, fast_outgoing{},
@@ -150,8 +151,8 @@ struct Packaged {
 Packaged package_interface_state(
     const bc::Hllem& solver, const InterfaceState& state,
     const tnsr::i<DataVector, 3>& normal_covector,
-    const tnsr::I<DataVector, 3>& normal_vector, const Scalar<DataVector>& lapse,
-    const tnsr::I<DataVector, 3>& shift,
+    const tnsr::I<DataVector, 3>& normal_vector,
+    const Scalar<DataVector>& lapse, const tnsr::I<DataVector, 3>& shift,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
   Packaged packaged{};
   solver.dg_package_data(
@@ -159,8 +160,9 @@ Packaged package_interface_state(
       make_not_null(&packaged.tilde_tau), make_not_null(&packaged.tilde_s),
       make_not_null(&packaged.tilde_b), make_not_null(&packaged.tilde_phi),
       make_not_null(&packaged.nf_tilde_d), make_not_null(&packaged.nf_tilde_ye),
-      make_not_null(&packaged.nf_tilde_tau), make_not_null(&packaged.nf_tilde_s),
-      make_not_null(&packaged.nf_tilde_b), make_not_null(&packaged.nf_tilde_phi),
+      make_not_null(&packaged.nf_tilde_tau),
+      make_not_null(&packaged.nf_tilde_s), make_not_null(&packaged.nf_tilde_b),
+      make_not_null(&packaged.nf_tilde_phi),
       make_not_null(&packaged.largest_outgoing),
       make_not_null(&packaged.largest_ingoing),
       make_not_null(&packaged.fast_outgoing),
@@ -421,7 +423,11 @@ void report_when_denominator_floors_bind() {
       {"strong blast", 1.0, 1000.0, {{0.0, 0.0, 0.0}}, {{1.0, 0.5, 0.3}}},
       {"zero tangential B", 1.0, 1.0, {{0.2, 0.0, 0.0}}, {{1.0, 0.0, 0.0}}},
       {"ultrarelativistic", 1.0, 1.0, {{0.99, 0.0, 0.0}}, {{1.0, 0.5, 0.3}}},
-      {"near-atmosphere", 1.0e-12, 1.0e-14, {{0.0, 0.0, 0.0}}, {{1.0, 0.5, 0.3}}},
+      {"near-atmosphere",
+       1.0e-12,
+       1.0e-14,
+       {{0.0, 0.0, 0.0}},
+       {{1.0, 0.5, 0.3}}},
       {"cold (p -> 0)", 1.0, 1.0e-20, {{0.1, 0.0, 0.0}}, {{1.0, 0.5, 0.3}}}};
 
   for (const auto& regime : regimes) {
@@ -868,10 +874,10 @@ void test_stationary_contact_is_exact(const double density_ratio,
     // the boundary correction of an exactly-resolved interface is ZERO: the
     // two sides carry the same physical flux (nf_ext = -nf_int) and only the
     // diffusion term survives. HLLEM's anti-diffusion must cancel it.
-    const DataVector lambda_max =
-        max(0.0, get(interior.largest_outgoing), -get(exterior.largest_ingoing));
-    const DataVector lambda_min =
-        min(0.0, get(interior.largest_ingoing), -get(exterior.largest_outgoing));
+    const DataVector lambda_max = max(0.0, get(interior.largest_outgoing),
+                                      -get(exterior.largest_ingoing));
+    const DataVector lambda_min = min(0.0, get(interior.largest_ingoing),
+                                      -get(exterior.largest_outgoing));
     const DataVector hll_diffusion_tilde_d =
         lambda_max * lambda_min / (lambda_max - lambda_min) *
         (get(exterior.tilde_d) - get(interior.tilde_d));
@@ -883,7 +889,8 @@ void test_stationary_contact_is_exact(const double density_ratio,
     // jump into the energy -- an error plain HLL does not make.
     const double scale = fabs(hll_diffusion_tilde_d[0]);
     const double residual_tilde_d = fabs(get(correction_tilde_d)[0]) / scale;
-    const double residual_tilde_tau = fabs(get(correction_tilde_tau)[0]) / scale;
+    const double residual_tilde_tau =
+        fabs(get(correction_tilde_tau)[0]) / scale;
     CAPTURE(waves);
     CAPTURE(density_ratio);
     CAPTURE(scale);
@@ -891,7 +898,8 @@ void test_stationary_contact_is_exact(const double density_ratio,
     CAPTURE(residual_tilde_tau);
     // Guard against a trivially-passing test: plain HLL really does smear this
     // interface by an O(1) amount.
-    CHECK(scale > 0.1 * fabs(get(exterior.tilde_d)[0] - get(interior.tilde_d)[0]));
+    CHECK(scale >
+          0.1 * fabs(get(exterior.tilde_d)[0] - get(interior.tilde_d)[0]));
     if (require_exact) {
       CHECK(residual_tilde_d < 1.0e-10);
       CHECK(residual_tilde_tau < 1.0e-10);
@@ -2039,6 +2047,19 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
         make_state(4.0, 0.2, {{0.0, -0.1, 0.25}}, {{0.0, 0.3, -0.2}},
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}}, "grouped: B_n = 0", true);
+    // DEBUG (umbrella gamma, 2026-10-16; beta6's finding): B_n = +-0.05 on the
+    // two sides, so the averaged state has B_n = 0 exactly (the five fluid
+    // waves are exactly degenerate) but dU has a GLM part. The complementary
+    // projection must project the out-of-fan GLM waves out of dU too; before
+    // the fix it restored their B_n part with the contact coefficient, and
+    // Grouped All (the spectral projector of the fluid group) differed from it.
+    test_grouped_eigensystem(
+        make_state(1.0, 1.0, {{0.0, 0.2, -0.3}}, {{0.05, 0.4, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{0.0, -0.1, 0.25}}, {{-0.05, 0.3, -0.2}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}},
+        "grouped: B_n = 0 on average, B_n jump (GLM part in dU)", true);
     test_grouped_synthetic_jordan();
     const auto grouped_from_yaml =
         TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
