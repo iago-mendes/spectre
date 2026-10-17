@@ -60,6 +60,7 @@ def postprocess_id(
     elliptic_absolute_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    numeric_initial_guess_max_control_residual: Optional[float] = None,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -132,6 +133,10 @@ def postprocess_id(
       numeric_initial_guess_fallback: Redo a control solve that started from
         the previous solution from the background if it fails. See
         ControlId.py. (Default: False)
+      numeric_initial_guess_max_control_residual: Start a control solve from
+        the previous solution only if the control residual of the previous
+        solve is below this value. See ControlId.py. (Default: None, no
+        threshold)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
@@ -224,6 +229,9 @@ def postprocess_id(
                 numeric_initial_guess_max_excision_move
             ),
             numeric_initial_guess_fallback=numeric_initial_guess_fallback,
+            numeric_initial_guess_max_control_residual=(
+                numeric_initial_guess_max_control_residual
+            ),
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"

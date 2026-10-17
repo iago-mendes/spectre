@@ -884,6 +884,102 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
                 call["conformal_mass_a"], call_without["conformal_mass_a"]
             )
 
+    def test_seeding_control_residual_threshold(self):
+        threshold = 1.0e-3
+        with self.assertLogs(
+            "spectre.Pipelines.Bbh.ControlId", level="INFO"
+        ) as logs:
+            last_run_dir, calls = self.run_control(
+                numeric_initial_guess_max_control_residual=threshold
+            )
+        # The control residual of each solve: the mock masses of segment i,
+        # where segment 0 is the initial solve and call i runs segment i + 1
+        control_residual = lambda free_data: max(
+            abs(mock_mass(free_data[key]) - 0.5)
+            for key in ["conformal_mass_a", "conformal_mass_b"]
+        )
+        previous_residual = control_residual(
+            dict(
+                conformal_mass_a=INITIAL_CONFORMAL_MASS,
+                conformal_mass_b=INITIAL_CONFORMAL_MASS,
+            )
+        )
+        previous_residuals = []
+        for i, call in enumerate(calls):
+            previous_residuals.append(previous_residual)
+            if previous_residual < threshold:
+                self.assertEqual(
+                    call["glob"],
+                    str(self.id_dir / f"{i:04d}_InitialData" / "BbhVolume*.h5"),
+                )
+            else:
+                self.assertIsNone(call["glob"])
+            previous_residual = control_residual(call)
+        # Some solves follow a large control residual and the last ones don't,
+        # so the test covers both branches
+        self.assertGreaterEqual(max(previous_residuals), threshold)
+        self.assertGreaterEqual(previous_residuals[1], threshold)
+        self.assertLess(previous_residuals[-1], threshold)
+        # Every solve after the first logs its decision and why
+        decisions = [
+            record
+            for record in logs.output
+            if "Numeric initial guess: previous control residual =" in record
+        ]
+        self.assertEqual(len(decisions), len(calls))
+        for decision, call in zip(decisions, calls):
+            self.assertIn(
+                (
+                    "start from the background."
+                    if call["glob"] is None
+                    else "start from the previous solution."
+                ),
+                decision,
+            )
+        # Same control as without the threshold: the guess doesn't change the
+        # (mock) solution
+        _, calls_without = (self.tearDown(), self.setUp(), self.run_control())[
+            2
+        ]
+        self.assertEqual(len(calls), len(calls_without))
+        for call, call_without in zip(calls, calls_without):
+            self.assertEqual(
+                call["conformal_mass_a"], call_without["conformal_mass_a"]
+            )
+
+    def test_seeding_both_thresholds(self):
+        # A solve starts from the previous solution only if both conditions
+        # allow it: with an excision-move threshold that allows every step,
+        # the control-residual threshold decides alone, and vice versa
+        _, calls_residual = self.run_control(
+            numeric_initial_guess_max_control_residual=1.0e-3
+        )
+        self.tearDown()
+        self.setUp()
+        _, calls_both = self.run_control(
+            numeric_initial_guess_max_control_residual=1.0e-3,
+            numeric_initial_guess_max_excision_move=1.0e6,
+        )
+        self.assertEqual(
+            [call["glob"] for call in calls_both],
+            [call["glob"] for call in calls_residual],
+        )
+        self.tearDown()
+        self.setUp()
+        _, calls_move = self.run_control(
+            numeric_initial_guess_max_excision_move=0.1
+        )
+        self.tearDown()
+        self.setUp()
+        _, calls_both = self.run_control(
+            numeric_initial_guess_max_control_residual=1.0e6,
+            numeric_initial_guess_max_excision_move=0.1,
+        )
+        self.assertEqual(
+            [call["glob"] for call in calls_both],
+            [call["glob"] for call in calls_move],
+        )
+
     def test_seeding_fallback(self):
         mock_control_generate_id.seeded_failures = [
             "overshoot",
