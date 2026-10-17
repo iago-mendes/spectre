@@ -837,6 +837,7 @@ def control_id(
     elliptic_absolute_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    numeric_initial_guess_max_control_residual: Optional[float] = None,
 ):
     """Control BBH physical parameters.
 
@@ -972,6 +973,17 @@ def control_id(
         initial guess (the solve is stopped as soon as this happens), if its
         Newton solver doesn't converge, or if it fails. The output of these
         solves goes to 'spectre.out' in their directory. (Default: False)
+      numeric_initial_guess_max_control_residual: With 'numeric_initial_guess',
+        start a solve from the previous solution only if the control residual
+        of the previous solve (the maximum over all controlled parameters of
+        |measured - target|, the number compared with the
+        'residual_tolerance', including the parameters whose control is still
+        delayed) is below this value; otherwise start it from the background.
+        A large control residual means a large step of the free data, for
+        which the previous solution can be a worse guess than the background.
+        Combines with 'numeric_initial_guess_max_excision_move': a solve starts
+        from the previous solution only if both allow it. (Default: None,
+        i.e., no condition on the control residual)
     """
 
     assert (
@@ -1067,11 +1079,15 @@ def control_id(
     control_run_dir = id_run_dir
     # Free data of the solve in 'control_run_dir'
     previous_free_data = initial_free_data.copy()
+    # Control residual of the solve in 'control_run_dir', i.e., max |F| as
+    # compared with the 'residual_tolerance'
+    previous_control_residual = None
 
     # Function to be minimized
     def Residual(u):
         nonlocal iteration
         nonlocal control_run_dir
+        nonlocal previous_control_residual
 
         if iteration > 0:
             logger.info(
@@ -1090,11 +1106,36 @@ def control_id(
                 else:
                     free_data[key] = [next(u_iterator) for _ in range(3)]
 
-            # Start from the solution of the previous solve, unless the step
-            # of the free data is too large. The excisions move between
-            # solves, so the importer extrapolates into them.
+            # Start from the solution of the previous solve, unless the
+            # previous control residual or the step of the free data is too
+            # large. The excisions move between solves, so the importer
+            # extrapolates into them.
             seed = numeric_initial_guess
-            if seed and numeric_initial_guess_max_excision_move is not None:
+            # One entry per condition: (description, whether it allows seeding)
+            seed_conditions = []
+            if (
+                numeric_initial_guess
+                and numeric_initial_guess_max_control_residual is not None
+            ):
+                allowed = (
+                    previous_control_residual
+                    < numeric_initial_guess_max_control_residual
+                )
+                seed_conditions.append(
+                    (
+                        (
+                            "previous control residual ="
+                            f" {previous_control_residual:e}"
+                            f" ({'<' if allowed else '>='}"
+                            f" {numeric_initial_guess_max_control_residual:e})"
+                        ),
+                        allowed,
+                    )
+                )
+            if (
+                numeric_initial_guess
+                and numeric_initial_guess_max_excision_move is not None
+            ):
                 geometry = lambda free_data: id_parameters(
                     **free_data,
                     separation=separation,
@@ -1106,11 +1147,23 @@ def control_id(
                 move = excision_move(
                     geometry(previous_free_data), geometry(free_data)
                 )
-                seed = move < numeric_initial_guess_max_excision_move
+                allowed = move < numeric_initial_guess_max_excision_move
+                seed_conditions.append(
+                    (
+                        (
+                            f"excision move = {move:e}"
+                            f" ({'<' if allowed else '>='}"
+                            f" {numeric_initial_guess_max_excision_move:e})"
+                        ),
+                        allowed,
+                    )
+                )
+            if seed_conditions:
+                seed = all(allowed for _, allowed in seed_conditions)
                 logger.info(
-                    f"Excision move = {move:e} ({'<' if seed else '>='}"
-                    f" {numeric_initial_guess_max_excision_move:e}): start"
-                    " from the "
+                    "Numeric initial guess: "
+                    + ", ".join(text for text, _ in seed_conditions)
+                    + ": start from the "
                     + ("previous solution." if seed else "background.")
                 )
 
@@ -1203,7 +1256,8 @@ def control_id(
                 residual = np.append(residual, [measured_params[key] - target])
             else:
                 residual = np.append(residual, measured_params[key] - target)
-        logger.info(f"Control Residual = {np.max(np.abs(residual)):e}")
+        previous_control_residual = float(np.max(np.abs(residual)))
+        logger.info(f"Control Residual = {previous_control_residual:e}")
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Residuals", residual_legend, 0
