@@ -268,6 +268,9 @@ def generate_id(
     numeric_initial_guess: bool = False,
     numeric_initial_guess_in_tests: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
+    numeric_initial_guess_max_control_residual: Optional[float] = None,
+    numeric_initial_guess_max_excision_move: Optional[float] = None,
+    numeric_initial_guess_fallback: bool = False,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -338,6 +341,20 @@ def generate_id(
         is set ten times smaller. Every solve of the control loop and of the
         convergence tests uses it. (default: None, i.e., the input file
         template's values, 1e-8 and 1e-9)
+      numeric_initial_guess_max_control_residual: With 'numeric_initial_guess',
+        start a solve of the control loop from the previous solution only if
+        the control residual of the previous solve is below this value,
+        otherwise from the background. See 'support.Pipelines.Bbh.ControlId'.
+        (default: None, i.e., no condition on the control residual)
+      numeric_initial_guess_max_excision_move: With 'numeric_initial_guess',
+        start a solve of the control loop from the previous solution only if
+        the new domain reaches less deep than this fraction of the excision
+        radii into the old excisions. See 'support.Pipelines.Bbh.ControlId'.
+        (default: None, i.e., no condition on the excision move)
+      numeric_initial_guess_fallback: With 'numeric_initial_guess', redo a
+        solve of the control loop that started from the previous solution
+        from the background if it fails. See 'support.Pipelines.Bbh.ControlId'.
+        (default: False)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -517,6 +534,13 @@ def generate_id(
         numeric_initial_guess=numeric_initial_guess,
         numeric_initial_guess_in_tests=numeric_initial_guess_in_tests,
         elliptic_absolute_residual=elliptic_absolute_residual,
+        numeric_initial_guess_max_control_residual=(
+            numeric_initial_guess_max_control_residual
+        ),
+        numeric_initial_guess_max_excision_move=(
+            numeric_initial_guess_max_excision_move
+        ),
+        numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -725,6 +749,37 @@ def generate_id(
         " The linear solver's is set ten times smaller."
     ),
     show_default="the input file template's, 1e-8",
+)
+@click.option(
+    "--numeric-initial-guess-max-control-residual",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "With '--numeric-initial-guess', start a solve of the control loop"
+        " from the previous solution only if the control residual of the"
+        " previous solve is below this value, otherwise from the background."
+    ),
+    show_default="no condition",
+)
+@click.option(
+    "--numeric-initial-guess-max-excision-move",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "With '--numeric-initial-guess', start a solve of the control loop"
+        " from the previous solution only if the new domain reaches less deep"
+        " than this fraction of the excision radii into the old excisions,"
+        " otherwise from the background."
+    ),
+    show_default="no condition",
+)
+@click.option(
+    "--numeric-initial-guess-fallback",
+    is_flag=True,
+    help=(
+        "With '--numeric-initial-guess', redo a solve of the control loop"
+        " that started from the previous solution from the background if it"
+        " fails (a full Newton step raises the residual more than tenfold, the"
+        " Newton solver doesn't converge, or the solve fails)."
+    ),
 )
 @click.option(
     "--pipeline-dir",

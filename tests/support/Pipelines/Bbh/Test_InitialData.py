@@ -438,6 +438,68 @@ class TestInitialData(unittest.TestCase):
             (1.0e-10, 1.0e-10, 1.0e-11),
         )
 
+    def test_numeric_initial_guess_options(self):
+        common_args = [
+            "--mass-ratio",
+            "1.5",
+            "--chi-A",
+            "0.0",
+            "0.0",
+            "0.0",
+            "--chi-B",
+            "0.0",
+            "0.0",
+            "0.0",
+            "--separation",
+            "20",
+            "--orbital-angular-velocity",
+            "0.01",
+            "--radial-expansion-velocity",
+            "-1.0e-5",
+            "--polynomial-order",
+            "5",
+            "-E",
+            str(self.bin_dir / "SolveXcts"),
+            "--no-schedule",
+            "--no-submit",
+        ]
+        options = (
+            "numeric_initial_guess_max_control_residual",
+            "numeric_initial_guess_max_excision_move",
+            "numeric_initial_guess_fallback",
+        )
+
+        def read_options(run_dir):
+            with open(
+                run_dir / "0000_InitialData/InitialData.yaml", "r"
+            ) as open_input_file:
+                metadata, _ = yaml.safe_load_all(open_input_file)
+            return tuple(metadata["Next"]["With"].get(key) for key in options)
+
+        # Not using `CliRunner.invoke()`, see 'test_cli'
+        for name, extra_args, expected in (
+            ("Default", [], (None, None, None)),
+            (
+                "Set",
+                [
+                    "--numeric-initial-guess",
+                    "--numeric-initial-guess-max-control-residual",
+                    "1e-2",
+                    "--numeric-initial-guess-max-excision-move",
+                    "0.05",
+                    "--numeric-initial-guess-fallback",
+                ],
+                (1.0e-2, 0.05, True),
+            ),
+        ):
+            try:
+                generate_id_command(
+                    common_args + ["-o", str(self.test_dir / name)] + extra_args
+                )
+            except SystemExit as e:
+                self.assertEqual(e.code, 0)
+            self.assertEqual(read_options(self.test_dir / name), expected)
+
 
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)
