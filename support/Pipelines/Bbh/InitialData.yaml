@@ -176,9 +176,16 @@ DomainCreator:
       OuterShell0:       [{{ L + 1 }}, {{ L + 1 }}, {{ L }}]
     # This p-refinement represents a crude manual optimization of the domain. We
     # will need AMR to optimize the domain further.
+    # The shells around the excisions have one more angular point than the
+    # other blocks: the constraint norm of the solution follows the shells'
+    # angular points (block-refinement study of lisa_bbh_id,
+    # experiments/block_refinement/STATE.md, 2026-10-15: the shells hold the
+    # largest share of the norm, and in single solves of q = 1 and q = 32 at
+    # P = 3-5 their share fell 4-7x with [P + 2, P + 2, P + 5]). Their radial
+    # points set the error of the horizon masses and stay at P + 5.
     InitialGridPoints:
-      ObjectAShell:   [{{ P + 1}}, {{ P + 1}}, {{ P + 5}}]
-      ObjectBShell:   [{{ P + 1}}, {{ P + 1}}, {{ P + 5}}]
+      ObjectAShell:   [{{ P + 2}}, {{ P + 2}}, {{ P + 5}}]
+      ObjectBShell:   [{{ P + 2}}, {{ P + 2}}, {{ P + 5}}]
       ObjectACube:    [{{ P + 1}}, {{ P + 1}}, {{ P + 2}}]
       ObjectBCube:    [{{ P + 1}}, {{ P + 1}}, {{ P + 2 + ExtraRadPoints}}]
       Envelope:       [{{ P + 1}}, {{ P + 1}}, {{ P + 1}}]
