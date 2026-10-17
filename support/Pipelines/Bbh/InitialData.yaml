@@ -46,6 +46,17 @@ Next:
 {% if elliptic_absolute_residual | default(None) %}
     elliptic_absolute_residual: {{ newton_absolute_residual }}
 {% endif %}
+{% if numeric_initial_guess_max_control_residual | default(None) %}
+    numeric_initial_guess_max_control_residual: {{
+      "%e" | format(numeric_initial_guess_max_control_residual) }}
+{% endif %}
+{% if numeric_initial_guess_max_excision_move | default(None) %}
+    numeric_initial_guess_max_excision_move: {{
+      "%e" | format(numeric_initial_guess_max_excision_move) }}
+{% endif %}
+{% if numeric_initial_guess_fallback | default(False) %}
+    numeric_initial_guess_fallback: True
+{% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}
