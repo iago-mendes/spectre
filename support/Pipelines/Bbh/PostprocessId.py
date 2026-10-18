@@ -18,6 +18,7 @@ from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_STEP_SIZE_CONSTRAINTS,
     StepSizeConstraint,
     TargetParams,
+    check_elliptic_solve_converged,
     control_id,
 )
 from spectre.Pipelines.Bbh.FindHorizon import (
@@ -61,6 +62,7 @@ def postprocess_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     numeric_initial_guess_max_control_residual: Optional[float] = None,
+    require_converged_solve: bool = True,
     **scheduler_kwargs,
 ):
     """Postprocess initial data after generation.
@@ -72,6 +74,14 @@ def postprocess_id(
     different directory than where the input file is.
 
     This function does the following:
+
+    - Check that the elliptic solve of the initial data converged (see
+      'elliptic_solve_convergence' in ControlId.py). If it didn't, stop with
+      an 'UnconvergedSolveError' that names the residual reached, the
+      tolerances and the number of iterations, before finding horizons or
+      controlling: horizons and parameters measured in an unconverged solution
+      are meaningless. Note that the solver reports reaching its
+      'MaxIterations' as "has converged", which is not convergence.
 
     - Find apparent horizons in the data to determine quantities like the masses
       and spins of the black holes. These quantities are stored in the given
@@ -137,10 +147,20 @@ def postprocess_id(
         the previous solution only if the control residual of the previous
         solve is below this value. See ControlId.py. (Default: None, no
         threshold)
+      require_converged_solve: Stop with an error if the elliptic solve didn't
+        converge (see above). Disable only to inspect an unconverged solution.
+        (Default: True)
     """
     # Read input file
     with open(id_input_file_path, "r") as open_input_file:
         id_metadata, id_input_file = yaml.safe_load_all(open_input_file)
+    if id_run_dir is None:
+        id_run_dir = Path(id_input_file_path).resolve().parent
+
+    # Stop if the elliptic solve didn't converge
+    if require_converged_solve:
+        check_elliptic_solve_converged(id_input_file, id_run_dir)
+
     target_params = id_metadata["TargetParams"]
     x_B, x_A = id_input_file["Background"]["Binary"]["XCoords"]
     y_offset, z_offset = id_input_file["Background"]["Binary"][
@@ -155,8 +175,6 @@ def postprocess_id(
     )["SubfileName"]
 
     # Find latest observation in output data
-    if id_run_dir is None:
-        id_run_dir = Path(id_input_file_path).resolve().parent
     id_volfiles = glob.glob(str(Path(id_run_dir) / (volfile_name + "*.h5")))
     obs_id, obs_time = select_observation(
         open_volfiles(id_volfiles, id_subfile_name), step=-1
@@ -349,6 +367,15 @@ def postprocess_id(
         " stop in every later solve."
     ),
     show_default="the input file template's, 1e-8",
+)
+@click.option(
+    "--require-converged-solve/--allow-unconverged-solve",
+    default=True,
+    show_default=True,
+    help=(
+        "Stop with an error if the elliptic solve didn't converge, before"
+        " finding horizons. Allow it only to inspect an unconverged solution."
+    ),
 )
 @scheduler_options
 def postprocess_id_command(**kwargs):

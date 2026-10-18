@@ -20,6 +20,7 @@ from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import to_dataframe
 from spectre.Pipelines.Bbh.ControlId import (
     MAX_EFFECTIVE_SPIN,
+    UnconvergedSolveError,
     _convergence_errors,
     _convergence_test,
     _optimal_polynomial_order,
@@ -28,6 +29,7 @@ from spectre.Pipelines.Bbh.ControlId import (
     control_id,
     control_scales,
     effective_spin,
+    elliptic_solve_convergence,
     excision_move,
     spin_step_size_constraint,
 )
@@ -297,6 +299,9 @@ def measured_params_at(P: int):
 def mock_generate_id(target_params, run_dir, polynomial_order, **kwargs):
     if polynomial_order in mock_generate_id.failing_orders:
         raise RuntimeError(f"Solve at P={polynomial_order} failed")
+    if polynomial_order in mock_generate_id.unconverged_orders:
+        # What the postprocessing of the solve raises (see 'PostprocessId.py')
+        raise UnconvergedSolveError(f"Residual too large in '{run_dir}'.")
     Path(run_dir).mkdir(parents=True)
     (Path(run_dir) / "P.txt").write_text(str(polynomial_order))
 
@@ -324,6 +329,7 @@ class TestControlId(unittest.TestCase):
         self.run_dir.mkdir(parents=True)
         self.output_filename = self.id_dir / "ControlParams.h5"
         mock_generate_id.failing_orders = []
+        mock_generate_id.unconverged_orders = []
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -464,6 +470,29 @@ class TestControlId(unittest.TestCase):
         for call in generate_id.mock_calls:
             self.assertIsNone(call.kwargs["initial_guess_file_glob"])
             self.assertFalse(call.kwargs["numeric_initial_guess_in_tests"])
+
+    def test_unconverged_solve_in_convergence_test(self):
+        # An unconverged solve is skipped like a failed one, and reported as
+        # unconverged
+        mock_generate_id.unconverged_orders = [5]
+        with self.assertLogs(
+            "spectre.Pipelines.Bbh.ControlId", level="WARNING"
+        ) as logs:
+            result, test_dir, generate_id = self.run_convergence_test(
+                polynomial_order=7,
+                mode="final",
+                control_params=["MassA", "CenterOfMass"],
+                tolerance=1.0e-3,
+            )
+        self.assertEqual(result, 6)
+        errors = self.read_convergence_errors("FinalConvergenceTest")
+        self.assertEqual(list(errors["PolynomialOrder"]), [4, 6, 7, 8, 9])
+        unconverged = [record for record in logs.output if "P=5" in record]
+        self.assertEqual(len(unconverged), 1)
+        self.assertIn(
+            "solve at P=5 did not converge, skipping it: Residual too large",
+            unconverged[0],
+        )
 
     def test_numeric_initial_guess(self):
         mock_generate_id.failing_orders = [5]
@@ -684,7 +713,10 @@ def mock_control_generate_id(
 ):
     """Runs the next segment. A solve from a previous solution 'fails' in the
     ways listed in 'mock_control_generate_id.seeded_failures', one per seeded
-    solve, in order ('None' for a good solve)."""
+    solve, in order ('None' for a good solve). The solves from the background
+    whose indices (counting from 0, over the solves from the background in
+    this control loop) are in 'mock_control_generate_id.unconverged_background'
+    don't converge."""
     num_segments = len(list(Path(segments_dir).glob("[0-9]*_InitialData")))
     run_dir = Path(segments_dir) / f"{num_segments:04d}_InitialData"
     free_data = {
@@ -698,6 +730,12 @@ def mock_control_generate_id(
         mock_control_generate_id.seeded_failures
     ):
         failure = mock_control_generate_id.seeded_failures.pop(0)
+    if initial_guess_file_glob is None:
+        background_index = sum(
+            call["glob"] is None for call in mock_control_generate_id.calls[:-1]
+        )
+        if background_index in mock_control_generate_id.unconverged_background:
+            failure = "unconverged"
     if failure == "overshoot":
         write_seeding_segment(run_dir, free_data, STALLED_SOLVE_OUTPUT)
         raise subprocess.CalledProcessError(returncode=143, cmd="SolveXcts")
@@ -710,6 +748,11 @@ def mock_control_generate_id(
             else GOOD_SOLVE_OUTPUT
         ),
     )
+    if failure == "unconverged":
+        # What the postprocessing of the solve raises (see 'PostprocessId.py')
+        raise UnconvergedSolveError(
+            f"The elliptic solve in '{run_dir}' did not converge."
+        )
 
 
 def mock_control_measured_params(run_dir, control_params):
@@ -743,6 +786,7 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
             yaml.safe_dump_all(seeding_input_file(), open_input_file)
         mock_control_generate_id.calls = []
         mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -762,8 +806,7 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
                 id_input_file_path=self.input_file,
                 control_params=SEEDING_CONTROL_PARAMS,
                 residual_tolerance=1.0e-8,
-                numeric_initial_guess=True,
-                **kwargs,
+                **{"numeric_initial_guess": True, **kwargs},
             )
         return Path(last_run_dir), mock_control_generate_id.calls
 
@@ -800,18 +843,13 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
 
     def test_seeded_solve_failure(self):
         self.assertIn(
-            "Newton iteration 2",
-            _seeded_solve_failure(STALLED_SOLVE_OUTPUT, finished=False),
+            "Newton iteration 2", _seeded_solve_failure(STALLED_SOLVE_OUTPUT)
         )
-        self.assertIsNone(_seeded_solve_failure(GOOD_SOLVE_OUTPUT, True))
-        self.assertIsNone(_seeded_solve_failure(GOOD_SOLVE_OUTPUT, False))
-        self.assertIsNone(
-            _seeded_solve_failure(UNCONVERGED_SOLVE_OUTPUT, finished=False)
-        )
-        self.assertIn(
-            "did not converge",
-            _seeded_solve_failure(UNCONVERGED_SOLVE_OUTPUT, finished=True),
-        )
+        self.assertIsNone(_seeded_solve_failure(GOOD_SOLVE_OUTPUT))
+        # Not an overshoot. Whether a finished solve converged is decided from
+        # its residuals (see 'TestEllipticSolveConvergence').
+        self.assertIsNone(_seeded_solve_failure(UNCONVERGED_SOLVE_OUTPUT))
+        self.assertIsNone(_seeded_solve_failure(""))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc")
     def test_watch_seeded_solve(self):
@@ -1016,6 +1054,229 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
         mock_control_generate_id.seeded_failures = ["overshoot"]
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_control()
+
+    def test_unconverged_control_solve(self):
+        # An unconverged solve stops the control loop with an error that names
+        # the control iteration, instead of measuring its parameters
+        mock_control_generate_id.unconverged_background = [1]
+        with self.assertRaisesRegex(
+            UnconvergedSolveError,
+            r"Control iteration 2: The elliptic solve in .*0002_InitialData.*"
+            r" did not converge",
+        ):
+            self.run_control(numeric_initial_guess=False)
+        self.assertEqual(len(mock_control_generate_id.calls), 2)
+
+    def test_unconverged_control_solve_with_fallback(self):
+        # A seeded solve that doesn't converge is redone from the background
+        mock_control_generate_id.seeded_failures = ["unconverged"]
+        last_run_dir, calls = self.run_control(
+            numeric_initial_guess_fallback=True
+        )
+        self.assertIsNotNone(calls[0]["glob"])
+        self.assertIsNone(calls[1]["glob"])
+        self.assertEqual(
+            calls[1]["conformal_mass_a"], calls[0]["conformal_mass_a"]
+        )
+        self.assertEqual(last_run_dir, calls[-1]["run_dir"])
+        # If the redone solve doesn't converge either, the control loop stops
+        self.tearDown()
+        self.setUp()
+        mock_control_generate_id.seeded_failures = ["unconverged"]
+        mock_control_generate_id.unconverged_background = [0]
+        with self.assertRaisesRegex(
+            UnconvergedSolveError, r"Control iteration 1: .*0002_InitialData"
+        ):
+            self.run_control(numeric_initial_guess_fallback=True)
+        self.assertEqual(len(mock_control_generate_id.calls), 2)
+        # Without the fallback, the unconverged seeded solve stops it
+        self.tearDown()
+        self.setUp()
+        mock_control_generate_id.seeded_failures = ["unconverged"]
+        with self.assertRaisesRegex(
+            UnconvergedSolveError, r"Control iteration 1: .*0001_InitialData"
+        ):
+            self.run_control()
+
+
+NEWTON_LEGEND = [
+    "Iteration",
+    "Walltime",
+    "GlobalizationStep",
+    "Residual",
+    "StepLength",
+]
+
+
+def newton_input_file(absolute_residual=1.0e-10, max_iterations=10):
+    return {
+        "Observers": {"ReductionFileName": "BbhReductions"},
+        "NonlinearSolver": {
+            "NewtonRaphson": {
+                "ConvergenceCriteria": {
+                    "MaxIterations": max_iterations,
+                    "RelativeResidual": 0.0,
+                    "AbsoluteResidual": absolute_residual,
+                }
+            }
+        },
+    }
+
+
+def write_newton_residuals(run_dir, rows):
+    """Write rows (iteration, globalization step, residual) like the solver"""
+    with spectre_h5.H5File(str(run_dir / "BbhReductions.h5"), "a") as h5file:
+        dat_file = h5file.try_insert_dat(
+            "NewtonRaphsonResiduals", NEWTON_LEGEND, 0
+        )
+        for i, (iteration, globalization_step, residual) in enumerate(rows):
+            dat_file.append(
+                [
+                    float(iteration),
+                    float(i),
+                    float(globalization_step),
+                    residual,
+                    1.0,
+                ]
+            )
+
+
+# Residuals of a solve that converged in 5 iterations (jarrus, 'q1' P = 4,
+# solve 0, Newton 1e-10)
+CONVERGED_ROWS = [
+    (0, 0, 7.74728203),
+    (1, 0, 1.20553895),
+    (2, 0, 1.48862250e-03),
+    (3, 0, 5.04113365e-05),
+    (4, 0, 3.46045792e-08),
+    (5, 0, 2.67020329e-11),
+]
+# Residuals of a solve that reached MaxIterations = 10 (jarrus,
+# 'q20_spinsAB' replay k09): every full step overshoots and a step of length
+# 0.1 is taken. The solver reports "has converged in 10 iterations: Reached
+# the maximum number of iterations (10)".
+CAPPED_ROWS = [(0, 0, 5.29922198)] + [
+    row
+    for iteration, (trial, accepted) in enumerate(
+        [
+            (1.60340010e07, 5.11592927),
+            (1.80658351e02, 4.63544583),
+            (1.09794959e01, 3.95295999),
+            (3.36460248e02, 3.56500966),
+            (3.97017391e04, 3.23090059),
+            (2.77856159e07, 2.99454568),
+            (2.52493392e06, 2.75328482),
+            (2.03989875e04, 2.48924314),
+            (1.51345665e03, 2.25158835),
+            (4.63290711e03, 2.02844549),
+        ],
+        start=1,
+    )
+    for row in [(iteration, 0, trial), (iteration, 1, accepted)]
+]
+
+
+class TestEllipticSolveConvergence(unittest.TestCase):
+    def setUp(self):
+        self.run_dir = Path(
+            unit_test_build_path(),
+            "support/Pipelines/Bbh/EllipticSolveConvergence",
+        )
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        self.run_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+
+    def test_converged(self):
+        write_newton_residuals(self.run_dir, CONVERGED_ROWS)
+        convergence = elliptic_solve_convergence(
+            newton_input_file(), self.run_dir
+        )
+        self.assertTrue(convergence.converged)
+        self.assertEqual(convergence.iterations, 5)
+        self.assertEqual(convergence.residual, 2.67020329e-11)
+        self.assertEqual(convergence.initial_residual, 7.74728203)
+        self.assertIn("converged", str(convergence))
+        # The same residuals miss a smaller tolerance
+        self.assertFalse(
+            elliptic_solve_convergence(
+                newton_input_file(absolute_residual=1.0e-12), self.run_dir
+            ).converged
+        )
+
+    def test_max_iterations_is_not_convergence(self):
+        write_newton_residuals(self.run_dir, CAPPED_ROWS)
+        convergence = elliptic_solve_convergence(
+            newton_input_file(), self.run_dir
+        )
+        self.assertFalse(convergence.converged)
+        self.assertEqual(convergence.iterations, 10)
+        # The accepted step of the last iteration, not its overshooting trial
+        self.assertEqual(convergence.residual, 2.02844549)
+        self.assertIn("did not converge", str(convergence))
+        self.assertIn("2.028445e+00", str(convergence))
+        self.assertIn("MaxIterations = 10", str(convergence))
+        self.assertIn("stopped at MaxIterations", str(convergence))
+
+    def test_stopped_early(self):
+        # E.g., a globalization failure in iteration 3
+        write_newton_residuals(
+            self.run_dir, [(0, 0, 10.0), (1, 0, 5.0), (2, 0, 4.0), (3, 0, 4.5)]
+        )
+        convergence = elliptic_solve_convergence(
+            newton_input_file(), self.run_dir
+        )
+        self.assertFalse(convergence.converged)
+        self.assertEqual(convergence.iterations, 3)
+        self.assertIn("before MaxIterations", str(convergence))
+
+    def test_nan(self):
+        write_newton_residuals(
+            self.run_dir, [(0, 0, 10.0), (1, 0, float("nan"))]
+        )
+        self.assertFalse(
+            elliptic_solve_convergence(
+                newton_input_file(), self.run_dir
+            ).converged
+        )
+
+    def test_relative_residual(self):
+        write_newton_residuals(self.run_dir, [(0, 0, 10.0), (1, 0, 1.0e-3)])
+        input_file = newton_input_file()
+        criteria = input_file["NonlinearSolver"]["NewtonRaphson"][
+            "ConvergenceCriteria"
+        ]
+        self.assertFalse(
+            elliptic_solve_convergence(input_file, self.run_dir).converged
+        )
+        criteria["RelativeResidual"] = 1.0e-4
+        self.assertTrue(
+            elliptic_solve_convergence(input_file, self.run_dir).converged
+        )
+
+    def test_last_solve(self):
+        # Several solves in one run (e.g., AMR iterations): the last one counts
+        write_newton_residuals(self.run_dir, CAPPED_ROWS + CONVERGED_ROWS)
+        convergence = elliptic_solve_convergence(
+            newton_input_file(), self.run_dir
+        )
+        self.assertTrue(convergence.converged)
+        self.assertEqual(convergence.initial_residual, 7.74728203)
+        shutil.rmtree(self.run_dir)
+        self.run_dir.mkdir()
+        write_newton_residuals(self.run_dir, CONVERGED_ROWS + CAPPED_ROWS)
+        self.assertFalse(
+            elliptic_solve_convergence(
+                newton_input_file(), self.run_dir
+            ).converged
+        )
+
+    def test_missing_residuals(self):
+        with self.assertRaisesRegex(
+            UnconvergedSolveError, "did not run or did not finish"
+        ):
+            elliptic_solve_convergence(newton_input_file(), self.run_dir)
 
 
 if __name__ == "__main__":
