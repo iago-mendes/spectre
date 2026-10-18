@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Union
 
@@ -333,23 +334,169 @@ def excision_move(previous_id_params: Dict, id_params: Dict) -> float:
     return max(moves)
 
 
-def _seeded_solve_failure(out_text: str, finished: bool) -> Optional[str]:
-    """Whether a solve that started from a numeric initial guess went wrong
+class UnconvergedSolveError(RuntimeError):
+    """The elliptic solve of an initial data run did not converge"""
 
-    Reads the solver output of the solve ('out_text'). Returns a description of
-    the failure, or 'None' if there is none:
 
-    - A full Newton step raised the residual more than
-      'SEEDED_SOLVE_MAX_RESIDUAL_GROWTH' times above the residual of the
-      initial guess (the step overshot far: the guess is far from the
-      solution, where the Newton linearization doesn't hold).
-    - Once the solve has 'finished': the Newton solver didn't converge.
+@dataclass
+class EllipticSolveConvergence:
+    """Convergence of the nonlinear (Newton-Raphson) solve of an ID run
+
+    See 'elliptic_solve_convergence'.
+    """
+
+    run_dir: str
+    converged: bool
+    residual: float
+    initial_residual: float
+    iterations: int
+    absolute_residual: float
+    relative_residual: float
+    max_iterations: int
+
+    def __str__(self) -> str:
+        status = "converged" if self.converged else "did not converge"
+        text = (
+            f"The elliptic solve in '{self.run_dir}' {status}: the"
+            f" Newton-Raphson residual is {self.residual:e} after"
+            f" {self.iterations} iterations (initial residual"
+            f" {self.initial_residual:e}); the tolerances are AbsoluteResidual"
+            f" = {self.absolute_residual:e} and RelativeResidual ="
+            f" {self.relative_residual:g}, with MaxIterations ="
+            f" {self.max_iterations}."
+        )
+        if not self.converged:
+            if self.iterations >= self.max_iterations:
+                text += (
+                    " The solver stopped at MaxIterations (it reports this as"
+                    " 'has converged ...: Reached the maximum number of"
+                    " iterations', which is not convergence)."
+                )
+            else:
+                text += (
+                    " The solver stopped before MaxIterations without meeting"
+                    " a tolerance (e.g., a globalization failure)."
+                )
+        return text
+
+
+def elliptic_solve_convergence(
+    id_input_file: Dict, id_run_dir: Union[str, Path]
+) -> EllipticSolveConvergence:
+    """Whether the nonlinear elliptic solve of an initial data run converged
+
+    Reads the residuals that the nonlinear solver observed in every iteration
+    from the reductions file of the run (subfile '<solver>Residuals.dat', e.g.
+    'NewtonRaphsonResiduals.dat' in 'BbhReductions.h5') and compares the
+    residual after the last iteration with the solver's 'ConvergenceCriteria'
+    in the input file, like the solver does: the solve converged if the
+    residual is at most the 'AbsoluteResidual', or the residual relative to
+    the initial residual is at most the 'RelativeResidual'. Stopping at
+    'MaxIterations' is not convergence, although the solver reports it as
+    "has converged ...: Reached the maximum number of iterations". A NaN
+    residual is not convergence either.
+
+    If the run solved more than once (e.g., several AMR iterations), only its
+    last solve is checked.
+
+    Arguments:
+      id_input_file: The (second) document of the input file of the run.
+      id_run_dir: Directory of the run. The reductions file is in it.
+
+    Returns: An 'EllipticSolveConvergence'. Raises an 'UnconvergedSolveError'
+      if the run's reductions file or the solver's residuals are missing.
+    """
+    (solver_name, solver_options), *_ = id_input_file["NonlinearSolver"].items()
+    criteria = solver_options["ConvergenceCriteria"]
+    absolute_residual = float(criteria["AbsoluteResidual"])
+    relative_residual = float(criteria["RelativeResidual"])
+    max_iterations = int(criteria["MaxIterations"])
+    reductions_file = (
+        Path(id_run_dir)
+        / f"{id_input_file['Observers']['ReductionFileName']}.h5"
+    )
+    subfile_name = f"{solver_name}Residuals.dat"
+    try:
+        with h5py.File(reductions_file, "r") as open_h5_file:
+            dataset = open_h5_file[subfile_name]
+            legend = [
+                column.decode() if isinstance(column, bytes) else str(column)
+                for column in dataset.attrs["Legend"]
+            ]
+            data = np.atleast_2d(dataset[()])
+    except (OSError, KeyError) as error:
+        raise UnconvergedSolveError(
+            f"Found no {solver_name} residuals ('{subfile_name}') in"
+            f" '{reductions_file}', so the elliptic solve did not run or did"
+            f" not finish: {error}"
+        ) from error
+    if data.size == 0:
+        raise UnconvergedSolveError(
+            f"The {solver_name} residuals in '{reductions_file}' are empty,"
+            " so the elliptic solve did not run or did not finish."
+        )
+    iteration = data[:, legend.index("Iteration")]
+    globalization_step = data[:, legend.index("GlobalizationStep")]
+    residual = data[:, legend.index("Residual")]
+    # The last solve starts at the last row of iteration 0 (the initial guess)
+    starts = np.flatnonzero((iteration == 0) & (globalization_step == 0))
+    first = starts[-1] if len(starts) > 0 else 0
+    iteration = iteration[first:]
+    globalization_step = globalization_step[first:]
+    residual = residual[first:]
+    # The residual after the last iteration is the one of its last
+    # globalization step
+    last = np.lexsort((globalization_step, iteration))[-1]
+    final_residual = float(residual[last])
+    initial_residual = float(residual[0])
+    converged = bool(
+        final_residual <= absolute_residual
+        or (
+            initial_residual > 0.0
+            and final_residual / initial_residual <= relative_residual
+        )
+    )
+    return EllipticSolveConvergence(
+        run_dir=str(Path(id_run_dir).resolve()),
+        converged=converged,
+        residual=final_residual,
+        initial_residual=initial_residual,
+        iterations=int(iteration[last]),
+        absolute_residual=absolute_residual,
+        relative_residual=relative_residual,
+        max_iterations=max_iterations,
+    )
+
+
+def check_elliptic_solve_converged(
+    id_input_file: Dict, id_run_dir: Union[str, Path]
+) -> EllipticSolveConvergence:
+    """Raise an 'UnconvergedSolveError' if the elliptic solve of the initial
+    data run didn't converge (see 'elliptic_solve_convergence')"""
+    convergence = elliptic_solve_convergence(id_input_file, id_run_dir)
+    if not convergence.converged:
+        raise UnconvergedSolveError(str(convergence))
+    logger.info(str(convergence))
+    return convergence
+
+
+def _seeded_solve_failure(out_text: str) -> Optional[str]:
+    """Whether a solve that started from a numeric initial guess overshot
+
+    Reads the solver output of the running solve ('out_text'). Returns a
+    description of the failure if a full Newton step raised the residual more
+    than 'SEEDED_SOLVE_MAX_RESIDUAL_GROWTH' times above the residual of the
+    initial guess (the step overshot far: the guess is far from the solution,
+    where the Newton linearization doesn't hold), or 'None' otherwise.
+
+    Whether a finished solve converged is decided from its observed residuals
+    instead (see 'elliptic_solve_convergence').
     """
     start = re.search(
         r"NewtonRaphson initialized with residual: (\S+)", out_text
     )
     if start is None:
-        return None if not finished else "the solver did not start"
+        return None
     start_residual = float(start.group(1))
     for match in re.finditer(
         r"NewtonRaphson\((\d+)\): Step with length 1 didn't sufficiently"
@@ -365,14 +512,6 @@ def _seeded_solve_failure(out_text: str, finished: bool) -> Optional[str]:
                 f" {SEEDED_SOLVE_MAX_RESIDUAL_GROWTH:g} times the residual"
                 f" {start_residual:e} of the initial guess"
             )
-    if finished:
-        # The solver reports "has converged" also when it stops at its maximum
-        # number of iterations, so check the reason
-        verdicts = re.findall(r"NewtonRaphson has converged in .*", out_text)
-        if not verdicts or "Reached the maximum number of iterations" in (
-            verdicts[-1]
-        ):
-            return "the Newton solver did not converge"
     return None
 
 
@@ -419,9 +558,7 @@ def _watch_seeded_solve(
         out_file = Path(last.path) / "spectre.out"
         if not out_file.exists():
             continue
-        reason = _seeded_solve_failure(
-            out_file.read_text(errors="replace"), finished=False
-        )
+        reason = _seeded_solve_failure(out_file.read_text(errors="replace"))
         if reason is not None:
             failure.append(reason)
             _stop_solves_in(Path(last.path))
@@ -638,6 +775,9 @@ def _convergence_test(
       result is informational. Returns the optimal P, or 'None' if none was
       found.
 
+    A solve that fails or doesn't converge (see 'elliptic_solve_convergence')
+    is skipped: its P enters neither the convergence errors nor the selection.
+
     With 'numeric_initial_guess', every solve starts from the solution at the
     nearest P that is already solved (the higher one on a tie), interpolated to
     its grid, instead of from the background. The domain is the same at every
@@ -757,6 +897,14 @@ def _convergence_test(
                 P_run_dir, control_params
             )
             run_dir_by_order[P] = P_run_dir
+        except UnconvergedSolveError as e:
+            # Raised by the postprocessing of the solve before it finds
+            # horizons (see 'PostprocessId.py')
+            logger.warning(
+                f"{label} convergence test: solve at P={P} did not converge,"
+                f" skipping it: {e}"
+            )
+            continue
         except Exception as e:
             logger.warning(
                 f"{label} convergence test: solve at P={P} failed: {e}"
@@ -890,6 +1038,13 @@ def control_id(
     'ControlScales.dat'. A Jacobian entry in raw units is the non-dimensional
     entry times the residual scale divided by the free-data scale.
 
+    Every solve of the control loop must converge: its postprocessing checks
+    the residual of the elliptic solver (see 'elliptic_solve_convergence') and
+    raises an 'UnconvergedSolveError' if it didn't converge, before finding
+    horizons. The control loop then stops with this error (after the fallback
+    to the background, if enabled), because the parameters measured in an
+    unconverged solution would steer it with noise.
+
     Each step of the free data can be shortened by step-size constraints, which
     scale the whole step by a factor alpha in [0, 1] so that its direction is
     preserved:
@@ -971,7 +1126,8 @@ def control_id(
         background if a full Newton step raises the residual more than
         'SEEDED_SOLVE_MAX_RESIDUAL_GROWTH' times above the residual of the
         initial guess (the solve is stopped as soon as this happens), if its
-        Newton solver doesn't converge, or if it fails. The output of these
+        Newton solver doesn't converge (see 'elliptic_solve_convergence'), or
+        if it fails. The output of these
         solves goes to 'spectre.out' in their directory. (Default: False)
       numeric_initial_guess_max_control_residual: With 'numeric_initial_guess',
         start a solve from the previous solution only if the control residual
@@ -1191,52 +1347,54 @@ def control_id(
                 )
 
             seed_glob = str(Path(control_run_dir).resolve() / "BbhVolume*.h5")
-            if not seed:
-                run_id(None)
-            elif not numeric_initial_guess_fallback:
-                run_id(seed_glob)
-            else:
-                previous_segment = Segment.last(id_dir)
-                stop, failure = threading.Event(), []
-                watcher = threading.Thread(
-                    target=_watch_seeded_solve,
-                    args=(
-                        id_dir,
-                        previous_segment.path if previous_segment else None,
-                        stop,
-                        failure,
-                    ),
-                    daemon=True,
-                )
-                watcher.start()
-                try:
-                    run_id(seed_glob, redirect_output=True)
-                except subprocess.CalledProcessError as error:
-                    if not failure:
-                        failure.append(
-                            f"the solve exited with code {error.returncode}"
-                        )
-                finally:
-                    stop.set()
-                    watcher.join()
-                if not failure:
-                    seeded_out = Path(Segment.last(id_dir).path) / "spectre.out"
-                    reason = _seeded_solve_failure(
-                        (
-                            seeded_out.read_text(errors="replace")
-                            if seeded_out.exists()
-                            else ""
-                        ),
-                        finished=True,
-                    )
-                    if reason is not None:
-                        failure.append(reason)
-                if failure:
-                    logger.warning(
-                        "The solve from the previous solution failed:"
-                        f" {failure[0]}. Solving again from the background."
-                    )
+            try:
+                if not seed:
                     run_id(None)
+                elif not numeric_initial_guess_fallback:
+                    run_id(seed_glob)
+                else:
+                    previous_segment = Segment.last(id_dir)
+                    stop, failure = threading.Event(), []
+                    watcher = threading.Thread(
+                        target=_watch_seeded_solve,
+                        args=(
+                            id_dir,
+                            previous_segment.path if previous_segment else None,
+                            stop,
+                            failure,
+                        ),
+                        daemon=True,
+                    )
+                    watcher.start()
+                    try:
+                        run_id(seed_glob, redirect_output=True)
+                    except subprocess.CalledProcessError as error:
+                        if not failure:
+                            failure.append(
+                                f"the solve exited with code {error.returncode}"
+                            )
+                    except UnconvergedSolveError as error:
+                        # Raised by the postprocessing of the solve (see
+                        # 'PostprocessId.py')
+                        failure.append(str(error))
+                    finally:
+                        stop.set()
+                        watcher.join()
+                    if failure:
+                        logger.warning(
+                            "The solve from the previous solution failed:"
+                            f" {failure[0].rstrip('.')}. Solving again from"
+                            " the background."
+                        )
+                        run_id(None)
+            except UnconvergedSolveError as error:
+                # The postprocessing of the solve stops before finding horizons
+                # if the solve didn't converge. The measured parameters of an
+                # unconverged solve would steer the control loop with noise.
+                raise UnconvergedSolveError(
+                    f"Control iteration {iteration}: {error} Stopping the"
+                    " control loop."
+                ) from error
             control_run_dir = str(Segment.last(id_dir).path)
             previous_free_data.clear()
             previous_free_data.update(free_data)
