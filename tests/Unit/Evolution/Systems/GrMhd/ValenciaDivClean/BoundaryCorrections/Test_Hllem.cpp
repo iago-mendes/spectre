@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <string>
 
 #include "DataStructures/DataVector.hpp"
@@ -1342,6 +1343,97 @@ void test_no_restored_waves_reduces_to_hll(
   }
 }
 
+std::array<double, 10> hllem_correction(
+    const bc::Hllem& solver, const InterfaceState& state_int,
+    const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction) {
+  const size_t num_points = 1;
+  const Scalar<DataVector> lapse{num_points, 1.0};
+  const tnsr::I<DataVector, 3> shift{num_points, 0.0};
+  auto normal_covector_int = tnsr::i<DataVector, 3>{num_points, 0.0};
+  auto normal_vector_int = tnsr::I<DataVector, 3>{num_points, 0.0};
+  auto normal_covector_ext = tnsr::i<DataVector, 3>{num_points, 0.0};
+  auto normal_vector_ext = tnsr::I<DataVector, 3>{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    normal_covector_int.get(i) =
+        DataVector{num_points, gsl::at(normal_direction, i)};
+    normal_vector_int.get(i) =
+        DataVector{num_points, gsl::at(normal_direction, i)};
+    normal_covector_ext.get(i) =
+        DataVector{num_points, -gsl::at(normal_direction, i)};
+    normal_vector_ext.get(i) =
+        DataVector{num_points, -gsl::at(normal_direction, i)};
+  }
+  const auto interior = package_interface_state(
+      solver, state_int, normal_covector_int, normal_vector_int, lapse, shift,
+      equation_of_state);
+  const auto exterior = package_interface_state(
+      solver, state_ext, normal_covector_ext, normal_vector_ext, lapse, shift,
+      equation_of_state);
+  Scalar<DataVector> c_d{num_points, 0.0};
+  Scalar<DataVector> c_ye{num_points, 0.0};
+  Scalar<DataVector> c_tau{num_points, 0.0};
+  tnsr::i<DataVector, 3> c_s{num_points, 0.0};
+  tnsr::I<DataVector, 3> c_b{num_points, 0.0};
+  Scalar<DataVector> c_phi{num_points, 0.0};
+  solver.dg_boundary_terms(
+      make_not_null(&c_d), make_not_null(&c_ye), make_not_null(&c_tau),
+      make_not_null(&c_s), make_not_null(&c_b), make_not_null(&c_phi),
+      interior.tilde_d, interior.tilde_ye, interior.tilde_tau, interior.tilde_s,
+      interior.tilde_b, interior.tilde_phi, interior.nf_tilde_d,
+      interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
+      interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
+      interior.largest_ingoing, interior.fast_outgoing, interior.fast_ingoing,
+      interior.interface_unit_normal, interior.metric_flatness,
+      interior.rest_mass_density, interior.spatial_velocity, interior.pressure,
+      interior.lorentz_factor, interior.specific_internal_energy,
+      exterior.tilde_d, exterior.tilde_ye, exterior.tilde_tau, exterior.tilde_s,
+      exterior.tilde_b, exterior.tilde_phi, exterior.nf_tilde_d,
+      exterior.nf_tilde_ye, exterior.nf_tilde_tau, exterior.nf_tilde_s,
+      exterior.nf_tilde_b, exterior.nf_tilde_phi, exterior.largest_outgoing,
+      exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
+      exterior.interface_unit_normal, exterior.metric_flatness,
+      exterior.rest_mass_density, exterior.spatial_velocity, exterior.pressure,
+      exterior.lorentz_factor, exterior.specific_internal_energy,
+      ::dg::Formulation::StrongInertial, equation_of_state);
+  return flatten_correction(c_d, c_ye, c_tau, c_phi, c_s, c_b);
+}
+
+// MaxConditionNumber on one generic interface: at 1 every restored wave whose
+// l and r are not parallel is dropped (|l.r| <= |l| |r|), so All equals None;
+// with None (no guard) the result is the unguarded one.
+void test_max_condition_number(
+    const InterfaceState& state_int, const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction) {
+  const auto run = [&](const bc::HllemWaves waves,
+                       const std::optional<double> max_condition_number) {
+    return hllem_correction(
+        bc::Hllem{waves, false, 1.0e-10, 1.0e-30, 1.0e-8, max_condition_number},
+        state_int, state_ext, equation_of_state, normal_direction);
+  };
+  const auto none = run(bc::HllemWaves::None, std::nullopt);
+  const auto all = run(bc::HllemWaves::All, std::nullopt);
+  const auto all_guard_one = run(bc::HllemWaves::All, 1.0);
+  const auto all_guard_huge = run(bc::HllemWaves::All, 1.0e100);
+  double scale = 0.0;
+  double restored = 0.0;
+  for (size_t n = 0; n < 10; ++n) {
+    scale = std::max(scale, std::abs(gsl::at(none, n)));
+    restored = std::max(restored, std::abs(gsl::at(all, n) - gsl::at(none, n)));
+  }
+  CAPTURE(scale);
+  CAPTURE(restored);
+  // the interface restores something, so the comparisons below discriminate
+  CHECK(restored > 1.0e-3 * scale);
+  for (size_t n = 0; n < 10; ++n) {
+    CAPTURE(n);
+    CHECK(gsl::at(all_guard_one, n) == gsl::at(none, n));
+    CHECK(gsl::at(all_guard_huge, n) == gsl::at(all, n));
+  }
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
   PUPable_reg(bc::Hllem);
@@ -1371,10 +1463,11 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                                          bc::Hllem>(
           "Hllem:\n"
           "  WavesToRestore: ContactSlow\n"
-      "  UseComplementaryProjection: true\n"
+          "  UseComplementaryProjection: true\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  MaxConditionNumber: None\n");
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen), dynamic_cast<const bc::Hllem&>(*hllem),
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
@@ -1390,7 +1483,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  MaxConditionNumber: None\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_none) !=
               bc::Hllem{bc::HllemWaves::None, false, 1.0e-4, 1.0e-30, 1.0e-8});
   CHECK(bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -1406,7 +1500,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  MaxConditionNumber: None\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_slow) !=
               bc::Hllem{bc::HllemWaves::Slow, false, 1.0e-4, 1.0e-30, 1.0e-8});
   const auto hllem_alfven =
@@ -1417,7 +1512,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  UseComplementaryProjection: false\n"
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
-          "  LightSpeedDensityCutoff: 1.0e-8\n");
+          "  LightSpeedDensityCutoff: 1.0e-8\n"
+          "  MaxConditionNumber: None\n");
   CHECK_FALSE(
       dynamic_cast<const bc::Hllem&>(*hllem_alfven) !=
       bc::Hllem{bc::HllemWaves::Alfven, false, 1.0e-4, 1.0e-30, 1.0e-8});
@@ -1459,6 +1555,37 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}}, "purely tangential field, B_n = 0",
         true);
+    test_max_condition_number(
+        make_state(1.0, 1.0, {{0.2, -0.3, 0.1}}, {{0.5, 0.3, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}});
+    const auto guarded_from_yaml =
+        TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
+                                           bc::Hllem>(
+            "Hllem:\n"
+            "  WavesToRestore: All\n"
+            "  UseComplementaryProjection: false\n"
+            "  DegeneracyTolerance: 1.0e-10\n"
+            "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
+            "  LightSpeedDensityCutoff: 1.0e-8\n"
+            "  MaxConditionNumber: 1.0e3\n");
+    CHECK_FALSE(
+        dynamic_cast<const bc::Hllem&>(*guarded_from_yaml) !=
+        bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3});
+    CHECK(bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8,
+                    1.0e3} !=
+          bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8});
+    CHECK_THROWS_WITH((TestHelpers::test_creation<bc::Hllem>(
+                          "WavesToRestore: All\n"
+                          "UseComplementaryProjection: false\n"
+                          "DegeneracyTolerance: 1.0e-10\n"
+                          "MagneticFieldMagnitudeForHydro: 1.0e-30\n"
+                          "LightSpeedDensityCutoff: 1.0e-8\n"
+                          "MaxConditionNumber: 0.5\n")),
+                      Catch::Matchers::ContainsSubstring(
+                          "MaxConditionNumber must be at least 1"));
   }
 
   CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -1473,6 +1600,12 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen),
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-3, 1.0e-30, 1.0e-8},
+      Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+      volume_data, ranges);
+  // ... and so is the conditioning guard
+  TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+      make_not_null(&gen),
+      bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges);
 

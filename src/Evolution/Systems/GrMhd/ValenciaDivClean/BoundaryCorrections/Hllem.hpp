@@ -12,6 +12,8 @@
 #include "Evolution/BoundaryCorrection.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
+#include "Options/Auto.hpp"
+#include "Options/Context.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
@@ -254,10 +256,17 @@ class Hllem final : public evolution::BoundaryCorrection {
         "the characteristic speeds."};
     using type = double;
   };
+  struct MaxConditionNumber {
+    using type = Options::Auto<double, Options::AutoLabel::None>;
+    static constexpr Options::String help = {
+        "Drop a restored wave where its eigenvalue condition number "
+        "|l| |r| / |l.r| exceeds this value (at least 1). None disables the "
+        "check."};
+  };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
                  DegeneracyTolerance, MagneticFieldMagnitudeForHydro,
-                 LightSpeedDensityCutoff>;
+                 LightSpeedDensityCutoff, MaxConditionNumber>;
   static constexpr Options::String help = {
       "Computes the HLLEM boundary correction term for the GRMHD system."};
 
@@ -270,7 +279,9 @@ class Hllem final : public evolution::BoundaryCorrection {
 
   Hllem(HllemWaves waves_to_restore, bool use_complementary_projection,
         double degeneracy_tolerance, double magnetic_field_magnitude_for_hydro,
-        double light_speed_density_cutoff);
+        double light_speed_density_cutoff,
+        std::optional<double> max_condition_number = std::nullopt,
+        const Options::Context& context = {});
 
   /// \cond
   explicit Hllem(CkMigrateMessage* /*unused*/);
@@ -449,6 +460,7 @@ class Hllem final : public evolution::BoundaryCorrection {
       std::numeric_limits<double>::signaling_NaN()};
   double light_speed_density_cutoff_{
       std::numeric_limits<double>::signaling_NaN()};
+  std::optional<double> max_condition_number_{};
 };
 bool operator!=(const Hllem& lhs, const Hllem& rhs);
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections
