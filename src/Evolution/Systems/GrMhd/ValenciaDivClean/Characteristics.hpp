@@ -304,11 +304,21 @@ enum MhdSpeed : uint32_t {
 
 /*!
  * \brief Choice of algorithm for the slow magnetosonic speeds.
+ *
+ * `ReducedQuadraticComoving` (the default) takes the reduced quadratic's
+ * slow pair as one seed and re-solves each slow root on the magnetosonic
+ * quartic written in the comoving variable \f$\mu = \lambda - v_n\f$, which
+ * has no O(1) cancellation near \f$\mu = 0\f$. The reduced quadratic alone
+ * inherits the fast roots' error (accepted at an absolute residual) amplified
+ * by \f$1/(\lambda_s^+ - \lambda_s^-)\f$, so near the slow/entropy
+ * degeneracy (\f$B_n \to 0\f$ on warm gas) its slow speeds can be off by a
+ * large fraction of their distance from \f$v_n\f$.
  */
 enum class SlowMagnetosonicSpeedMethod {
   Toms748,
   ReducedQuadratic,
-  ReducedQuadraticThenNewton
+  ReducedQuadraticThenNewton,
+  ReducedQuadraticComoving
 };
 
 /// @{
@@ -384,7 +394,7 @@ void characteristic_speeds_mhd(
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
         equation_of_state,
     SlowMagnetosonicSpeedMethod slow_speed_method =
-        SlowMagnetosonicSpeedMethod::ReducedQuadratic);
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving);
 /// @}
 
 /// @{

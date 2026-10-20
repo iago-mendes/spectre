@@ -6,11 +6,12 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
-#include <limits>
 #include <fstream>
-#include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <optional>
+#include <sstream>
 #include <string>
 
 #include "DataStructures/DataVector.hpp"
@@ -45,6 +46,7 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Literals.hpp"
 #include "Utilities/TMPL.hpp"
 
 // Quad-precision reference implementation for MHD characteristic speeds
@@ -940,7 +942,9 @@ void test_mhd_speeds_interlace() {
            {grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
                 ReducedQuadratic,
             grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
-                ReducedQuadraticThenNewton}) {
+                ReducedQuadraticThenNewton,
+            grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
+                ReducedQuadraticComoving}) {
         for (const auto& velocity : velocities) {
           double v_squared = 0.0;
           for (size_t i = 0; i < 3; ++i) {
@@ -1022,7 +1026,7 @@ void test_mhd_speeds_interlace() {
       }
     }
   }
-  CHECK(states_checked == 2 * 2 * 2 * 6 * 7 * 4);
+  CHECK(states_checked == 2 * 2 * 3 * 6 * 7 * 4);  // 3 slow-speed methods
 }
 
 // Regression test for an abort of a Del Zanna et al. (2003) jet run, "reduced
@@ -1189,11 +1193,162 @@ void test_superluminal_interface_sound_speed() {
        {grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::ReducedQuadratic,
         grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
             ReducedQuadraticThenNewton,
+        grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::
+            ReducedQuadraticComoving,
         grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod::Toms748}) {
     CHECK_THROWS_WITH(
         speeds_at(rho_avg, eps_avg, p_avg, b_field_avg, method),
         Catch::Matchers::ContainsSubstring(
             "The sound speed squared is outside [0, 1)"));
+  }
+}
+
+// The characteristic speeds at one point in flat space, with an ideal fluid.
+// Without a method, characteristic_speeds_mhd's default is used.
+tnsr::i<DataVector, 9> slow_test_speeds(
+    const double rho, const double eps, const double h, const double w,
+    const std::array<double, 3>& v, const std::array<double, 3>& b,
+    const std::array<double, 3>& n,
+    const std::optional<grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod>
+        method,
+    const double adiabatic_index = 5.0 / 3.0) {
+  const EquationsOfState::IdealFluid<true> eos(adiabatic_index, 0.0);
+  tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{1_st, 0.0};
+  tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{1_st, 0.0};
+  tnsr::i<DataVector, 3> unit_normal{1_st, 0.0};
+  tnsr::ii<DataVector, 3, Frame::Inertial> flat_metric{1_st, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    spatial_velocity.get(i) = gsl::at(v, i);
+    magnetic_field.get(i) = gsl::at(b, i);
+    unit_normal.get(i) = gsl::at(n, i);
+    flat_metric.get(i, i) = 1.0;
+  }
+  const Scalar<DataVector> rest_mass_density{DataVector{1_st, rho}};
+  const Scalar<DataVector> specific_internal_energy{DataVector{1_st, eps}};
+  const Scalar<DataVector> lorentz_factor{DataVector{1_st, w}};
+  const Scalar<DataVector> specific_enthalpy{DataVector{1_st, h}};
+  tnsr::i<DataVector, 9> speeds{1_st, 0.0};
+  if (method.has_value()) {
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, lorentz_factor,
+        specific_enthalpy, flat_metric, unit_normal, eos, *method);
+  } else {
+    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+        make_not_null(&speeds), spatial_velocity, magnetic_field,
+        rest_mass_density, specific_internal_energy, lorentz_factor,
+        specific_enthalpy, flat_metric, unit_normal, eos);
+  }
+  return speeds;
+}
+
+// The slow pair near the slow/entropy degeneracy. Two radial faces of the
+// static ambient of the Del Zanna et al. (2003) jet: v = 0, B_r ~ 3e-5 and
+// 9e-9. The expected slow speeds are the roots of the same magnetosonic
+// quartic, computed with mpmath at 60 digits; v_n = 0, so they are +-mu.
+void test_slow_speeds_comoving() {
+  using grmhd::ValenciaDivClean::MhdSpeed;
+  using grmhd::ValenciaDivClean::SlowMagnetosonicSpeedMethod;
+  struct Face {
+    double rho, eps, h;
+    std::array<double, 3> b;
+    double exact_mu;
+  };
+  const std::array<Face, 2> faces{
+      {{10.00000147497365,
+        0.0014992494598037663,
+        1.002498749099673,
+        {{2.997194571166376e-05, 0.10007501873759235, 0.0}},
+        7.480833985711296863266183e-06},
+       {10.0,
+        0.001499999483693053,
+        1.0024999991394885,
+        {{-8.90989296669351e-09, 0.1000000516306809, 0.0}},
+        2.224693536551416198672102e-09}}};
+  const std::array<double, 3> v{{0.0, 0.0, 0.0}};
+  const std::array<double, 3> n{{-1.0, 0.0, 0.0}};
+  for (const auto& face : faces) {
+    CAPTURE(face.exact_mu);
+    const auto comoving =
+        slow_test_speeds(face.rho, face.eps, face.h, 1.0, v, face.b, n,
+                         SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving);
+    const auto by_default = slow_test_speeds(face.rho, face.eps, face.h, 1.0, v,
+                                             face.b, n, std::nullopt);
+    const auto reduced =
+        slow_test_speeds(face.rho, face.eps, face.h, 1.0, v, face.b, n,
+                         SlowMagnetosonicSpeedMethod::ReducedQuadratic);
+    const double sm = get<MhdSpeed::SlowMagnetosonicMinus>(comoving)[0];
+    const double sp = get<MhdSpeed::SlowMagnetosonicPlus>(comoving)[0];
+    const double rm = get<MhdSpeed::SlowMagnetosonicMinus>(reduced)[0];
+    const double rp = get<MhdSpeed::SlowMagnetosonicPlus>(reduced)[0];
+    CAPTURE(sm);
+    CAPTURE(sp);
+    CAPTURE(rm);
+    CAPTURE(rp);
+    // the default method is the comoving one
+    CHECK(get<MhdSpeed::SlowMagnetosonicMinus>(by_default)[0] == sm);
+    CHECK(get<MhdSpeed::SlowMagnetosonicPlus>(by_default)[0] == sp);
+    // accurate relative to the distance from v_n = 0
+    CHECK(std::abs(sm + face.exact_mu) <= 1.0e-6 * face.exact_mu);
+    CHECK(std::abs(sp - face.exact_mu) <= 1.0e-6 * face.exact_mu);
+    // ... and the reduced quadratic alone is not (the test discriminates)
+    CHECK(std::max(std::abs(rm + face.exact_mu), std::abs(rp - face.exact_mu)) >
+          1.0e-4 * face.exact_mu);
+    // the fast pair, Alfven pair and entropy are untouched
+    for (const size_t i : {0_st, 1_st, 2_st, 4_st, 6_st, 7_st, 8_st}) {
+      CAPTURE(i);
+      CHECK(comoving.get(i)[0] == reduced.get(i)[0]);
+    }
+  }
+  // A Balsara-1 state (Gamma = 2, normal z, B_n ~ 2e-7) where the reduced
+  // quadratic returns slow_minus = slow_plus and an unguarded Newton step
+  // leaves the light cone. Slow speeds computed with mpmath at 60 digits.
+  {
+    const auto speeds = slow_test_speeds(
+        0.6953676820816324, 0.6997190337712661, 2.3994380675425324,
+        1.0474884323238665,
+        {{0.29653056001033645, -0.02617931983258507, 1.2840727654936489e-07}},
+        {{0.500000427349988, 0.7161462537884182, 1.9845159331757503e-07}},
+        {{0.0, 0.0, 1.0}},
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving, 2.0);
+    const double vn = 1.284072765493648850494078e-07;
+    const double exact_minus = 1.322726028842970510357819e-08;
+    const double exact_plus = 2.272776457004750699634155e-07;
+    const double sm = get<MhdSpeed::SlowMagnetosonicMinus>(speeds)[0];
+    const double sp = get<MhdSpeed::SlowMagnetosonicPlus>(speeds)[0];
+    CAPTURE(sm);
+    CAPTURE(sp);
+    CHECK(std::abs(sm - exact_minus) <= 1.0e-6 * std::abs(exact_minus - vn));
+    CHECK(std::abs(sp - exact_plus) <= 1.0e-6 * std::abs(exact_plus - vn));
+  }
+  // A subnormal B_n (3.5e-323 after scaling), on a Balsara-1 transverse face
+  // at rest: the interlacing slack must not overflow. The slow pair is v_n
+  // exactly.
+  {
+    const auto speeds = slow_test_speeds(
+        1.0, 1.0, 3.0, 1.0, {{0.0, 0.0, 0.0}},
+        {{0.5, 1.0, 3.458459520888726e-323 * sqrt(3.0)}}, {{0.0, 0.0, 1.0}},
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving, 2.0);
+    CHECK(get<MhdSpeed::SlowMagnetosonicMinus>(speeds)[0] == 0.0);
+    CHECK(get<MhdSpeed::SlowMagnetosonicPlus>(speeds)[0] == 0.0);
+  }
+  // B_n = 0: the slow pair is v_n exactly (at rest and moving)
+  for (const auto& vel : {std::array<double, 3>{{0.0, 0.0, 0.0}},
+                          std::array<double, 3>{{0.3, 0.2, 0.1}}}) {
+    double v2 = 0.0;
+    for (const double x : vel) {
+      v2 += x * x;
+    }
+    const double w = 1.0 / sqrt(1.0 - v2);
+    const double rho = 1.3;
+    const double eps = 0.4;
+    const double h = 1.0 + eps + (5.0 / 3.0 - 1.0) * eps;
+    const auto speeds = slow_test_speeds(
+        rho, eps, h, w, vel, {{0.0, 0.7, -0.2}}, {{1.0, 0.0, 0.0}},
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving);
+    CAPTURE(vel[0]);
+    CHECK(get<MhdSpeed::SlowMagnetosonicMinus>(speeds)[0] == vel[0]);
+    CHECK(get<MhdSpeed::SlowMagnetosonicPlus>(speeds)[0] == vel[0]);
   }
 }
 
@@ -4062,6 +4217,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   test_quartic_rootfinding(dv);
   test_mhd_speeds_interlace();
   test_superluminal_interface_sound_speed();
+  test_slow_speeds_comoving();
   // Run data-producing sweeps — quartic_shape and typical_vn_sweep first
   // since they use moderate W.  test_mhd_characteristics_errors pushes to
   // W=100 at high sigma where the tighter production tolerance (1e-15)

@@ -202,13 +202,15 @@ double quartic_root_uncertainty(const double c0, const double c1,
                                 const double x) {
   const double derivative =
       std::abs(((4.0 * x + 3.0 * c3) * x + 2.0 * c2) * x + c1);
-  if (not(derivative > 0.0)) {
-    // A genuine multiple root: the ordering carries no information at all.
-    return std::numeric_limits<double>::infinity();
-  }
   const double noise =
       8.0 * std::numeric_limits<double>::epsilon() *
       std::max({1.0, std::abs(c0), std::abs(c1), std::abs(c2), std::abs(c3)});
+  // A genuine multiple root, or a derivative so small that noise/derivative
+  // (and the slack summed from two of them) would overflow, e.g. the slow
+  // roots of a subnormal B_n: the ordering carries no information at all.
+  if (not(derivative > 1.0e-300 * noise)) {
+    return std::numeric_limits<double>::infinity();
+  }
   return noise / derivative;
 }
 
@@ -988,7 +990,9 @@ void characteristic_speeds_mhd(
     // that precision.
     if (slow_speed_method == SlowMagnetosonicSpeedMethod::ReducedQuadratic or
         slow_speed_method ==
-            SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton) {
+            SlowMagnetosonicSpeedMethod::ReducedQuadraticThenNewton or
+        slow_speed_method ==
+            SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving) {
       const double b_i = c3[point] + fast_minus[point] + fast_plus[point];
       const double c_i = c2[point] +
                          b_i * (fast_minus[point] + fast_plus[point]) -
@@ -1130,12 +1134,141 @@ void characteristic_speeds_mhd(
                          fast_plus[point];
     }
 
+    // ---- slow pair: re-solve in the comoving variable mu = lambda - v_n ----
+    // The deflation above inherits the fast roots' error, amplified by
+    // 1/(slow_plus - slow_minus), which is large near the slow/entropy
+    // degeneracy (B_n -> 0). Re-solve each slow root on the magnetosonic
+    // quartic in mu (Anton et al. 2010, N_4 times c_s^2/(rho h)):
+    //   F(mu) = c_s^2 Bc^2 - (c_s^2 + b^2) W^2 mu^2 + (1 - c_s^2) W^4 mu^4/G,
+    //   Bc = B_n/W - (B.v) W mu,   G = 1 - (v_n + mu)^2.
+    // F has no O(1) cancellation near mu = 0. Seeds: the closed form that
+    // zeroes its first two terms (exact as B_n -> 0) and the deflation result.
+    // The seed with the smaller Newton step goes first; a root is accepted
+    // only if Newton converged inside the slot's interlacing interval, and
+    // otherwise the deflation result is kept.
+    if (slow_speed_method ==
+        SlowMagnetosonicSpeedMethod::ReducedQuadraticComoving) {
+      const double cs2_i = get(sound_speed_squared)[point];
+      const double w_i = get(lorentz_factor)[point];
+      const double w2_i = square(w_i);
+      // B quantities are already divided by sqrt(rho h) here
+      const double bn_i = get(normal_magnetic_field)[point];
+      const double bv_i = get(magnetic_field_dot_spatial_velocity)[point];
+      const double b2_i = get(comoving_magnetic_field_squared)[point];
+      const double bn_over_w = bn_i / w_i;
+      const double bv_w = bv_i * w_i;
+      const double mu2_coef = (cs2_i + b2_i) * w2_i;
+      const double mu4_coef = (1.0 - cs2_i) * square(w2_i);
+      const auto newton_step = [&](const double mu) {
+        const double bc = bn_over_w - bv_w * mu;
+        const double lam = vn_i + mu;
+        const double inv_g = 1.0 / ((1.0 - lam) * (1.0 + lam));
+        const double mu2 = square(mu);
+        const double t1 = cs2_i * square(bc);
+        const double t2 = mu2_coef * mu2;
+        const double t3 = mu4_coef * square(mu2) * inv_g;
+        const double f = t1 - t2 + t3;
+        const double df =
+            -2.0 * cs2_i * bc * bv_w - 2.0 * mu2_coef * mu +
+            mu4_coef * mu2 * inv_g * (4.0 * mu + 2.0 * mu2 * lam * inv_g);
+        // at a root to working precision (e.g. B_n = 0, mu = 0, or next to a
+        // slow/Alfven near-double root, where the step test never passes)
+        if (std::abs(f) <= 8.0 * std::numeric_limits<double>::epsilon() *
+                               (std::abs(t1) + std::abs(t2) + std::abs(t3))) {
+          return 0.0;
+        }
+        // a stationary point off a root gives no usable step (e.g. a
+        // deflation that returned slow_minus = slow_plus = v_n with B.v = 0)
+        return df == 0.0 ? std::numeric_limits<double>::infinity() : f / df;
+      };
+      // F is evaluated only inside the light cone: outside it G = 1 - lambda^2
+      // <= 0 and the evaluation can divide by zero or overflow (a Newton
+      // iterate from a poor deflation seed can leave it).
+      const auto inside_light_cone = [&vn_i](const double mu) {
+        return std::abs(vn_i + mu) < 1.0;
+      };
+      const double cs_i = sqrt(cs2_i);
+      const double t_i = sqrt(cs2_i + b2_i);
+      const double num = cs_i * bn_i / w2_i;
+      // cs (B.v) -/+ t vanishes only if t = 0, i.e. c_s^2 = b^2 = 0, where
+      // every root is v_n
+      const double seed_1 = t_i > 0.0 ? num / (cs_i * bv_i + t_i) : 0.0;
+      const double seed_2 = t_i > 0.0 ? num / (cs_i * bv_i - t_i) : 0.0;
+      const std::array<double, 2> closed{
+          {std::min(seed_1, seed_2), std::max(seed_1, seed_2)}};
+      const std::array<double, 2> deflated{
+          {slow_minus[point] - vn_i, slow_plus[point] - vn_i}};
+      const double slack =
+          4.0 * std::numeric_limits<double>::epsilon() *
+          (std::abs(alfven_minus_i) + std::abs(alfven_plus_i) + std::abs(vn_i));
+      const std::array<double, 2> lower{
+          {alfven_minus_i - vn_i - slack, -slack}};
+      const std::array<double, 2> upper{{slack, alfven_plus_i - vn_i + slack}};
+      std::array<double, 2> polished{{slow_minus[point], slow_plus[point]}};
+      for (size_t j = 0; j < 2; ++j) {
+        const std::array<double, 2> seeds{
+            {gsl::at(closed, j), gsl::at(deflated, j)}};
+        const std::array<double, 2> first_steps{
+            {inside_light_cone(seeds[0])
+                 ? newton_step(seeds[0])
+                 : std::numeric_limits<double>::infinity(),
+             inside_light_cone(seeds[1])
+                 ? newton_step(seeds[1])
+                 : std::numeric_limits<double>::infinity()}};
+        const std::array<size_t, 2> order =
+            std::abs(first_steps[0]) <= std::abs(first_steps[1])
+                ? std::array<size_t, 2>{{0, 1}}
+                : std::array<size_t, 2>{{1, 0}};
+        for (const size_t c : order) {
+          double mu = gsl::at(seeds, c);
+          double step = gsl::at(first_steps, c);
+          // Accept a root only if Newton converged: the interval then
+          // identifies it as this slot's slow root. An unconverged iterate
+          // inside the interval can still miss the quartic's tolerance.
+          bool converged = step == 0.0;
+          for (size_t iter = 0;
+               iter < 8 and step != 0.0 and std::isfinite(step); ++iter) {
+            // never step out of the light cone: halve the step instead
+            size_t halvings = 0;
+            while (not inside_light_cone(mu - step) and halvings < 60) {
+              step *= 0.5;
+              ++halvings;
+            }
+            mu -= step;
+            if (not inside_light_cone(mu)) {
+              break;
+            }
+            if (halvings == 0 and
+                std::abs(step) <= 4.0 * std::numeric_limits<double>::epsilon() *
+                                      std::abs(mu)) {
+              converged = true;
+              break;
+            }
+            step = newton_step(mu);
+            converged = step == 0.0;
+          }
+          if (converged and mu >= gsl::at(lower, j) and
+              mu <= gsl::at(upper, j)) {
+            // a subnormal offset (from a subnormal B_n) is v_n itself, as
+            // for B_n = 0: keeps a = W (v_n - lambda) off the subnormal range
+            gsl::at(polished, j) =
+                vn_i +
+                (std::abs(mu) < std::numeric_limits<double>::min() ? 0.0 : mu);
+            break;
+          }
+        }
+      }
+      slow_minus[point] = std::min(polished[0], polished[1]);
+      slow_plus[point] = std::max(polished[0], polished[1]);
+    }
+
     ASSERT(std::abs(evaluate_quartic(slow_minus[point], point)) <
                    10.0 * tolerance and
                std::abs(evaluate_quartic(slow_plus[point], point)) <
                    10.0 * tolerance,
            "Failed to find slow magnetosonic speeds: slow_minus = "
                << slow_minus[point] << ", slow_plus = " << slow_plus[point]
+               << ", method = " << static_cast<int>(slow_speed_method)
                << ", quartic(slow_minus) = "
                << evaluate_quartic(slow_minus[point], point)
                << ", quartic(slow_plus) = "
