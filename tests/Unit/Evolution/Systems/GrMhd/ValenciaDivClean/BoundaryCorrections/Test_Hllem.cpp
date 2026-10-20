@@ -1434,6 +1434,46 @@ void test_max_condition_number(
   }
 }
 
+// The complementary projection restores only the fluid subspace. In flat
+// space the B_n and phi rows of the flux Jacobian couple only to each other
+// (the GLM waves), so every fluid right eigenvector has zero B_n and phi
+// components, and the projected anti-diffusion must leave B_n and phi on the
+// HLL flux. B_n = +-0.05 on the two sides makes the averaged B_n exactly 0
+// (all five fluid waves degenerate, so every restored wave is dropped and the
+// block is applied) while dU has a GLM part, which the projection must remove
+// together with the fast waves.
+void test_complementary_projection_keeps_glm_on_hll(
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const double adiabatic_index) {
+  const auto state_int = make_state(1.0, 1.0, {{0.0, 0.2, -0.3}},
+                                    {{0.05, 0.4, 0.2}}, adiabatic_index, 1);
+  const auto state_ext = make_state(4.0, 0.2, {{0.0, -0.1, 0.25}},
+                                    {{-0.05, 0.3, -0.2}}, adiabatic_index, 1);
+  const std::array<double, 3> normal{{1.0, 0.0, 0.0}};
+  const auto none = hllem_correction(
+      bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8},
+      state_int, state_ext, equation_of_state, normal);
+  const auto block = hllem_correction(
+      bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8}, state_int,
+      state_ext, equation_of_state, normal);
+  double scale = 0.0;
+  double restored = 0.0;
+  for (size_t n = 0; n < 10; ++n) {
+    CHECK(std::isfinite(gsl::at(block, n)));
+    scale = std::max(scale, std::abs(gsl::at(none, n)));
+    restored =
+        std::max(restored, std::abs(gsl::at(block, n) - gsl::at(none, n)));
+  }
+  CAPTURE(scale);
+  CAPTURE(restored);
+  // the block is applied: the fluid anti-diffusion is not negligible
+  CHECK(restored > 1.0e-3 * scale);
+  // ... and leaves phi (slot 3) and B_x = B_n (slot 7) on the HLL flux
+  Approx approx = Approx::custom().epsilon(1.0e-13).scale(scale);
+  CHECK(block[3] == approx(none[3]));
+  CHECK(block[7] == approx(none[7]));
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
   PUPable_reg(bc::Hllem);
@@ -1561,6 +1601,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
         make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}});
+    test_complementary_projection_keeps_glm_on_hll(*pair_eos,
+                                                   pair_adiabatic_index);
     const auto guarded_from_yaml =
         TestHelpers::test_factory_creation<evolution::BoundaryCorrection,
                                            bc::Hllem>(
