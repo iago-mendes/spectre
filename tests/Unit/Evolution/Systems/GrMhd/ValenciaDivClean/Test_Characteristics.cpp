@@ -4196,6 +4196,56 @@ void dump_wave_structure() {
   }
 }
 
+// The slow left eigenvectors on a Del Zanna jet ambient face with B_r ~ 2.5e-6,
+// against the same formulas evaluated with mpmath at 60 digits, at the 60-digit
+// speeds. There Z a^2 = 4e-12: a floor of Z a^2 at 1e-12 Z made h_1
+// (components D and tau) wrong.
+void test_slow_left_eigenvector_small_bn() {
+  using grmhd::ValenciaDivClean::MhdSpeed;
+  const EquationsOfState::IdealFluid<true> eos(5.0 / 3.0, 0.0);
+  tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{1_st, 0.0};
+  tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{1_st, 0.0};
+  tnsr::i<DataVector, 3> unit_normal{1_st, 0.0};
+  tnsr::ii<DataVector, 3, Frame::Inertial> flat_metric{1_st, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    flat_metric.get(i, i) = 1.0;
+  }
+  get<0>(magnetic_field) = -2.5453750302388786e-06;
+  get<1>(magnetic_field) = 0.0999873353408945;
+  get<0>(unit_normal) = -1.0;
+  const Scalar<DataVector> rho{DataVector{1_st, 10.000007889440843}};
+  const Scalar<DataVector> eps{DataVector{1_st, 0.0015001258924477047}};
+  const Scalar<DataVector> w{DataVector{1_st, 1.0}};
+  const Scalar<DataVector> h{DataVector{1_st, 1.002500209820746}};
+  tnsr::i<DataVector, 9> speeds{1_st, 0.0};
+  grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+      make_not_null(&speeds), spatial_velocity, magnetic_field, rho, eps, w, h,
+      flat_metric, unit_normal, eos);
+  CHECK(std::abs(get<MhdSpeed::SlowMagnetosonicPlus>(speeds)[0] -
+                 6.3558977665308129955e-07) <= 1.0e-12 * 6.36e-07);
+  tnsr::ij<DataVector, 9> modes{1_st, 0.0};
+  tnsr::IJ<DataVector, 9> projectors{1_st, 0.0};
+  grmhd::ValenciaDivClean::characteristic_eigenvectors_mhd(
+      make_not_null(&modes), make_not_null(&projectors), speeds,
+      spatial_velocity, magnetic_field, rho, eps, w, h, flat_metric,
+      unit_normal, eos);
+  // slow+ (wave 5); slow- has the components 0, 1, 8 with the other sign
+  const std::array<double, 9> exact_plus{
+      {-3.812249815123043e-7, 0.039942482736900092, 0.0, -2.538381851073254e-9,
+       -0.13996875256624061, 0.0, 0.0, 0.39986481376900771,
+       0.0039937424173812001}};
+  for (size_t comp = 0; comp < 9; ++comp) {
+    CAPTURE(comp);
+    CAPTURE(projectors.get(5, comp)[0]);
+    CHECK(std::abs(projectors.get(5, comp)[0] - gsl::at(exact_plus, comp)) <=
+          1.0e-9);
+    const double sign = (comp == 0 or comp == 1 or comp == 8) ? -1.0 : 1.0;
+    CAPTURE(projectors.get(3, comp)[0]);
+    CHECK(std::abs(projectors.get(3, comp)[0] -
+                   sign * gsl::at(exact_plus, comp)) <= 1.0e-9);
+  }
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
@@ -4234,6 +4284,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Characteristics",
   test_numeric_vs_analytic_flux(std::getenv("SPECTRE_NUMEIG_DUMP") != nullptr);
   test_mhd_characteristics(dv);
   test_mhd_numerical_characteristics(dv);
+  test_slow_left_eigenvector_small_bn();
 
   // Disable benchmarks by default
   run_hydro_characteristic_benchmarks(false);

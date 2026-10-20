@@ -1849,8 +1849,10 @@ void characteristic_eigenvectors_mhd(
 
       get(f_1v) =
           W * (-get(G) +
-               get(B) * get(G) * get(B_n) * W /
-                   floored_denominator(get(Z) * square(a_denom), get(Z)) +
+               // B G B_n W / (Z a^2), grouped so that (B/a)(B_n/a) stays
+               // finite for the slow wave as B_n -> 0 (there B ~ B_n and
+               // a ~ B_n)
+               (get(B) / a_denom) * (get(B_n) / a_denom) * get(G) * W / get(Z) +
                get(script_G) * square(W) * (kappa_i + rho) /
                    (get(Z) * rho * cs2_denom));
       get(g_1B) = get(script_G) * kappa_i * W /
