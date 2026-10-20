@@ -937,7 +937,7 @@ void Hllem::dg_boundary_terms(
     // "HLLEM == HLL" behaviour when slow modes sit on the contact). Instead,
     // restore the whole collapse-prone fluid subspace {2..6} as ONE block via
     // the complement of the well-conditioned fast/GLM waves {0,1,7,8},
-    //   P_fluid . dU = dU - sum_{k in {0,1,7,8}} r_k (l_k . dU),
+    //   P_fluid . dU = dU - sum_{k in {0,1,7,8}} r_k (l_k.dU)/(l_k.r_k),
     // carried by a single Einfeldt coefficient at the (shared) contact speed.
     // The clustered waves share that speed at a genuine collapse, so the single
     // coefficient is accurate there; applying this block only at the collapse
@@ -948,26 +948,36 @@ void Hllem::dg_boundary_terms(
     const DataVector delta_c = 1.0 -
                                min(lam_c, 0.0) / (fast_lambda_min - 1.0e-14) -
                                max(lam_c, 0.0) / (fast_lambda_max + 1.0e-14);
-    // Project du onto the fluid subspace via the complement of the
-    // well-conditioned fast waves {1,7}. The GLM/divergence-cleaning waves
-    // {0,8} travel at the light speed, are OUT OF the fluid HLL fan, and are
-    // handled by the (diffusive) HLL flux -- projecting them out here would
-    // corrupt the complement, so they are skipped per point when out of fan.
+    // Project du onto the fluid subspace via the complement of all four
+    // outer waves {0,1,7,8}, whether or not they lie inside the fan. The
+    // GLM/divergence-cleaning waves {0,8} travel at the light speed, outside
+    // the fluid fan; projecting them out leaves their part of dU on the HLL
+    // flux. (Skipping them would restore their B_n, S and tau components with
+    // the contact coefficient.) The complement is then the spectral projector
+    // of the fluid group.
+    //
+    // The analytic eigenvectors are biorthogonal but not biorthonormal, so
+    // the projection of dU onto an outer wave is r_k (l_k.dU)/(l_k.r_k).
+    // Where |l_k.r_k| < 1e-12 for an outer wave the block is not applied at
+    // that point.
     std::array<DataVector, 9> cdu = du;
+    DataVector complement_ok{num_points, 1.0};
     const std::array<size_t, 4> nondegenerate_waves{{0, 1, 7, 8}};
     for (const size_t k : nondegenerate_waves) {
-      const DataVector& lam_k = mhd_speeds.get(k);
       DataVector ldu{num_points, 0.0};
+      DataVector lr{num_points, 0.0};
       for (size_t n = 0; n < 9; ++n) {
         ldu += projectors.get(k, n) * gsl::at(du, n);
+        lr += projectors.get(k, n) * modes.get(k, n);
       }
-      for (size_t n = 0; n < 9; ++n) {
-        const DataVector contrib = ldu * modes.get(k, n);
-        for (size_t pt = 0; pt < num_points; ++pt) {
-          if (lam_k[pt] < fast_lambda_max[pt] and
-              lam_k[pt] > fast_lambda_min[pt]) {
-            gsl::at(cdu, n)[pt] -= contrib[pt];
-          }
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (not std::isfinite(lr[pt]) or std::abs(lr[pt]) < 1.0e-12) {
+          complement_ok[pt] = 0.0;
+          continue;
+        }
+        const double strength = ldu[pt] / lr[pt];
+        for (size_t n = 0; n < 9; ++n) {
+          gsl::at(cdu, n)[pt] -= strength * modes.get(k, n)[pt];
         }
       }
     }
@@ -976,7 +986,7 @@ void Hllem::dg_boundary_terms(
     for (size_t n = 0; n < 9; ++n) {
       const DataVector block = coeff * delta_c * gsl::at(cdu, n);
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (restored_wave_dropped[pt] > 0.0) {
+        if (restored_wave_dropped[pt] > 0.0 and complement_ok[pt] > 0.0) {
           gsl::at(antidiff, n)[pt] = block[pt];
         }
       }
