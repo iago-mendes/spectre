@@ -36,10 +36,11 @@
 namespace grmhd::ValenciaDivClean {
 namespace detail {
 // Diagnostic counter for how often the denominator floors in the characteristic
-// decomposition actually BIND. A floor that never binds is inert; one that binds
-// constantly says the eigensystem is being evaluated where it is not meaningful
-// (atmosphere cells, or a genuine wave degeneracy), which is exactly when a
-// solver that uses the eigenbasis AS its flux (Marquina) cannot be trusted.
+// decomposition actually BIND. A floor that never binds is inert; one that
+// binds constantly says the eigensystem is being evaluated where it is not
+// meaningful (atmosphere cells, or a genuine wave degeneracy), which is exactly
+// when a solver that uses the eigenbasis AS its flux (Marquina) cannot be
+// trusted.
 size_t& denominator_floor_counter() {
   static size_t counter = 0;
   return counter;
@@ -47,7 +48,9 @@ size_t& denominator_floor_counter() {
 }  // namespace detail
 
 size_t denominator_floor_count() { return detail::denominator_floor_counter(); }
-void reset_denominator_floor_count() { detail::denominator_floor_counter() = 0; }
+void reset_denominator_floor_count() {
+  detail::denominator_floor_counter() = 0;
+}
 }  // namespace grmhd::ValenciaDivClean
 
 namespace {
@@ -1459,7 +1462,8 @@ void characteristic_eigenvectors_mhd(
     get(script_G) = rho * h * square(get(a)) - get(G) * get(b_squared);
     // Same atmosphere limit as the kappa guard above: p -> 0 drives cs2 -> 0,
     // so this denominator vanishes for a cell at the floor. Mask the division
-    // rather than let it raise an FPE (which the HLLEM caller used to suppress).
+    // rather than let it raise an FPE (which the HLLEM caller used to
+    // suppress).
     get(script_G_rho) =
         get(script_G) / floored_denominator(rho * h * cs2, rho * h);
     get(kappa_rho) = kappa_i + rho * cs2;
@@ -1575,7 +1579,8 @@ void characteristic_eigenvectors_mhd(
            r_1_s * square(W) *
                (get(B_1) - get(v_2) * get(B_21) + get(v_n) * get(B_31)));
       // B along s vanishes; B along tangent_1, tangent_2:
-      const DataVector r_modes_b_1 = sqrt_rho_h_star_s * get(B_2) + get(v_2) * r_4_s;
+      const DataVector r_modes_b_1 =
+          sqrt_rho_h_star_s * get(B_2) + get(v_2) * r_4_s;
       const DataVector r_modes_b_2 =
           -sqrt_rho_h_star_s * get(B_1) - get(v_1) * r_4_s;
 
@@ -1621,12 +1626,13 @@ void characteristic_eigenvectors_mhd(
       // with the two typo corrections confirmed by the author (S. A. Teukolsky,
       // private communication).  The printed Eq. (4.32) is NOT a right
       // eigenvector for v != 0:
-      //   row 1 (momentum S^i): the term  W^2 B kappa_B (s^i + y v^i)  should be
-      //                          W^2 kappa_Bv (s^i + y v^i);
+      //   row 1 (momentum S^i): the term  W^2 B kappa_B (s^i + y v^i)
+      //     should be  W^2 kappa_Bv (s^i + y v^i);
       //   row 3 (D), 2nd term:  (1 - cs^2) rho a B_n  should be
-      //                          (1 - cs^2) rho^2 a B_n   (dimensional fix; only
-      //                          visible for rho != 1).
-      // Verified against the conserved characteristic matrix (flux_jacobian_mhd):
+      //     (1 - cs^2) rho^2 a B_n   (dimensional fix; only visible for
+      //     rho != 1).
+      // Verified against the conserved characteristic matrix
+      // (flux_jacobian_mhd):
       // A.R = y R to machine precision (including rho != 1).
       for (size_t i = 0; i < 3; ++i) {
         characteristic_modes->get(wave, i) =
@@ -2062,8 +2068,10 @@ void characteristic_eigenvectors_hydro(
       1.0 / (get(specific_enthalpy) * get(one_minus_normal_velocity_squared));
 
   // L1
-  characteristic_projectors->get(L1, 0) = -get(v_dot_tangent_1) * get(prefactor_L12);
-  characteristic_projectors->get(L1, 4) = -get(v_dot_tangent_1) * get(prefactor_L12);
+  characteristic_projectors->get(L1, 0) =
+      -get(v_dot_tangent_1) * get(prefactor_L12);
+  characteristic_projectors->get(L1, 4) =
+      -get(v_dot_tangent_1) * get(prefactor_L12);
   for (size_t i = 0; i < 3; ++i) {
     characteristic_projectors->get(L1, i + 1) =
         (get(v_dot_tangent_1) * get(normal_velocity) *
@@ -2073,8 +2081,10 @@ void characteristic_eigenvectors_hydro(
   }
 
   // L2
-  characteristic_projectors->get(L2, 0) = -get(v_dot_tangent_2) * get(prefactor_L12);
-  characteristic_projectors->get(L2, 4) = -get(v_dot_tangent_2) * get(prefactor_L12);
+  characteristic_projectors->get(L2, 0) =
+      -get(v_dot_tangent_2) * get(prefactor_L12);
+  characteristic_projectors->get(L2, 4) =
+      -get(v_dot_tangent_2) * get(prefactor_L12);
   for (size_t i = 0; i < 3; ++i) {
     characteristic_projectors->get(L2, i + 1) =
         (get(v_dot_tangent_2) * get(normal_velocity) *
@@ -2197,7 +2207,8 @@ void characteristic_eigenvectors_hydro(
 
     // tau
     characteristic_projectors->get(Lplus, 4) = get(b_plus) * get(prefactor_Lpm);
-    characteristic_projectors->get(Lminus, 4) = get(b_minus) * get(prefactor_Lpm);
+    characteristic_projectors->get(Lminus, 4) =
+        get(b_minus) * get(prefactor_Lpm);
 
     // DYe
     characteristic_projectors->get(Lplus, 5) =
@@ -2537,7 +2548,8 @@ void flux_jacobian_mhd(
   // flux_jacobian_hydro (same intermediate-quantity conventions).
   const size_t num_points = get(rest_mass_density).size();
 
-  // Sound speed squared and kappa = dp/d(eps) (same logic as flux_jacobian_hydro).
+  // Sound speed squared and kappa = dp/d(eps) (same logic as
+  // flux_jacobian_hydro).
   DataVector soundSpeedSquared(num_points);
   DataVector kappa(num_points, 0.0);
   Scalar<DataVector> pressure(num_points);
@@ -2563,7 +2575,8 @@ void flux_jacobian_mhd(
             square(get(rest_mass_density));
   } else if constexpr (ThermodynamicDim == 3) {
     if (not equation_of_state.is_equilibrium()) {
-      ERROR("flux_jacobian_mhd currently only supports 3D EoSs in equilibrium.");
+      ERROR(
+          "flux_jacobian_mhd currently only supports 3D EoSs in equilibrium.");
     }
     const DataVector kappa_times_p_over_rho_squared =
         get(equation_of_state
@@ -2588,7 +2601,7 @@ void flux_jacobian_mhd(
   const auto& magneticField = magnetic_field;
   const auto& unitNormal = unit_normal;
 
-  tnsr::I<DataVector, 3> unitVector(num_points);            // s^i = gamma^{ij} n_j
+  tnsr::I<DataVector, 3> unitVector(num_points);  // s^i = gamma^{ij} n_j
   tnsr::i<DataVector, 3> spatialVelocityOneForm(num_points);  // v_i
   tnsr::i<DataVector, 3> magneticFieldOneForm(num_points);    // B_i
   for (size_t i = 0; i < 3; ++i) {
@@ -2624,145 +2637,388 @@ void flux_jacobian_mhd(
 
   // --- generated matrix entries (As, from matrix.txt) ---
   const auto x0 = Zvar + magneticFieldSquared;
-  const auto x1 = 1.0/x0;
-  const auto x2 = magneticFieldDotVelocity*unitVector.get(0);
-  const auto x3 = 2*normalMagneticField;
+  const auto x1 = 1.0 / x0;
+  const auto x2 = magneticFieldDotVelocity * unitVector.get(0);
+  const auto x3 = 2 * normalMagneticField;
   const auto x4 = soundSpeedSquared - 1;
-  const auto x5 = restMassDensity*x4;
-  const auto x6 = magneticFieldDotVelocity*x5;
+  const auto x5 = restMassDensity * x4;
+  const auto x6 = magneticFieldDotVelocity * x5;
   const auto x7 = kappa + restMassDensity;
-  const auto x8 = magneticFieldSquared*x7;
-  const auto x9 = restMassDensity*soundSpeedSquared;
+  const auto x8 = magneticFieldSquared * x7;
+  const auto x9 = restMassDensity * soundSpeedSquared;
   const auto x10 = kappa + x9;
-  const auto x11 = Zvar*x10;
+  const auto x11 = Zvar * x10;
   const auto x12 = x11 + x8;
-  const auto x13 = magneticField.get(0)*x6 + spatialVelocity.get(0)*x12;
+  const auto x13 = magneticField.get(0) * x6 + spatialVelocity.get(0) * x12;
   const auto x14 = square(lorentzFactor);
-  const auto x16 = magneticFieldDotVelocity*normalVelocity*x14;
-  const auto x17 = 2*x14;
-  const auto x18 = normalMagneticField*(2 - x17) + x16;
-  const auto x19 = 1.0/restMassDensity;
+  const auto x16 = magneticFieldDotVelocity * normalVelocity * x14;
+  const auto x17 = 2 * x14;
+  const auto x18 = normalMagneticField * (2 - x17) + x16;
+  const auto x19 = 1.0 / restMassDensity;
   const auto x23 = square(magneticFieldDotVelocity);
-  const auto x24 = x14*x23;
-  const auto x26 = x19/(Zvar*soundSpeedSquared*(x14 - 1) + soundSpeedSquared*x24 - x14*(Zvar + comovingMagneticFieldSquared));
-  const auto x27 = x18*x26;
-  const auto x29 = unitVector.get(0)*x0;
-  const auto x31 = magneticFieldDotVelocity*normalMagneticField;
-  const auto x33 = -normalVelocity*x0 + x31;
-  const auto x35 = x14*(spatialVelocityOneForm.get(0)*x33 + unitNormal.get(0)*x0);
-  const auto x37 = normalVelocity*x0 - x31;
-  const auto x38 = unitVector.get(1)*x0;
-  const auto x39 = magneticField.get(1)*x6 + spatialVelocity.get(1)*x12;
-  const auto x40 = magneticFieldDotVelocity*unitVector.get(1);
-  const auto x42 = unitVector.get(2)*x0;
-  const auto x43 = magneticField.get(2)*x6 + spatialVelocity.get(2)*x12;
-  const auto x44 = magneticFieldDotVelocity*unitVector.get(2);
+  const auto x24 = x14 * x23;
+  const auto x26 =
+      x19 / (Zvar * soundSpeedSquared * (x14 - 1) + soundSpeedSquared * x24 -
+             x14 * (Zvar + comovingMagneticFieldSquared));
+  const auto x27 = x18 * x26;
+  const auto x29 = unitVector.get(0) * x0;
+  const auto x31 = magneticFieldDotVelocity * normalMagneticField;
+  const auto x33 = -normalVelocity * x0 + x31;
+  const auto x35 =
+      x14 * (spatialVelocityOneForm.get(0) * x33 + unitNormal.get(0) * x0);
+  const auto x37 = normalVelocity * x0 - x31;
+  const auto x38 = unitVector.get(1) * x0;
+  const auto x39 = magneticField.get(1) * x6 + spatialVelocity.get(1) * x12;
+  const auto x40 = magneticFieldDotVelocity * unitVector.get(1);
+  const auto x42 = unitVector.get(2) * x0;
+  const auto x43 = magneticField.get(2) * x6 + spatialVelocity.get(2) * x12;
+  const auto x44 = magneticFieldDotVelocity * unitVector.get(2);
   const auto x46 = x0 + x24;
   const auto x48 = square(restMassDensity);
-  const auto x50 = magneticFieldDotVelocity*spatialVelocity.get(0)*x14*(magneticFieldSquared*x10 + specificEnthalpy*x14*x4*x48 + x11);
-  const auto x52 = x26*(magneticField.get(0)*(Zvar*kappa - Zvar*restMassDensity - comovingMagneticFieldSquared*restMassDensity*x17 + restMassDensity*x24*(soundSpeedSquared + 1) + x8) + x50);
-  const auto x53 = x17*x31;
-  const auto x54 = -magneticFieldDotVelocity*normalVelocity*x17 + normalMagneticField*(4*x14 - 4);
-  const auto x55 = Zvar*(kappa + restMassDensity*(-soundSpeedSquared*(x17 - 2) + x17 - 1)) - x24*x5 + x8;
-  const auto x57 = x26*x3;
-  const auto x58 = x26*(magneticField.get(0)*x55 + x50);
-  const auto x59 = normalMagneticField*x17;
-  const auto x62 = x1/x14;
-  const auto x63 = magneticFieldDotVelocity*spatialVelocity.get(1)*x14*(magneticFieldSquared*x10 + specificEnthalpy*x14*x4*x48 + x11);
-  const auto x64 = x26*(magneticField.get(1)*(Zvar*kappa - Zvar*restMassDensity - comovingMagneticFieldSquared*restMassDensity*x17 + restMassDensity*x24*(soundSpeedSquared + 1) + x8) + x63);
-  const auto x66 = x26*(magneticField.get(1)*x55 + x63);
-  const auto x68 = magneticFieldDotVelocity*spatialVelocity.get(2)*x14*(magneticFieldSquared*x10 + specificEnthalpy*x14*x4*x48 + x11);
-  const auto x69 = x26*(magneticField.get(2)*(Zvar*kappa - Zvar*restMassDensity - comovingMagneticFieldSquared*restMassDensity*x17 + restMassDensity*x24*(soundSpeedSquared + 1) + x8) + x68);
-  const auto x71 = x26*(magneticField.get(2)*x55 + x68);
+  const auto x50 =
+      magneticFieldDotVelocity * spatialVelocity.get(0) * x14 *
+      (magneticFieldSquared * x10 + specificEnthalpy * x14 * x4 * x48 + x11);
+  const auto x52 =
+      x26 * (magneticField.get(0) *
+                 (Zvar * kappa - Zvar * restMassDensity -
+                  comovingMagneticFieldSquared * restMassDensity * x17 +
+                  restMassDensity * x24 * (soundSpeedSquared + 1) + x8) +
+             x50);
+  const auto x53 = x17 * x31;
+  const auto x54 = -magneticFieldDotVelocity * normalVelocity * x17 +
+                   normalMagneticField * (4 * x14 - 4);
+  const auto x55 =
+      Zvar * (kappa +
+              restMassDensity * (-soundSpeedSquared * (x17 - 2) + x17 - 1)) -
+      x24 * x5 + x8;
+  const auto x57 = x26 * x3;
+  const auto x58 = x26 * (magneticField.get(0) * x55 + x50);
+  const auto x59 = normalMagneticField * x17;
+  const auto x62 = x1 / x14;
+  const auto x63 =
+      magneticFieldDotVelocity * spatialVelocity.get(1) * x14 *
+      (magneticFieldSquared * x10 + specificEnthalpy * x14 * x4 * x48 + x11);
+  const auto x64 =
+      x26 * (magneticField.get(1) *
+                 (Zvar * kappa - Zvar * restMassDensity -
+                  comovingMagneticFieldSquared * restMassDensity * x17 +
+                  restMassDensity * x24 * (soundSpeedSquared + 1) + x8) +
+             x63);
+  const auto x66 = x26 * (magneticField.get(1) * x55 + x63);
+  const auto x68 =
+      magneticFieldDotVelocity * spatialVelocity.get(2) * x14 *
+      (magneticFieldSquared * x10 + specificEnthalpy * x14 * x4 * x48 + x11);
+  const auto x69 =
+      x26 * (magneticField.get(2) *
+                 (Zvar * kappa - Zvar * restMassDensity -
+                  comovingMagneticFieldSquared * restMassDensity * x17 +
+                  restMassDensity * x24 * (soundSpeedSquared + 1) + x8) +
+             x68);
+  const auto x71 = x26 * (magneticField.get(2) * x55 + x68);
   const auto x73 = cube(lorentzFactor);
-  const auto x75 = x0*(Zvar*(-kappa + x9) + restMassDensity*x7*x73);
-  const auto x81 = -Zvar*lorentzFactor*soundSpeedSquared*(x14 - 1) - soundSpeedSquared*x23*x73 + x73*(Zvar + comovingMagneticFieldSquared);
-  const auto x86 = x0*x14*x7;
-  const auto x87 = -soundSpeedSquared*x24 + soundSpeedSquared*(-Zvar*x14 + Zvar) + x14*(Zvar + comovingMagneticFieldSquared);
-  const auto x92 = x14*(spatialVelocityOneForm.get(1)*x33 + unitNormal.get(1)*x0);
-  const auto x97 = x14*(spatialVelocityOneForm.get(2)*x33 + unitNormal.get(2)*x0);
-  const auto x100 = x14*x26;
-  const auto x101 = x100*x13;
-  const auto x104 = x100*x39;
-  const auto x105 = normalVelocity*x100;
-  const auto x107 = x100*x43;
-  const auto x116 = 1/(x48*(Zvar*lorentzFactor*soundSpeedSquared*(x14 - 1) + soundSpeedSquared*x23*x73 - x73*(Zvar + comovingMagneticFieldSquared)));
-  const auto x125 = Zvar*normalVelocity;
+  const auto x75 = x0 * (Zvar * (-kappa + x9) + restMassDensity * x7 * x73);
+  const auto x81 = -Zvar * lorentzFactor * soundSpeedSquared * (x14 - 1) -
+                   soundSpeedSquared * x23 * x73 +
+                   x73 * (Zvar + comovingMagneticFieldSquared);
+  const auto x86 = x0 * x14 * x7;
+  const auto x87 = -soundSpeedSquared * x24 +
+                   soundSpeedSquared * (-Zvar * x14 + Zvar) +
+                   x14 * (Zvar + comovingMagneticFieldSquared);
+  const auto x92 =
+      x14 * (spatialVelocityOneForm.get(1) * x33 + unitNormal.get(1) * x0);
+  const auto x97 =
+      x14 * (spatialVelocityOneForm.get(2) * x33 + unitNormal.get(2) * x0);
+  const auto x100 = x14 * x26;
+  const auto x101 = x100 * x13;
+  const auto x104 = x100 * x39;
+  const auto x105 = normalVelocity * x100;
+  const auto x107 = x100 * x43;
+  const auto x116 =
+      1 / (x48 * (Zvar * lorentzFactor * soundSpeedSquared * (x14 - 1) +
+                  soundSpeedSquared * x23 * x73 -
+                  x73 * (Zvar + comovingMagneticFieldSquared)));
+  const auto x125 = Zvar * normalVelocity;
   const auto x126 = x125 + x31;
-  const auto x129 = x1/Zvar;
-  const auto x130 = Dvar*x129;
-  const auto x141 = 2*x125 + x31;
-  characteristic_matrix->get(0, 0) = x1*(magneticFieldOneForm.get(0)*(spatialVelocity.get(0)*x3 + x13*x27 - x2) + spatialVelocityOneForm.get(0)*x29 + x13*x26*x35 + x37);
-  characteristic_matrix->get(0, 1) = x1*(magneticFieldOneForm.get(0)*(spatialVelocity.get(1)*x3 + x27*x39 - x40) + spatialVelocityOneForm.get(0)*x38 + x26*x35*x39);
-  characteristic_matrix->get(0, 2) = x1*(magneticFieldOneForm.get(0)*(spatialVelocity.get(2)*x3 + x27*x43 - x44) + spatialVelocityOneForm.get(0)*x42 + x26*x35*x43);
-  characteristic_matrix->get(0, 3) = x62*(-magneticFieldOneForm.get(0)*(magneticField.get(0)*x54 - spatialVelocity.get(0)*x53 + unitVector.get(0)*x46 - x16*x58 - x57*(magneticField.get(0)*x55 + x50) + x58*x59) - normalMagneticField*x46 + x35*x52);
-  characteristic_matrix->get(0, 4) = x62*(-magneticFieldOneForm.get(0)*(magneticField.get(1)*x54 - spatialVelocity.get(1)*x53 + unitVector.get(1)*x46 - x16*x66 - x57*(magneticField.get(1)*x55 + x63) + x59*x66) + x35*x64);
-  characteristic_matrix->get(0, 5) = x62*(-magneticFieldOneForm.get(0)*(magneticField.get(2)*x54 - spatialVelocity.get(2)*x53 + unitVector.get(2)*x46 - x16*x71 - x57*(magneticField.get(2)*x55 + x68) + x59*x71) + x35*x69);
-  characteristic_matrix->get(0, 6) = x62*(magneticFieldOneForm.get(0)*x18*x75 + x14*(spatialVelocityOneForm.get(0)*x33*x75 - unitNormal.get(0)*x0*(x48*x81 - x75)))/(x48*x81);
-  characteristic_matrix->get(0, 7) = x1*x19*(magneticFieldOneForm.get(0)*x0*x18*x7 + spatialVelocityOneForm.get(0)*x33*x86 - unitNormal.get(0)*x0*(restMassDensity*x87 - x86))/x87;
+  const auto x129 = x1 / Zvar;
+  const auto x130 = Dvar * x129;
+  const auto x141 = 2 * x125 + x31;
+  characteristic_matrix->get(0, 0) =
+      x1 * (magneticFieldOneForm.get(0) *
+                (spatialVelocity.get(0) * x3 + x13 * x27 - x2) +
+            spatialVelocityOneForm.get(0) * x29 + x13 * x26 * x35 + x37);
+  characteristic_matrix->get(0, 1) =
+      x1 * (magneticFieldOneForm.get(0) *
+                (spatialVelocity.get(1) * x3 + x27 * x39 - x40) +
+            spatialVelocityOneForm.get(0) * x38 + x26 * x35 * x39);
+  characteristic_matrix->get(0, 2) =
+      x1 * (magneticFieldOneForm.get(0) *
+                (spatialVelocity.get(2) * x3 + x27 * x43 - x44) +
+            spatialVelocityOneForm.get(0) * x42 + x26 * x35 * x43);
+  characteristic_matrix->get(0, 3) =
+      x62 * (-magneticFieldOneForm.get(0) *
+                 (magneticField.get(0) * x54 - spatialVelocity.get(0) * x53 +
+                  unitVector.get(0) * x46 - x16 * x58 -
+                  x57 * (magneticField.get(0) * x55 + x50) + x58 * x59) -
+             normalMagneticField * x46 + x35 * x52);
+  characteristic_matrix->get(0, 4) =
+      x62 * (-magneticFieldOneForm.get(0) *
+                 (magneticField.get(1) * x54 - spatialVelocity.get(1) * x53 +
+                  unitVector.get(1) * x46 - x16 * x66 -
+                  x57 * (magneticField.get(1) * x55 + x63) + x59 * x66) +
+             x35 * x64);
+  characteristic_matrix->get(0, 5) =
+      x62 * (-magneticFieldOneForm.get(0) *
+                 (magneticField.get(2) * x54 - spatialVelocity.get(2) * x53 +
+                  unitVector.get(2) * x46 - x16 * x71 -
+                  x57 * (magneticField.get(2) * x55 + x68) + x59 * x71) +
+             x35 * x69);
+  characteristic_matrix->get(0, 6) =
+      x62 *
+      (magneticFieldOneForm.get(0) * x18 * x75 +
+       x14 * (spatialVelocityOneForm.get(0) * x33 * x75 -
+              unitNormal.get(0) * x0 * (x48 * x81 - x75))) /
+      (x48 * x81);
+  characteristic_matrix->get(0, 7) =
+      x1 * x19 *
+      (magneticFieldOneForm.get(0) * x0 * x18 * x7 +
+       spatialVelocityOneForm.get(0) * x33 * x86 -
+       unitNormal.get(0) * x0 * (restMassDensity * x87 - x86)) /
+      x87;
   characteristic_matrix->get(0, 8) = 0;
-  characteristic_matrix->get(1, 0) = x1*(magneticFieldOneForm.get(1)*(spatialVelocity.get(0)*x3 + x13*x27 - x2) + spatialVelocityOneForm.get(1)*x29 + x13*x26*x92);
-  characteristic_matrix->get(1, 1) = x1*(magneticFieldOneForm.get(1)*(spatialVelocity.get(1)*x3 + x27*x39 - x40) + spatialVelocityOneForm.get(1)*x38 + x26*x39*x92 + x37);
-  characteristic_matrix->get(1, 2) = x1*(magneticFieldOneForm.get(1)*(spatialVelocity.get(2)*x3 + x27*x43 - x44) + spatialVelocityOneForm.get(1)*x42 + x26*x43*x92);
-  characteristic_matrix->get(1, 3) = x62*(-magneticFieldOneForm.get(1)*(magneticField.get(0)*x54 - spatialVelocity.get(0)*x53 + unitVector.get(0)*x46 - x16*x58 - x57*(magneticField.get(0)*x55 + x50) + x58*x59) + x52*x92);
-  characteristic_matrix->get(1, 4) = x62*(-magneticFieldOneForm.get(1)*(magneticField.get(1)*x54 - spatialVelocity.get(1)*x53 + unitVector.get(1)*x46 - x16*x66 - x57*(magneticField.get(1)*x55 + x63) + x59*x66) - normalMagneticField*x46 + x64*x92);
-  characteristic_matrix->get(1, 5) = x62*(-magneticFieldOneForm.get(1)*(magneticField.get(2)*x54 - spatialVelocity.get(2)*x53 + unitVector.get(2)*x46 - x16*x71 - x57*(magneticField.get(2)*x55 + x68) + x59*x71) + x69*x92);
-  characteristic_matrix->get(1, 6) = x62*(magneticFieldOneForm.get(1)*x18*x75 + x14*(spatialVelocityOneForm.get(1)*x33*x75 - unitNormal.get(1)*x0*(x48*x81 - x75)))/(x48*x81);
-  characteristic_matrix->get(1, 7) = x1*x19*(magneticFieldOneForm.get(1)*x0*x18*x7 + spatialVelocityOneForm.get(1)*x33*x86 - unitNormal.get(1)*x0*(restMassDensity*x87 - x86))/x87;
+  characteristic_matrix->get(1, 0) =
+      x1 * (magneticFieldOneForm.get(1) *
+                (spatialVelocity.get(0) * x3 + x13 * x27 - x2) +
+            spatialVelocityOneForm.get(1) * x29 + x13 * x26 * x92);
+  characteristic_matrix->get(1, 1) =
+      x1 * (magneticFieldOneForm.get(1) *
+                (spatialVelocity.get(1) * x3 + x27 * x39 - x40) +
+            spatialVelocityOneForm.get(1) * x38 + x26 * x39 * x92 + x37);
+  characteristic_matrix->get(1, 2) =
+      x1 * (magneticFieldOneForm.get(1) *
+                (spatialVelocity.get(2) * x3 + x27 * x43 - x44) +
+            spatialVelocityOneForm.get(1) * x42 + x26 * x43 * x92);
+  characteristic_matrix->get(1, 3) =
+      x62 * (-magneticFieldOneForm.get(1) *
+                 (magneticField.get(0) * x54 - spatialVelocity.get(0) * x53 +
+                  unitVector.get(0) * x46 - x16 * x58 -
+                  x57 * (magneticField.get(0) * x55 + x50) + x58 * x59) +
+             x52 * x92);
+  characteristic_matrix->get(1, 4) =
+      x62 * (-magneticFieldOneForm.get(1) *
+                 (magneticField.get(1) * x54 - spatialVelocity.get(1) * x53 +
+                  unitVector.get(1) * x46 - x16 * x66 -
+                  x57 * (magneticField.get(1) * x55 + x63) + x59 * x66) -
+             normalMagneticField * x46 + x64 * x92);
+  characteristic_matrix->get(1, 5) =
+      x62 * (-magneticFieldOneForm.get(1) *
+                 (magneticField.get(2) * x54 - spatialVelocity.get(2) * x53 +
+                  unitVector.get(2) * x46 - x16 * x71 -
+                  x57 * (magneticField.get(2) * x55 + x68) + x59 * x71) +
+             x69 * x92);
+  characteristic_matrix->get(1, 6) =
+      x62 *
+      (magneticFieldOneForm.get(1) * x18 * x75 +
+       x14 * (spatialVelocityOneForm.get(1) * x33 * x75 -
+              unitNormal.get(1) * x0 * (x48 * x81 - x75))) /
+      (x48 * x81);
+  characteristic_matrix->get(1, 7) =
+      x1 * x19 *
+      (magneticFieldOneForm.get(1) * x0 * x18 * x7 +
+       spatialVelocityOneForm.get(1) * x33 * x86 -
+       unitNormal.get(1) * x0 * (restMassDensity * x87 - x86)) /
+      x87;
   characteristic_matrix->get(1, 8) = 0;
-  characteristic_matrix->get(2, 0) = x1*(magneticFieldOneForm.get(2)*(spatialVelocity.get(0)*x3 + x13*x27 - x2) + spatialVelocityOneForm.get(2)*x29 + x13*x26*x97);
-  characteristic_matrix->get(2, 1) = x1*(magneticFieldOneForm.get(2)*(spatialVelocity.get(1)*x3 + x27*x39 - x40) + spatialVelocityOneForm.get(2)*x38 + x26*x39*x97);
-  characteristic_matrix->get(2, 2) = x1*(magneticFieldOneForm.get(2)*(spatialVelocity.get(2)*x3 + x27*x43 - x44) + spatialVelocityOneForm.get(2)*x42 + x26*x43*x97 + x37);
-  characteristic_matrix->get(2, 3) = x62*(-magneticFieldOneForm.get(2)*(magneticField.get(0)*x54 - spatialVelocity.get(0)*x53 + unitVector.get(0)*x46 - x16*x58 - x57*(magneticField.get(0)*x55 + x50) + x58*x59) + x52*x97);
-  characteristic_matrix->get(2, 4) = x62*(-magneticFieldOneForm.get(2)*(magneticField.get(1)*x54 - spatialVelocity.get(1)*x53 + unitVector.get(1)*x46 - x16*x66 - x57*(magneticField.get(1)*x55 + x63) + x59*x66) + x64*x97);
-  characteristic_matrix->get(2, 5) = x62*(-magneticFieldOneForm.get(2)*(magneticField.get(2)*x54 - spatialVelocity.get(2)*x53 + unitVector.get(2)*x46 - x16*x71 - x57*(magneticField.get(2)*x55 + x68) + x59*x71) - normalMagneticField*x46 + x69*x97);
-  characteristic_matrix->get(2, 6) = x62*(magneticFieldOneForm.get(2)*x18*x75 + x14*(spatialVelocityOneForm.get(2)*x33*x75 - unitNormal.get(2)*x0*(x48*x81 - x75)))/(x48*x81);
-  characteristic_matrix->get(2, 7) = x1*x19*(magneticFieldOneForm.get(2)*x0*x18*x7 + spatialVelocityOneForm.get(2)*x33*x86 - unitNormal.get(2)*x0*(restMassDensity*x87 - x86))/x87;
+  characteristic_matrix->get(2, 0) =
+      x1 * (magneticFieldOneForm.get(2) *
+                (spatialVelocity.get(0) * x3 + x13 * x27 - x2) +
+            spatialVelocityOneForm.get(2) * x29 + x13 * x26 * x97);
+  characteristic_matrix->get(2, 1) =
+      x1 * (magneticFieldOneForm.get(2) *
+                (spatialVelocity.get(1) * x3 + x27 * x39 - x40) +
+            spatialVelocityOneForm.get(2) * x38 + x26 * x39 * x97);
+  characteristic_matrix->get(2, 2) =
+      x1 * (magneticFieldOneForm.get(2) *
+                (spatialVelocity.get(2) * x3 + x27 * x43 - x44) +
+            spatialVelocityOneForm.get(2) * x42 + x26 * x43 * x97 + x37);
+  characteristic_matrix->get(2, 3) =
+      x62 * (-magneticFieldOneForm.get(2) *
+                 (magneticField.get(0) * x54 - spatialVelocity.get(0) * x53 +
+                  unitVector.get(0) * x46 - x16 * x58 -
+                  x57 * (magneticField.get(0) * x55 + x50) + x58 * x59) +
+             x52 * x97);
+  characteristic_matrix->get(2, 4) =
+      x62 * (-magneticFieldOneForm.get(2) *
+                 (magneticField.get(1) * x54 - spatialVelocity.get(1) * x53 +
+                  unitVector.get(1) * x46 - x16 * x66 -
+                  x57 * (magneticField.get(1) * x55 + x63) + x59 * x66) +
+             x64 * x97);
+  characteristic_matrix->get(2, 5) =
+      x62 * (-magneticFieldOneForm.get(2) *
+                 (magneticField.get(2) * x54 - spatialVelocity.get(2) * x53 +
+                  unitVector.get(2) * x46 - x16 * x71 -
+                  x57 * (magneticField.get(2) * x55 + x68) + x59 * x71) -
+             normalMagneticField * x46 + x69 * x97);
+  characteristic_matrix->get(2, 6) =
+      x62 *
+      (magneticFieldOneForm.get(2) * x18 * x75 +
+       x14 * (spatialVelocityOneForm.get(2) * x33 * x75 -
+              unitNormal.get(2) * x0 * (x48 * x81 - x75))) /
+      (x48 * x81);
+  characteristic_matrix->get(2, 7) =
+      x1 * x19 *
+      (magneticFieldOneForm.get(2) * x0 * x18 * x7 +
+       spatialVelocityOneForm.get(2) * x33 * x86 -
+       unitNormal.get(2) * x0 * (restMassDensity * x87 - x86)) /
+      x87;
   characteristic_matrix->get(2, 8) = 0;
-  characteristic_matrix->get(3, 0) = x1*(magneticFieldOneForm.get(0)*(-normalVelocity*x101 + unitVector.get(0)) + normalMagneticField*(spatialVelocityOneForm.get(0)*x101 - 1));
-  characteristic_matrix->get(3, 1) = x1*(magneticFieldOneForm.get(0)*(unitVector.get(1) - x105*x39) + normalMagneticField*spatialVelocityOneForm.get(0)*x104);
-  characteristic_matrix->get(3, 2) = x1*(magneticFieldOneForm.get(0)*(unitVector.get(2) - x105*x43) + normalMagneticField*spatialVelocityOneForm.get(0)*x107);
-  characteristic_matrix->get(3, 3) = x1*(magneticFieldOneForm.get(0)*(-normalVelocity*x52 + x2) + spatialVelocityOneForm.get(0)*(normalMagneticField*x52 - x29) + x37);
-  characteristic_matrix->get(3, 4) = x1*(magneticFieldOneForm.get(0)*(-normalVelocity*x64 + x40) + spatialVelocityOneForm.get(0)*(normalMagneticField*x64 - x38));
-  characteristic_matrix->get(3, 5) = x1*(magneticFieldOneForm.get(0)*(-normalVelocity*x69 + x44) + spatialVelocityOneForm.get(0)*(normalMagneticField*x69 - x42));
-  characteristic_matrix->get(3, 6) = x116*(Zvar*(-kappa + x9) + restMassDensity*x7*x73)*(magneticFieldOneForm.get(0)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(0));
-  characteristic_matrix->get(3, 7) = x100*x7*(magneticFieldOneForm.get(0)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(0));
+  characteristic_matrix->get(3, 0) =
+      x1 * (magneticFieldOneForm.get(0) *
+                (-normalVelocity * x101 + unitVector.get(0)) +
+            normalMagneticField * (spatialVelocityOneForm.get(0) * x101 - 1));
+  characteristic_matrix->get(3, 1) =
+      x1 * (magneticFieldOneForm.get(0) * (unitVector.get(1) - x105 * x39) +
+            normalMagneticField * spatialVelocityOneForm.get(0) * x104);
+  characteristic_matrix->get(3, 2) =
+      x1 * (magneticFieldOneForm.get(0) * (unitVector.get(2) - x105 * x43) +
+            normalMagneticField * spatialVelocityOneForm.get(0) * x107);
+  characteristic_matrix->get(3, 3) =
+      x1 *
+      (magneticFieldOneForm.get(0) * (-normalVelocity * x52 + x2) +
+       spatialVelocityOneForm.get(0) * (normalMagneticField * x52 - x29) + x37);
+  characteristic_matrix->get(3, 4) =
+      x1 * (magneticFieldOneForm.get(0) * (-normalVelocity * x64 + x40) +
+            spatialVelocityOneForm.get(0) * (normalMagneticField * x64 - x38));
+  characteristic_matrix->get(3, 5) =
+      x1 * (magneticFieldOneForm.get(0) * (-normalVelocity * x69 + x44) +
+            spatialVelocityOneForm.get(0) * (normalMagneticField * x69 - x42));
+  characteristic_matrix->get(3, 6) =
+      x116 * (Zvar * (-kappa + x9) + restMassDensity * x7 * x73) *
+      (magneticFieldOneForm.get(0) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(0));
+  characteristic_matrix->get(3, 7) =
+      x100 * x7 *
+      (magneticFieldOneForm.get(0) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(0));
   characteristic_matrix->get(3, 8) = unitNormal.get(0);
-  characteristic_matrix->get(4, 0) = x1*(magneticFieldOneForm.get(1)*(-normalVelocity*x101 + unitVector.get(0)) + normalMagneticField*spatialVelocityOneForm.get(1)*x101);
-  characteristic_matrix->get(4, 1) = x1*(magneticFieldOneForm.get(1)*(unitVector.get(1) - x105*x39) + normalMagneticField*(spatialVelocityOneForm.get(1)*x104 - 1));
-  characteristic_matrix->get(4, 2) = x1*(magneticFieldOneForm.get(1)*(unitVector.get(2) - x105*x43) + normalMagneticField*spatialVelocityOneForm.get(1)*x107);
-  characteristic_matrix->get(4, 3) = x1*(magneticFieldOneForm.get(1)*(-normalVelocity*x52 + x2) + spatialVelocityOneForm.get(1)*(normalMagneticField*x52 - x29));
-  characteristic_matrix->get(4, 4) = x1*(magneticFieldOneForm.get(1)*(-normalVelocity*x64 + x40) + spatialVelocityOneForm.get(1)*(normalMagneticField*x64 - x38) + x37);
-  characteristic_matrix->get(4, 5) = x1*(magneticFieldOneForm.get(1)*(-normalVelocity*x69 + x44) + spatialVelocityOneForm.get(1)*(normalMagneticField*x69 - x42));
-  characteristic_matrix->get(4, 6) = x116*(Zvar*(-kappa + x9) + restMassDensity*x7*x73)*(magneticFieldOneForm.get(1)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(1));
-  characteristic_matrix->get(4, 7) = x100*x7*(magneticFieldOneForm.get(1)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(1));
+  characteristic_matrix->get(4, 0) =
+      x1 * (magneticFieldOneForm.get(1) *
+                (-normalVelocity * x101 + unitVector.get(0)) +
+            normalMagneticField * spatialVelocityOneForm.get(1) * x101);
+  characteristic_matrix->get(4, 1) =
+      x1 * (magneticFieldOneForm.get(1) * (unitVector.get(1) - x105 * x39) +
+            normalMagneticField * (spatialVelocityOneForm.get(1) * x104 - 1));
+  characteristic_matrix->get(4, 2) =
+      x1 * (magneticFieldOneForm.get(1) * (unitVector.get(2) - x105 * x43) +
+            normalMagneticField * spatialVelocityOneForm.get(1) * x107);
+  characteristic_matrix->get(4, 3) =
+      x1 * (magneticFieldOneForm.get(1) * (-normalVelocity * x52 + x2) +
+            spatialVelocityOneForm.get(1) * (normalMagneticField * x52 - x29));
+  characteristic_matrix->get(4, 4) =
+      x1 *
+      (magneticFieldOneForm.get(1) * (-normalVelocity * x64 + x40) +
+       spatialVelocityOneForm.get(1) * (normalMagneticField * x64 - x38) + x37);
+  characteristic_matrix->get(4, 5) =
+      x1 * (magneticFieldOneForm.get(1) * (-normalVelocity * x69 + x44) +
+            spatialVelocityOneForm.get(1) * (normalMagneticField * x69 - x42));
+  characteristic_matrix->get(4, 6) =
+      x116 * (Zvar * (-kappa + x9) + restMassDensity * x7 * x73) *
+      (magneticFieldOneForm.get(1) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(1));
+  characteristic_matrix->get(4, 7) =
+      x100 * x7 *
+      (magneticFieldOneForm.get(1) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(1));
   characteristic_matrix->get(4, 8) = unitNormal.get(1);
-  characteristic_matrix->get(5, 0) = x1*(magneticFieldOneForm.get(2)*(-normalVelocity*x101 + unitVector.get(0)) + normalMagneticField*spatialVelocityOneForm.get(2)*x101);
-  characteristic_matrix->get(5, 1) = x1*(magneticFieldOneForm.get(2)*(unitVector.get(1) - x105*x39) + normalMagneticField*spatialVelocityOneForm.get(2)*x104);
-  characteristic_matrix->get(5, 2) = x1*(magneticFieldOneForm.get(2)*(unitVector.get(2) - x105*x43) + normalMagneticField*(spatialVelocityOneForm.get(2)*x107 - 1));
-  characteristic_matrix->get(5, 3) = x1*(magneticFieldOneForm.get(2)*(-normalVelocity*x52 + x2) + spatialVelocityOneForm.get(2)*(normalMagneticField*x52 - x29));
-  characteristic_matrix->get(5, 4) = x1*(magneticFieldOneForm.get(2)*(-normalVelocity*x64 + x40) + spatialVelocityOneForm.get(2)*(normalMagneticField*x64 - x38));
-  characteristic_matrix->get(5, 5) = x1*(magneticFieldOneForm.get(2)*(-normalVelocity*x69 + x44) + spatialVelocityOneForm.get(2)*(normalMagneticField*x69 - x42) + x37);
-  characteristic_matrix->get(5, 6) = x116*(Zvar*(-kappa + x9) + restMassDensity*x7*x73)*(magneticFieldOneForm.get(2)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(2));
-  characteristic_matrix->get(5, 7) = x100*x7*(magneticFieldOneForm.get(2)*normalVelocity - normalMagneticField*spatialVelocityOneForm.get(2));
+  characteristic_matrix->get(5, 0) =
+      x1 * (magneticFieldOneForm.get(2) *
+                (-normalVelocity * x101 + unitVector.get(0)) +
+            normalMagneticField * spatialVelocityOneForm.get(2) * x101);
+  characteristic_matrix->get(5, 1) =
+      x1 * (magneticFieldOneForm.get(2) * (unitVector.get(1) - x105 * x39) +
+            normalMagneticField * spatialVelocityOneForm.get(2) * x104);
+  characteristic_matrix->get(5, 2) =
+      x1 * (magneticFieldOneForm.get(2) * (unitVector.get(2) - x105 * x43) +
+            normalMagneticField * (spatialVelocityOneForm.get(2) * x107 - 1));
+  characteristic_matrix->get(5, 3) =
+      x1 * (magneticFieldOneForm.get(2) * (-normalVelocity * x52 + x2) +
+            spatialVelocityOneForm.get(2) * (normalMagneticField * x52 - x29));
+  characteristic_matrix->get(5, 4) =
+      x1 * (magneticFieldOneForm.get(2) * (-normalVelocity * x64 + x40) +
+            spatialVelocityOneForm.get(2) * (normalMagneticField * x64 - x38));
+  characteristic_matrix->get(5, 5) =
+      x1 *
+      (magneticFieldOneForm.get(2) * (-normalVelocity * x69 + x44) +
+       spatialVelocityOneForm.get(2) * (normalMagneticField * x69 - x42) + x37);
+  characteristic_matrix->get(5, 6) =
+      x116 * (Zvar * (-kappa + x9) + restMassDensity * x7 * x73) *
+      (magneticFieldOneForm.get(2) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(2));
+  characteristic_matrix->get(5, 7) =
+      x100 * x7 *
+      (magneticFieldOneForm.get(2) * normalVelocity -
+       normalMagneticField * spatialVelocityOneForm.get(2));
   characteristic_matrix->get(5, 8) = unitNormal.get(2);
-  characteristic_matrix->get(6, 0) = x130*(Zvar*unitVector.get(0) + magneticField.get(0)*normalMagneticField - x101*x126);
-  characteristic_matrix->get(6, 1) = x130*(Zvar*unitVector.get(1) + magneticField.get(1)*normalMagneticField - x104*x126);
-  characteristic_matrix->get(6, 2) = x130*(Zvar*unitVector.get(2) + magneticField.get(2)*normalMagneticField - x107*x126);
-  characteristic_matrix->get(6, 3) = x130*(Zvar*normalMagneticField*spatialVelocity.get(0) + Zvar*x2 + magneticFieldSquared*normalMagneticField*spatialVelocity.get(0) - magneticField.get(0)*x141 - x125*x58 - x31*x58);
-  characteristic_matrix->get(6, 4) = x130*(Zvar*normalMagneticField*spatialVelocity.get(1) + Zvar*x40 + magneticFieldSquared*normalMagneticField*spatialVelocity.get(1) - magneticField.get(1)*x141 - x125*x66 - x31*x66);
-  characteristic_matrix->get(6, 5) = x130*(Zvar*normalMagneticField*spatialVelocity.get(2) + Zvar*x44 + magneticFieldSquared*normalMagneticField*spatialVelocity.get(2) - magneticField.get(2)*x141 - x125*x71 - x31*x71);
-  characteristic_matrix->get(6, 6) = x129*(Dvar*x116*x31*x75 + x125*(Dvar*x116*x75 + x0));
-  characteristic_matrix->get(6, 7) = Dvar*x126*x19*x7/(Zvar*(Zvar*(-soundSpeedSquared/x14 + x4) - comovingMagneticFieldSquared + soundSpeedSquared*x23));
+  characteristic_matrix->get(6, 0) =
+      x130 * (Zvar * unitVector.get(0) +
+              magneticField.get(0) * normalMagneticField - x101 * x126);
+  characteristic_matrix->get(6, 1) =
+      x130 * (Zvar * unitVector.get(1) +
+              magneticField.get(1) * normalMagneticField - x104 * x126);
+  characteristic_matrix->get(6, 2) =
+      x130 * (Zvar * unitVector.get(2) +
+              magneticField.get(2) * normalMagneticField - x107 * x126);
+  characteristic_matrix->get(6, 3) =
+      x130 *
+      (Zvar * normalMagneticField * spatialVelocity.get(0) + Zvar * x2 +
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(0) -
+       magneticField.get(0) * x141 - x125 * x58 - x31 * x58);
+  characteristic_matrix->get(6, 4) =
+      x130 *
+      (Zvar * normalMagneticField * spatialVelocity.get(1) + Zvar * x40 +
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(1) -
+       magneticField.get(1) * x141 - x125 * x66 - x31 * x66);
+  characteristic_matrix->get(6, 5) =
+      x130 *
+      (Zvar * normalMagneticField * spatialVelocity.get(2) + Zvar * x44 +
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(2) -
+       magneticField.get(2) * x141 - x125 * x71 - x31 * x71);
+  characteristic_matrix->get(6, 6) =
+      x129 * (Dvar * x116 * x31 * x75 + x125 * (Dvar * x116 * x75 + x0));
+  characteristic_matrix->get(6, 7) =
+      Dvar * x126 * x19 * x7 /
+      (Zvar * (Zvar * (-soundSpeedSquared / x14 + x4) -
+               comovingMagneticFieldSquared + soundSpeedSquared * x23));
   characteristic_matrix->get(6, 8) = 0;
-  characteristic_matrix->get(7, 0) = x129*(-Dvar*magneticField.get(0)*normalMagneticField + Dvar*x101*x126 + Zvar*unitVector.get(0)*(-Dvar + x0));
-  characteristic_matrix->get(7, 1) = x129*(-Dvar*magneticField.get(1)*normalMagneticField + Dvar*x104*x126 + Zvar*unitVector.get(1)*(-Dvar + x0));
-  characteristic_matrix->get(7, 2) = x129*(-Dvar*magneticField.get(2)*normalMagneticField + Dvar*x107*x126 + Zvar*unitVector.get(2)*(-Dvar + x0));
-  characteristic_matrix->get(7, 3) = x130*(-Zvar*normalMagneticField*spatialVelocity.get(0) - Zvar*x2 - magneticFieldSquared*normalMagneticField*spatialVelocity.get(0) + magneticField.get(0)*x141 + x125*x58 + x31*x58);
-  characteristic_matrix->get(7, 4) = x130*(-Zvar*normalMagneticField*spatialVelocity.get(1) - Zvar*x40 - magneticFieldSquared*normalMagneticField*spatialVelocity.get(1) + magneticField.get(1)*x141 + x125*x66 + x31*x66);
-  characteristic_matrix->get(7, 5) = x130*(-Zvar*normalMagneticField*spatialVelocity.get(2) - Zvar*x44 - magneticFieldSquared*normalMagneticField*spatialVelocity.get(2) + magneticField.get(2)*x141 + x125*x71 + x31*x71);
-  characteristic_matrix->get(7, 6) = -x129*(Dvar*x116*x31*x75 + x125*(Dvar*x116*x75 + x0));
-  characteristic_matrix->get(7, 7) = -Dvar*x126*x19*x7/(Zvar*(Zvar*(-soundSpeedSquared/x14 + x4) - comovingMagneticFieldSquared + soundSpeedSquared*x23));
+  characteristic_matrix->get(7, 0) =
+      x129 * (-Dvar * magneticField.get(0) * normalMagneticField +
+              Dvar * x101 * x126 + Zvar * unitVector.get(0) * (-Dvar + x0));
+  characteristic_matrix->get(7, 1) =
+      x129 * (-Dvar * magneticField.get(1) * normalMagneticField +
+              Dvar * x104 * x126 + Zvar * unitVector.get(1) * (-Dvar + x0));
+  characteristic_matrix->get(7, 2) =
+      x129 * (-Dvar * magneticField.get(2) * normalMagneticField +
+              Dvar * x107 * x126 + Zvar * unitVector.get(2) * (-Dvar + x0));
+  characteristic_matrix->get(7, 3) =
+      x130 *
+      (-Zvar * normalMagneticField * spatialVelocity.get(0) - Zvar * x2 -
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(0) +
+       magneticField.get(0) * x141 + x125 * x58 + x31 * x58);
+  characteristic_matrix->get(7, 4) =
+      x130 *
+      (-Zvar * normalMagneticField * spatialVelocity.get(1) - Zvar * x40 -
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(1) +
+       magneticField.get(1) * x141 + x125 * x66 + x31 * x66);
+  characteristic_matrix->get(7, 5) =
+      x130 *
+      (-Zvar * normalMagneticField * spatialVelocity.get(2) - Zvar * x44 -
+       magneticFieldSquared * normalMagneticField * spatialVelocity.get(2) +
+       magneticField.get(2) * x141 + x125 * x71 + x31 * x71);
+  characteristic_matrix->get(7, 6) =
+      -x129 * (Dvar * x116 * x31 * x75 + x125 * (Dvar * x116 * x75 + x0));
+  characteristic_matrix->get(7, 7) =
+      -Dvar * x126 * x19 * x7 /
+      (Zvar * (Zvar * (-soundSpeedSquared / x14 + x4) -
+               comovingMagneticFieldSquared + soundSpeedSquared * x23));
   characteristic_matrix->get(7, 8) = 0;
   characteristic_matrix->get(8, 0) = 0;
   characteristic_matrix->get(8, 1) = 0;
@@ -3258,25 +3514,25 @@ GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 #define GET_SIZE(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define GET_DIM(data) BOOST_PP_TUPLE_ELEM(1, data)
 
-#define NUMERICAL_CHARACTERISTICS_INSTANTIATION(r, data)                       \
-  template void numerical_characteristics<GET_SIZE(data), GET_DIM(data)>(      \
-      const gsl::not_null<tnsr::i<DataVector, GET_SIZE(data)>*>                 \
-          characteristic_speeds,                                               \
-      const gsl::not_null<tnsr::ij<DataVector, GET_SIZE(data)>*>               \
-          characteristic_modes,                                                \
-      const gsl::not_null<tnsr::IJ<DataVector, GET_SIZE(data)>*>               \
-          characteristic_projectors,                                           \
-      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
-      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,           \
-      const Scalar<DataVector>& rest_mass_density,                             \
-      const Scalar<DataVector>& specific_internal_energy,                      \
-      const Scalar<DataVector>& electron_fraction,                             \
-      const Scalar<DataVector>& lorentz_factor,                                \
-      const Scalar<DataVector>& specific_enthalpy,                             \
-      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
-      const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,      \
-      const tnsr::i<DataVector, 3>& unit_normal,                               \
-      const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
+#define NUMERICAL_CHARACTERISTICS_INSTANTIATION(r, data)                  \
+  template void numerical_characteristics<GET_SIZE(data), GET_DIM(data)>( \
+      const gsl::not_null<tnsr::i<DataVector, GET_SIZE(data)>*>           \
+          characteristic_speeds,                                          \
+      const gsl::not_null<tnsr::ij<DataVector, GET_SIZE(data)>*>          \
+          characteristic_modes,                                           \
+      const gsl::not_null<tnsr::IJ<DataVector, GET_SIZE(data)>*>          \
+          characteristic_projectors,                                      \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,    \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,      \
+      const Scalar<DataVector>& rest_mass_density,                        \
+      const Scalar<DataVector>& specific_internal_energy,                 \
+      const Scalar<DataVector>& electron_fraction,                        \
+      const Scalar<DataVector>& lorentz_factor,                           \
+      const Scalar<DataVector>& specific_enthalpy,                        \
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,     \
+      const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric, \
+      const tnsr::i<DataVector, 3>& unit_normal,                          \
+      const EquationsOfState::EquationOfState<true, GET_DIM(data)>&       \
           equation_of_state);
 
 GENERATE_INSTANTIATIONS(NUMERICAL_CHARACTERISTICS_INSTANTIATION, (6, 9),

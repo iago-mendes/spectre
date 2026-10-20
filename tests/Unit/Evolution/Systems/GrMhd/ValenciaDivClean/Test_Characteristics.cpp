@@ -581,11 +581,13 @@ void test_hydro_analytic_eigenvectors(const DataVector& used_for_size) {
   const auto rest_mass_density =
       TestHelpers::hydro::random_density(nn_gen, used_for_size);
   const auto specific_internal_energy =
-      TestHelpers::hydro::random_specific_internal_energy(nn_gen, used_for_size);
+      TestHelpers::hydro::random_specific_internal_energy(nn_gen,
+                                                          used_for_size);
   const auto electron_fraction =
       TestHelpers::hydro::random_electron_fraction(nn_gen, used_for_size);
 
-  const auto equation_of_state_2d = EquationsOfState::IdealFluid<true>(1.5, 0.0);
+  const auto equation_of_state_2d =
+      EquationsOfState::IdealFluid<true>(1.5, 0.0);
   const auto equation_of_state_3d = equation_of_state_2d.promote_to_3d_eos();
   const auto pressure = equation_of_state_3d->pressure_from_density_and_energy(
       rest_mass_density, specific_internal_energy, electron_fraction);
@@ -619,8 +621,8 @@ void test_hydro_analytic_eigenvectors(const DataVector& used_for_size) {
         specific_enthalpy, spatial_metric, unit_normal, *equation_of_state_3d);
     tnsr::i<DataVector, matrix_size> eigenvalues{num_points};
     for (size_t i = 0; i < 4; ++i) {
-      eigenvalues.get(i) =
-          hydro_speeds.get(grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity);
+      eigenvalues.get(i) = hydro_speeds.get(
+          grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity);
     }
     eigenvalues.get(grmhd::ValenciaDivClean::HydroVectorR::Rplus) =
         hydro_speeds.get(grmhd::ValenciaDivClean::HydroSpeed::LambdaPlus);
@@ -1456,9 +1458,9 @@ void test_mhd_characteristics(const DataVector& used_for_size) {
       // Diagnostic (NOT asserted): full biorthogonality error.  With the
       // corrected eigenvectors this is at machine precision for well-separated
       // states and grows only near speed degeneracies, where the eigenvector
-      // basis becomes ill-conditioned.  It is left as a diagnostic rather than a
-      // hard CHECK because a random draw can land close to a degeneracy; see the
-      // biorthogonality study in runs-ai/mhd_eigenvectors/.
+      // basis becomes ill-conditioned.  It is left as a diagnostic rather than
+      // a hard CHECK because a random draw can land close to a degeneracy; see
+      // the biorthogonality study in runs-ai/mhd_eigenvectors/.
       double max_biorth_err = 0.0;
       for (size_t wi = 0; wi < 9; ++wi) {
         for (size_t wj = 0; wj < 9; ++wj) {
@@ -1598,7 +1600,8 @@ void test_mhd_numerical_characteristics(const DataVector& used_for_size) {
           left_resid = std::max(
               left_resid,
               std::abs(la - y * left_eigenvectors.get(i, m)[point]));
-          rnorm = std::max(rnorm, std::abs(right_eigenvectors.get(i, m)[point]));
+          rnorm =
+              std::max(rnorm, std::abs(right_eigenvectors.get(i, m)[point]));
           lnorm = std::max(lnorm, std::abs(left_eigenvectors.get(i, m)[point]));
         }
         CAPTURE(right_resid / std::max(rnorm, 1.0e-300));
@@ -1644,14 +1647,14 @@ void test_mhd_characteristics_errors(const bool output) {
       {"high_magnetization", 0.05, 0.995, 0.6 * M_PI, 5000.0, 1.0e-4, 1.0},
       // Near Type-I degeneracy: Bn/B -> 0, inner speeds coalesce.  The
       // degeneracy PERSISTS under boost (the gap shrinks with W), so the gap
-      // stays tiny while the boosted matrix grows ill-conditioned -- this is the
-      // config where the numeric solver eventually fails (see below).
+      // stays tiny while the boosted matrix grows ill-conditioned -- this is
+      // the config where the numeric solver eventually fails (see below).
       {"near_type_I", 1.0e-6, 0.5, 0.0, 0.01, 1.0e-4, 1.0},
       // Near Type-II degeneracy: Bn/B -> 1 (B nearly normal), slow merges with
       // Alfven.  bn=1-1e-8 gives a gap ~1e-9 at W=1.  Unlike type I, this
-      // degeneracy LIFTS under boost (the gap grows to ~4e-3 by W~2), so the gap
-      // is never simultaneously tiny and at high W, and the numeric solver stays
-      // robust.  (Both degeneracies are semisimple -- the matrix stays
+      // degeneracy LIFTS under boost (the gap grows to ~4e-3 by W~2), so the
+      // gap is never simultaneously tiny and at high W, and the numeric solver
+      // stays robust.  (Both degeneracies are semisimple -- the matrix stays
       // diagonalizable with a real spectrum and bounded cond(R) at fixed W.)
       {"near_type_II", 0.99999999, 0.5, 0.0, 0.01, 1.0e-4, 1.0},
   }};
@@ -1922,11 +1925,12 @@ void test_mhd_characteristics_errors(const bool output) {
         }
       }
 
-      // EIGENPROBLEM CHECK: do the analytic speeds & eigenvectors actually solve
-      // A.R = y R and L.A = y L for the conserved characteristic matrix A = "As"
-      // (flux_jacobian_mhd)?  This is independent of biorthogonality and of any
-      // left eigenvector, and is the authoritative test that the eigenvectors
-      // are correct.  Residual normalized per wave by |R| (resp. |L|).
+      // EIGENPROBLEM CHECK: do the analytic speeds & eigenvectors actually
+      // solve A.R = y R and L.A = y L for the conserved characteristic matrix A
+      // = "As" (flux_jacobian_mhd)?  This is independent of biorthogonality and
+      // of any left eigenvector, and is the authoritative test that the
+      // eigenvectors are correct.  Residual normalized per wave by |R| (resp.
+      // |L|).
       tnsr::iJ<DataVector, 9> char_matrix{num_points, 0.0};
       grmhd::ValenciaDivClean::flux_jacobian_mhd(
           make_not_null(&char_matrix), spatial_velocity, magnetic_field,
@@ -1966,10 +1970,10 @@ void test_mhd_characteristics_errors(const bool output) {
       // ISOLATED eigenproblem residual: feed the eigenvector formulas the
       // accurate (quad-derived) speeds (modes_iso / projectors_iso) and use the
       // quad speed as the eigenvalue.  This removes the speed-solver error, so
-      // eig_resid_iso measures only the conditioning of the eigenvector FORMULAS
-      // (their 1/gap factors blow up near a degeneracy).  Comparing eig_resid
-      // (full) with eig_resid_iso disentangles speed-solver error (grows with W)
-      // from eigenvector-formula error (near degeneracies).
+      // eig_resid_iso measures only the conditioning of the eigenvector
+      // FORMULAS (their 1/gap factors blow up near a degeneracy).  Comparing
+      // eig_resid (full) with eig_resid_iso disentangles speed-solver error
+      // (grows with W) from eigenvector-formula error (near degeneracies).
       double eig_resid_iso = 0.0;
       for (size_t w = 0; w < 9; ++w) {
         const double y_iso = static_cast<double>(q_speeds[w]);
@@ -1997,7 +2001,8 @@ void test_mhd_characteristics_errors(const bool output) {
       }
 
       // 1/W eigenproblem residual: eigenvector formulas fed the 1/W-expansion
-      // speeds (modes_1w / projectors_1w), with the 1/W speed as the eigenvalue.
+      // speeds (modes_1w / projectors_1w), with the 1/W speed as the
+      // eigenvalue.
       double eig_resid_1w = 0.0;
       for (size_t w = 0; w < 9; ++w) {
         const double y_1w = speeds_1w.get(w)[0];
@@ -2025,7 +2030,8 @@ void test_mhd_characteristics_errors(const bool output) {
       }
 
       // NUMERIC EIGENSYSTEM comparison: solve the same eigenproblem with the
-      // general per-point eigensolver (numerical_characteristics / blaze::geev).
+      // general per-point eigensolver (numerical_characteristics /
+      // blaze::geev).
       // Unlike the analytic closed form, geev returns eigenvectors for its own
       // computed eigenvalues, so its eigenproblem residual stays near machine
       // precision wherever it succeeds -- which motivates it as a fallback near
@@ -2040,7 +2046,8 @@ void test_mhd_characteristics_errors(const bool output) {
       double num_eig_resid = std::numeric_limits<double>::quiet_NaN();
       double num_speed_err = std::numeric_limits<double>::quiet_NaN();
       // Declared outside the try so the numeric eigenvectors survive for the
-      // biorthogonality comparison below; num_ok records whether geev succeeded.
+      // biorthogonality comparison below; num_ok records whether geev
+      // succeeded.
       tnsr::ij<DataVector, 9> num_modes{num_points, 0.0};
       tnsr::IJ<DataVector, 9> num_projectors{num_points, 0.0};
       bool num_ok = false;
@@ -2160,7 +2167,8 @@ void test_mhd_characteristics_errors(const bool output) {
       // For benign configs at moderate W these agree to ~1e-13, but the
       // ill-conditioned eigenvector formulas (their 1/a, 1/G, 1/cs^2 and 1/gap
       // factors) suffer catastrophic cancellation near degeneracies and at high
-      // W / extreme magnetization, where even double and quad diverge by O(100).
+      // W / extreme magnetization, where even double and quad diverge by
+      // O(100).
       // Recorded to mhd_eigenvector_errors.tsv and plotted in
       // runs-ai/mhd_eigenvectors/; the moderate-W faithfulness assertion lives
       // in test_mhd_characteristics instead.
@@ -2415,9 +2423,9 @@ void test_mhd_characteristics_errors(const bool output) {
     // Biorthogonality is a DIAGNOSTIC, not an assertion.  With the corrected
     // eigenvectors L·R is the identity at machine precision for well-separated
     // states; max_biorth_err grows only as a speed degeneracy is approached
-    // (where the eigenvector basis becomes ill-conditioned) and at high W (where
-    // the magnetosonic speed solver loses precision).  Because this sweep
-    // deliberately probes those regimes, the error is logged (to
+    // (where the eigenvector basis becomes ill-conditioned) and at high W
+    // (where the magnetosonic speed solver loses precision).  Because this
+    // sweep deliberately probes those regimes, the error is logged (to
     // mhd_eigenvector_errors.tsv, visualized in runs-ai/mhd_eigenvectors/)
     // rather than asserted.
     CAPTURE(max_biorth_err);
@@ -2622,10 +2630,10 @@ void run_mhd_characteristic_benchmarks(const bool enable) {
 // Type-I degeneracy, where the slow / Alfven / entropy speeds collapse toward
 // v_n) and, at each state, measure how well competing decompositions
 // reconstruct the flux Jacobian A = R Lambda L^T.  The reference A_ref is the
-// QUAD-precision analytic reconstruction sum_i lam_i^q R_i^q (L_i^q)^T (accurate
-// to gaps ~1e-30, unlike double ~1e-16).  We compare:
-//   * all-analytic:   sum over all 9 double modes (biorthonormality is lost near
-//                     degeneracy, so this blows up);
+// QUAD-precision analytic reconstruction sum_i lam_i^q R_i^q (L_i^q)^T
+// (accurate to gaps ~1e-30, unlike double ~1e-16).  We compare:
+//   * all-analytic:   sum over all 9 double modes (biorthonormality is lost
+//                     near degeneracy, so this blows up);
 //   * CPM variants:   lump a near-degenerate set S into (I - P_kept) upwound at
 //                     the mean speed of S -- accurate near degeneracy, but a
 //                     single-speed approximation that costs accuracy away from
@@ -2752,8 +2760,8 @@ DegenPointResult degeneracy_point_result(
 void test_degeneracy_parameter_sweep(const bool output) {
   const ScopedFpeState disable_fpes(false);
   constexpr size_t num_points = 1;
-  // Non-round adiabatic index so mistaken powers (rho vs rho^2, ...) cannot hide
-  // behind unit values.  The spatial metric is kept flat: the eigen-
+  // Non-round adiabatic index so mistaken powers (rho vs rho^2, ...) cannot
+  // hide behind unit values.  The spatial metric is kept flat: the eigen-
   // reconstruction A = R Lambda L^T used below is only clean in flat space,
   // because the conserved variables mix covariant (S_i) and contravariant (B^i)
   // components (a non-flat metric leaves a constant reconstruction offset).
@@ -2790,7 +2798,8 @@ void test_degeneracy_parameter_sweep(const bool output) {
 
   std::ofstream dump;
   if (output) {
-    dump.open("degeneracy_parameter_sweep.tsv", std::ios::out | std::ios::trunc);
+    dump.open("degeneracy_parameter_sweep.tsv",
+              std::ios::out | std::ios::trunc);
     dump << std::setprecision(16);
     dump << "cfg\tpressure\tsigma\tW\tphi\tvn_frac\tbn_frac\tmin_gap\t"
             "err_analytic\terr_cpm_fluid\t"
@@ -2944,8 +2953,8 @@ void test_flux_jacobian_precision(const bool output) {
     //   chi = (Gamma-1) eps,  kappa_times_p_over_rho2 = (Gamma-1)^2 eps,
     //   c_s^2 = (chi + kappa_times_p_over_rho2) / h,
     //   kappa = kappa_times_p_over_rho2 / p * rho^2 = (Gamma-1) rho,
-    // using the LITERAL (Gamma-1) and the same double-precision h (cast to quad)
-    // that is passed to the double function.
+    // using the LITERAL (Gamma-1) and the same double-precision h (cast to
+    // quad) that is passed to the double function.
     const quad_ref::Quad q_eps = get(specific_internal_energy)[0];
     const quad_ref::Quad q_h = get(specific_enthalpy)[0];
     const quad_ref::Quad q_rho = get(rest_mass_density)[0];
@@ -2961,9 +2970,9 @@ void test_flux_jacobian_precision(const bool output) {
     for (size_t ib = 0; ib < n_bn; ++ib) {
       // log-spaced B_n fraction from 0.5 down to 1e-9
       const double bn_frac = std::pow(
-          10.0, std::log10(0.5) +
-                    (std::log10(1.0e-9) - std::log10(0.5)) *
-                        static_cast<double>(ib) / static_cast<double>(n_bn - 1));
+          10.0, std::log10(0.5) + (std::log10(1.0e-9) - std::log10(0.5)) *
+                                      static_cast<double>(ib) /
+                                      static_cast<double>(n_bn - 1));
       const double bx = bn_frac * b_mag;
       const double bt = std::sqrt(std::max(0.0, square(b_mag) - square(bx)));
       tnsr::I<DataVector, 3, Frame::Inertial> magnetic_field{num_points, 0.0};
@@ -3000,21 +3009,22 @@ void test_flux_jacobian_precision(const bool output) {
 
       // Max absolute entry difference, and the max per-entry RELATIVE error
       // restricted to entries that are "significant" -- i.e. whose magnitude is
-      // not a mere round-off residue of an analytically-zero entry.  We treat an
-      // entry as significant when its magnitude exceeds 1e-8 times the largest
-      // entry of the matrix (matrix inf-scale).  Below that floor a nominally
-      // zero entry can show up as ~1e-16 in one precision and a different ~1e-16
-      // in the other, giving a meaningless relative error of order unity; those
-      // entries carry no accuracy loss because their absolute value is
-      // negligible against the matrix scale.  The reported max_rel_err therefore
-      // measures genuine loss of significant digits in the meaningful entries,
-      // which is exactly what caps the eigensolver.
+      // not a mere round-off residue of an analytically-zero entry.  We treat
+      // an entry as significant when its magnitude exceeds 1e-8 times the
+      // largest entry of the matrix (matrix inf-scale).  Below that floor a
+      // nominally zero entry can show up as ~1e-16 in one precision and a
+      // different ~1e-16 in the other, giving a meaningless relative error of
+      // order unity; those entries carry no accuracy loss because their
+      // absolute value is negligible against the matrix scale.  The reported
+      // max_rel_err therefore measures genuine loss of significant digits in
+      // the meaningful entries, which is exactly what caps the eigensolver.
       double matrix_scale = 0.0;
       for (size_t m = 0; m < 9; ++m) {
         for (size_t n = 0; n < 9; ++n) {
-          matrix_scale = std::max(matrix_scale, std::abs(jacobian.get(m, n)[0]));
           matrix_scale =
-              std::max(matrix_scale, std::abs(static_cast<double>(q_jac[m][n])));
+              std::max(matrix_scale, std::abs(jacobian.get(m, n)[0]));
+          matrix_scale = std::max(matrix_scale,
+                                  std::abs(static_cast<double>(q_jac[m][n])));
         }
       }
       const double significant_floor = 1.0e-8 * matrix_scale;
@@ -3069,9 +3079,10 @@ void test_flux_jacobian_precision(const bool output) {
 // Hydro-vs-MHD comparison (task #50).  As the field vanishes (sigma -> 0, so
 // |B| -> 0) the MHD flux Jacobian's fluid sub-block on {S_x,S_y,S_z,D,tau} must
 // approach the hydro flux Jacobian on the same variables, and the MHD fast
-// speeds must approach the hydro acoustic speeds v_n +- c_s (slow/Alfven/entropy
-// -> v_n).  This quantifies the mode correspondence and how weak the field must
-// be for the hydro system to be a faithful stand-in (a weak-field switch).
+// speeds must approach the hydro acoustic speeds v_n +- c_s
+// (slow/Alfven/entropy -> v_n).  This quantifies the mode correspondence and
+// how weak the field must be for the hydro system to be a faithful stand-in (a
+// weak-field switch).
 // Flat metric (the comparison needs no eigen-reconstruction; primitives are
 // de-rounded).  Dump guarded by SPECTRE_HYDROMHD_DUMP.
 void test_hydro_mhd_comparison(const bool output) {
@@ -3089,15 +3100,17 @@ void test_hydro_mhd_comparison(const bool output) {
       unit_basis_form(Direction<3>::lower_xi(), inv_spatial_metric);
 
   // Fluid vars shared by both systems: S_x,S_y,S_z,D,tau.  MHD order is
-  // [S_x,S_y,S_z,B^x,B^y,B^z,D,tau,phi]; hydro order is [D,S_x,S_y,S_z,tau,Y_e].
+  // [S_x,S_y,S_z,B^x,B^y,B^z,D,tau,phi]; hydro order is
+  // [D,S_x,S_y,S_z,tau,Y_e].
   const std::array<size_t, 5> mhd_fluid{{0, 1, 2, 6, 7}};
   const std::array<size_t, 5> hyd_fluid{{1, 2, 3, 0, 4}};
   // Speed of each hydro eigenvector (HydroVectorR order): R1..R4 at v_n
   // (NormalDotVelocity), Rplus at LambdaPlus, Rminus at LambdaMinus.
   const std::array<size_t, 6> hyd_speed_idx{{0, 0, 0, 0, 1, 2}};
 
-  // Parameter grid: thermal pressure (cs^2) x field orientation bn_frac = B_n/|B|
-  // (proximity to the field degeneracy at a given |B|).  W, phi, vn fixed.
+  // Parameter grid: thermal pressure (cs^2) x field orientation bn_frac =
+  // B_n/|B| (proximity to the field degeneracy at a given |B|).  W, phi, vn
+  // fixed.
   const double W = 1.4;
   const double phi_B = M_PI / 4.0;
   const double vn_frac = 0.28;
@@ -3108,9 +3121,10 @@ void test_hydro_mhd_comparison(const bool output) {
   if (output) {
     dump.open("hydro_mhd_comparison.tsv", std::ios::out | std::ios::trunc);
     dump << std::setprecision(16);
-    dump << "cfg\tpressure\tbn_frac\tW\tsigma\tb_norm\tmatrix_fluid_diff\t"
-            "err_mhd_recon\terr_hydro_recon\tmhd_sm\tmhd_fm\tmhd_am\tmhd_slm\t"
-            "mhd_ent\tmhd_slp\tmhd_ap\tmhd_fp\tmhd_sp\thyd_vn\thyd_lp\thyd_lm\n";
+    dump
+        << "cfg\tpressure\tbn_frac\tW\tsigma\tb_norm\tmatrix_fluid_diff\t"
+           "err_mhd_recon\terr_hydro_recon\tmhd_sm\tmhd_fm\tmhd_am\tmhd_slm\t"
+           "mhd_ent\tmhd_slp\tmhd_ap\tmhd_fp\tmhd_sp\thyd_vn\thyd_lp\thyd_lm\n";
   }
 
   constexpr size_t n_sig = 45;
@@ -3211,8 +3225,8 @@ void test_hydro_mhd_comparison(const bool output) {
                 val += mhd_speeds.get(i)[0] * modes.get(i, mhd_fluid[a])[0] *
                        projectors.get(i, mhd_fluid[b])[0] / diag[i];
               }
-              e = std::max(
-                  e, std::abs(val - jac_mhd.get(mhd_fluid[a], mhd_fluid[b])[0]));
+              e = std::max(e, std::abs(val - jac_mhd.get(mhd_fluid[a],
+                                                         mhd_fluid[b])[0]));
             }
           }
           err_mhd_recon = e;
@@ -3279,13 +3293,16 @@ void test_hydro_mhd_comparison(const bool output) {
 // Diagnostic for the numeric-eigensystem-in-Marquina problem (task #51).  The
 // Marquina reconstruction needs sum_i R_i (x) L_i = I, i.e. L.R = I.
 // numerical_characteristics stores geev's RAW eigenvectors (no
-// biorthonormalization).  For DISTINCT eigenvalues, left/right eigenvectors of a
-// matrix are automatically biorthogonal (L_i.R_j = 0, i != j), so a scalar
+// biorthonormalization).  For DISTINCT eigenvalues, left/right eigenvectors of
+// a matrix are automatically biorthogonal (L_i.R_j = 0, i != j), so a scalar
 // rescale L_i <- L_i/(L_i.R_i) should give L.R = I; only a degenerate block can
 // break that.  Here we sweep B_n -> 0 and, per point, measure:
-//   raw_offdiag = max_{i!=j} |L_i.R_j|            (biorthogonality of geev output)
-//   raw_mindiag = min_i |L_i.R_i|                 (how far the diagonal is from 1)
-//   rescaled_id = || sum_i R_i (L_i/(L_i.R_i))^T - I ||   (does a scalar rescale fix it)
+//   raw_offdiag = max_{i!=j} |L_i.R_j|
+//     (biorthogonality of geev output)
+//   raw_mindiag = min_i |L_i.R_i|
+//     (how far the diagonal is from 1)
+//   rescaled_id = || sum_i R_i (L_i/(L_i.R_i))^T - I ||
+//     (does a scalar rescale fix it)
 // TSV dump guarded by SPECTRE_NUMEIG_DUMP.
 void test_numeric_biorthogonality(const bool output) {
   const ScopedFpeState disable_fpes(false);
@@ -3407,15 +3424,16 @@ void test_numeric_biorthogonality(const bool output) {
     }
   }
   // At a well-separated (non-degenerate) state, a scalar rescale of geev's own
-  // eigenvectors must reconstruct the identity -- i.e. the numeric decomposition
-  // needs no inversion there, only per-wave renormalization.
+  // eigenvectors must reconstruct the identity -- i.e. the numeric
+  // decomposition needs no inversion there, only per-wave renormalization.
   CHECK(well_sep_rescaled_id < 1.0e-9);
 
-  // Contrast: the HYDRO system has an EXACT 4-fold degeneracy at v_n (the contact
-  // modes), so geev returns an arbitrary basis for that eigenspace and its left /
-  // right bases are NOT mutually biorthogonal -- a scalar rescale then does NOT
-  // recover the identity.  This is the genuine "degenerate block" problem (and
-  // the likely cause of the earlier HydroYe numeric-Marquina failure).
+  // Contrast: the HYDRO system has an EXACT 4-fold degeneracy at v_n (the
+  // contact modes), so geev returns an arbitrary basis for that eigenspace and
+  // its left / right bases are NOT mutually biorthogonal -- a scalar rescale
+  // then does NOT recover the identity.  This is the genuine "degenerate block"
+  // problem (and the likely cause of the earlier HydroYe numeric-Marquina
+  // failure).
   {
     tnsr::i<DataVector, 6> h_speeds{num_points, 0.0};
     tnsr::ij<DataVector, 6> h_modes{num_points, 0.0};
@@ -3452,39 +3470,46 @@ void test_numeric_biorthogonality(const bool output) {
         for (size_t i = 0; i < 6; ++i) {
           v += h_modes.get(i, a)[0] * h_projectors.get(i, b)[0] / hm[i][i];
         }
-        h_rescaled_id = std::max(h_rescaled_id, std::abs(v - (a == b ? 1.0 : 0.0)));
+        h_rescaled_id =
+            std::max(h_rescaled_id, std::abs(v - (a == b ? 1.0 : 0.0)));
       }
     }
     if (output) {
       std::cout << "HYDRO_NUMEIG exact-degeneracy: raw_offdiag=" << h_offdiag
                 << "  rescaled_id=" << h_rescaled_id << "\n";
     }
-    // The exact degenerate block breaks biorthogonality: a scalar rescale is not
-    // enough (the block needs a proper projector, e.g. the complementary one).
+    // The exact degenerate block breaks biorthogonality: a scalar rescale is
+    // not enough (the block needs a proper projector, e.g. the complementary
+    // one).
     CHECK(h_rescaled_id > 1.0e-3);
   }
 }
 
 // Flux-level comparison of the analytic vs numeric decomposition (task #51,
 // step 4).  What Marquina actually uses is the dissipation matrix
-// |A| = sum_i |lambda_i| R_i (L_i/(L_i.R_i))^T (the decomposition-dependent part
-// of the numerical flux).  Over the parameter-space corners, sweep B_n -> 0 and
-// compare, against the flux Jacobian A = flux_jacobian_mhd:
-//   err_signed_analytic = || sum_i lambda_i R_i^an  L_i^an  - A ||   (grows near deg.)
-//   err_signed_numeric  = || sum_i lambda_i R_i^num L_i^num - A ||   (~round-off)
-//   diss_diff           = || |A|_analytic - |A|_numeric ||          (analytic flux error)
+// |A| = sum_i |lambda_i| R_i (L_i/(L_i.R_i))^T (the decomposition-dependent
+// part of the numerical flux).  Over the parameter-space corners, sweep B_n ->
+// 0 and compare, against the flux Jacobian A = flux_jacobian_mhd:
+//   err_signed_analytic = || sum_i lambda_i R_i^an  L_i^an  - A ||
+//     (grows near deg.)
+//   err_signed_numeric  = || sum_i lambda_i R_i^num L_i^num - A ||
+//     (~round-off)
+//   diss_diff           = || |A|_analytic - |A|_numeric ||
+//     (analytic flux error)
 // with the numeric decomposition as the (validated) reference.  Dump guarded by
 // SPECTRE_NUMEIG_DUMP.
 // Marquina boundary-correction (numerical flux) comparison, numeric vs analytic
 // (task #51, step 4).  This is the quantity actually used as the DG boundary
-// correction -- not the flux Jacobian.  For each parameter-space corner we build
-// a physical interface (an interior state and a slightly perturbed exterior
-// state), compute the real conserved variables and normal fluxes with
-// ConservativeFromPrimitive / Fluxes, and then apply the exact Marquina per-wave
-// flux formula (copied from Marquina::dg_boundary_terms) with EACH decomposition.
+// correction -- not the flux Jacobian.  For each parameter-space corner we
+// build a physical interface (an interior state and a slightly perturbed
+// exterior state), compute the real conserved variables and normal fluxes with
+// ConservativeFromPrimitive / Fluxes, and then apply the exact Marquina
+// per-wave flux formula (copied from Marquina::dg_boundary_terms) with EACH
+// decomposition.
 // The numeric decomposition is the reference; we report the relative difference
-// of the analytic boundary correction from it, swept over B_n -> 0.  Flat metric
-// (lapse 1, shift 0, sqrt(gamma) 1), interior normal +x / exterior normal -x.
+// of the analytic boundary correction from it, swept over B_n -> 0.  Flat
+// metric (lapse 1, shift 0, sqrt(gamma) 1), interior normal +x / exterior
+// normal -x.
 // Dump guarded by SPECTRE_NUMEIG_DUMP.
 void test_numeric_vs_analytic_flux(const bool output) {
   const ScopedFpeState disable_fpes(false);
@@ -3509,7 +3534,8 @@ void test_numeric_vs_analytic_flux(const bool output) {
   }
 
   // A physical MHD state -> its conserved variables U (order
-  // [S_x,S_y,S_z,B_x,B_y,B_z,D,tau,phi]) and normal flux F.n for a given normal.
+  // [S_x,S_y,S_z,B_x,B_y,B_z,D,tau,phi]) and normal flux F.n for a given
+  // normal.
   struct State {
     std::array<double, 9> u;
     std::array<double, 9> fn;
@@ -3520,7 +3546,8 @@ void test_numeric_vs_analytic_flux(const bool output) {
   const auto make_state = [&](double density, double pressure_val, double W_lor,
                               double vn_frac, double bn_frac, double b_mag,
                               double phi_val, double phi_ang,
-                              const tnsr::i<DataVector, 3, Frame::Inertial>& nrm) {
+                              const tnsr::i<DataVector, 3, Frame::Inertial>&
+                                  nrm) {
     State s;
     s.rho = Scalar<DataVector>{DataVector(num_points, density)};
     const Scalar<DataVector> pressure{DataVector(num_points, pressure_val)};
@@ -3572,13 +3599,14 @@ void test_numeric_vs_analytic_flux(const bool output) {
       }
       return v;
     };
-    const auto ndot_vec = [&](const tnsr::I<DataVector, 3, Frame::Inertial>& fl) {
-      double v = 0.0;
-      for (size_t i = 0; i < 3; ++i) {
-        v += fl.get(i)[0] * nrm.get(i)[0];
-      }
-      return v;
-    };
+    const auto ndot_vec =
+        [&](const tnsr::I<DataVector, 3, Frame::Inertial>& fl) {
+          double v = 0.0;
+          for (size_t i = 0; i < 3; ++i) {
+            v += fl.get(i)[0] * nrm.get(i)[0];
+          }
+          return v;
+        };
     s.fn = {ndot(f_s, 0), ndot(f_s, 1), ndot(f_s, 2), ndot(f_b, 0),
             ndot(f_b, 1), ndot(f_b, 2), ndot_vec(f_d), ndot_vec(f_tau),
             ndot_vec(f_phi)};
@@ -3812,18 +3840,19 @@ void test_numeric_vs_analytic_flux(const bool output) {
   }
 }
 
-// Wave-structure dumper: read an exact Riemann profile (x, rho, p_tot, vx, vy, vz,
-// By, Bz) plus the constant B_x and adiabatic index, reconstruct the primitive
-// state per point (p_gas = p_tot - b^2/2), and write the nine MHD characteristic
-// speeds vs x using SpECTRE's own characteristic_speeds_mhd.  The exact solver
-// only outputs primitives, so the speeds (and hence the degeneracy structure) are
-// computed here.  Env-driven: SPECTRE_WAVESTRUCT="profile.dat:gamma:Bx"; output
-// goes to "profile.dat.speeds" (x + 9 speeds in MhdSpeed order).
+// Wave-structure dumper: read an exact Riemann profile (x, rho, p_tot, vx, vy,
+// vz, By, Bz) plus the constant B_x and adiabatic index, reconstruct the
+// primitive state per point (p_gas = p_tot - b^2/2), and write the nine MHD
+// characteristic speeds vs x using SpECTRE's own characteristic_speeds_mhd.
+// The exact solver only outputs primitives, so the speeds (and hence the
+// degeneracy structure) are computed here.  Env-driven:
+// SPECTRE_WAVESTRUCT="profile.dat:gamma:Bx"; output goes to
+// "profile.dat.speeds" (x + 9 speeds in MhdSpeed order).
 // BB2: double-vs-quad accuracy of the MHD characteristic speeds over the SAME
-// (sigma, theta, W) grid used by the Task B2 slow-content sweep, so the two maps
-// can be overlaid. The question BB2 answers is not "does the solver crash" but
-// "are the characteristic-speed errors acceptable in the region where slow-wave
-// content actually matters (sigma ~ 0.1-1)".
+// (sigma, theta, W) grid used by the Task B2 slow-content sweep, so the two
+// maps can be overlaid. The question BB2 answers is not "does the solver crash"
+// but "are the characteristic-speed errors acceptable in the region where
+// slow-wave content actually matters (sigma ~ 0.1-1)".
 //
 // No-op unless SPECTRE_BB2_SWEEP is set, following dump_wave_structure below.
 // Emits one BB2 line per grid point; parse with
@@ -3985,11 +4014,11 @@ void dump_wave_structure() {
     Scalar<DataVector> rest_mass_density{DataVector(np, rho)};
     const Scalar<DataVector> pressure{DataVector(np, p_gas)};
     const Scalar<DataVector> specific_internal_energy =
-        eos.specific_internal_energy_from_density_and_pressure(rest_mass_density,
-                                                               pressure);
+        eos.specific_internal_energy_from_density_and_pressure(
+            rest_mass_density, pressure);
     const Scalar<DataVector> specific_enthalpy =
-        hydro::relativistic_specific_enthalpy(rest_mass_density,
-                                              specific_internal_energy, pressure);
+        hydro::relativistic_specific_enthalpy(
+            rest_mass_density, specific_internal_energy, pressure);
     const Scalar<DataVector> lorentz_factor{DataVector(np, w)};
     tnsr::I<DataVector, 3, Frame::Inertial> spatial_velocity{np, 0.0};
     spatial_velocity.get(0) = vx;
