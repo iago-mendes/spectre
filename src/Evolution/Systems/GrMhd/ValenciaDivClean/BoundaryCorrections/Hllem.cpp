@@ -26,9 +26,11 @@
 #include "Options/Options.hpp"
 #include "Options/ParseOptions.hpp"
 #include "PointwiseFunctions/Hydro/SpecificEnthalpy.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Serialization/PupStlCpp17.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
 
@@ -103,12 +105,22 @@ Hllem::Hllem(const HllemWaves waves_to_restore,
              const bool use_complementary_projection,
              const double degeneracy_tolerance,
              const double magnetic_field_magnitude_for_hydro,
-             const double light_speed_density_cutoff)
+             const double light_speed_density_cutoff,
+             const std::optional<double> max_condition_number,
+             const Options::Context& context)
     : waves_to_restore_(waves_to_restore),
       use_complementary_projection_(use_complementary_projection),
       degeneracy_tolerance_(degeneracy_tolerance),
       magnetic_field_magnitude_for_hydro_(magnetic_field_magnitude_for_hydro),
-      light_speed_density_cutoff_(light_speed_density_cutoff) {}
+      light_speed_density_cutoff_(light_speed_density_cutoff),
+      max_condition_number_(max_condition_number) {
+  if (max_condition_number_.has_value() and
+      not(*max_condition_number_ >= 1.0)) {
+    PARSE_ERROR(context,
+                "MaxConditionNumber must be at least 1 (or None), but is "
+                    << *max_condition_number_);
+  }
+}
 
 Hllem::Hllem(CkMigrateMessage* /*unused*/) {}
 
@@ -123,6 +135,7 @@ void Hllem::pup(PUP::er& p) {
   p | degeneracy_tolerance_;
   p | magnetic_field_magnitude_for_hydro_;
   p | light_speed_density_cutoff_;
+  p | max_condition_number_;
 }
 
 double Hllem::dg_package_data(
@@ -886,6 +899,25 @@ void Hllem::dg_boundary_terms(
         restored_wave_dropped[pt] = 1.0;
       }
     }
+    // Conditioning guard: drop the wave where the norm of its spectral
+    // projector, |l| |r| / |l.r| (the eigenvalue condition number), exceeds
+    // MaxConditionNumber. Unlike the floor on |l.r|, this is scale-invariant.
+    if (max_condition_number_.has_value()) {
+      DataVector norm_l{num_points, 0.0};
+      DataVector norm_r{num_points, 0.0};
+      for (size_t n = 0; n < 9; ++n) {
+        norm_l += square(projectors.get(wave, n));
+        norm_r += square(modes.get(wave, n));
+      }
+      for (size_t pt = 0; pt < num_points; ++pt) {
+        if (wave_ok[pt] > 0.0 and
+            not(sqrt(norm_l[pt] * norm_r[pt]) <=
+                *max_condition_number_ * std::abs(diagonal[pt]))) {
+          wave_ok[pt] = 0.0;
+          restored_wave_dropped[pt] = 1.0;
+        }
+      }
+    }
     const DataVector inv_diagonal =
         wave_ok / (diagonal + (1.0 - wave_ok));  // 1/diag where ok, else 0
     DataVector ldu{num_points, 0.0};
@@ -983,7 +1015,8 @@ bool operator==(const Hllem& lhs, const Hllem& rhs) {
          lhs.degeneracy_tolerance_ == rhs.degeneracy_tolerance_ and
          lhs.magnetic_field_magnitude_for_hydro_ ==
              rhs.magnetic_field_magnitude_for_hydro_ and
-         lhs.light_speed_density_cutoff_ == rhs.light_speed_density_cutoff_;
+         lhs.light_speed_density_cutoff_ == rhs.light_speed_density_cutoff_ and
+         lhs.max_condition_number_ == rhs.max_condition_number_;
 }
 bool operator!=(const Hllem& lhs, const Hllem& rhs) { return not(lhs == rhs); }
 
