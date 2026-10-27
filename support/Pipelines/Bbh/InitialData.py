@@ -272,6 +272,7 @@ def generate_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     elliptic_tolerance_factor: Optional[float] = None,
+    first_solve_order_offset: int = 0,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -359,6 +360,10 @@ def generate_id(
       elliptic_tolerance_factor: Solve the control loop's solves loosely
         while the control residual is large. See
         'support.Pipelines.Bbh.ControlId'. (default: None)
+      first_solve_order_offset: With 'control', run the first solve, whose
+        control residual is the largest, this many polynomial orders below the
+        'polynomial_order'. Every solve of the control loop runs at the
+        'polynomial_order'. (default: 0)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -421,6 +426,9 @@ def generate_id(
                 radial_expansion_velocity=radial_expansion_velocity,
             )
         )
+    assert (
+        control or not first_solve_order_offset
+    ), "The 'first_solve_order_offset' needs 'control'."
     if eccentricity_control:
         assert (
             target_params["Eccentricity"] is not None
@@ -514,7 +522,7 @@ def generate_id(
         center_of_mass_offset=center_of_mass_offset,
         linear_velocity=linear_velocity,
         refinement_level=refinement_level,
-        polynomial_order=polynomial_order,
+        polynomial_order=polynomial_order - first_solve_order_offset,
         negative_expansion_bc=negative_expansion_bc,
         target_params=target_params,
     )
@@ -546,6 +554,7 @@ def generate_id(
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         elliptic_tolerance_factor=elliptic_tolerance_factor,
+        first_solve_order_offset=first_solve_order_offset,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -793,6 +802,16 @@ def generate_id(
         "Stop the Newton iterations of every control solve at max("
         "elliptic-absolute-residual, factor * previous control residual). The"
         " final solve meets the elliptic-absolute-residual."
+    ),
+)
+@click.option(
+    "--first-solve-order-offset",
+    type=click.IntRange(0, None),
+    default=0,
+    show_default=True,
+    help=(
+        "With '--control', run the first solve this many polynomial orders"
+        " below '-P'. The control loop solves at '-P'."
     ),
 )
 @click.option(

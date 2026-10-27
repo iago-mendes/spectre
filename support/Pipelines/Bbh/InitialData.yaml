@@ -25,7 +25,7 @@ Next:
     control: {{ control }}
     control_delay: {{ control_delay | default(2) }}
     control_refinement_level: {{ L }}
-    control_polynomial_order: {{ P }}
+    control_polynomial_order: {{ P + (first_solve_order_offset | default(0)) }}
     control_params:
       - MassA
       - MassB
