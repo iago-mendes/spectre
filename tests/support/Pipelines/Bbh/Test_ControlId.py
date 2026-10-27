@@ -9,6 +9,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -1097,6 +1098,61 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
             UnconvergedSolveError, r"Control iteration 1: .*0001_InitialData"
         ):
             self.run_control()
+
+    def run_scheduled_control(self, **kwargs):
+        # Records the Newton tolerance of every solve,
+        # and reports the tolerance as the Newton residual the solve reached
+        def generate_id(target_params, **kwargs):
+            mock_control_generate_id(target_params, **kwargs)
+            call = mock_control_generate_id.calls[-1]
+            call["tol"] = kwargs["elliptic_absolute_residual"]
+            with open(call["run_dir"] / "InitialData.yaml", "w") as open_file:
+                yaml.safe_dump_all([{}, {"tol": call["tol"]}], open_file)
+
+        with (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_control_measured_params,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.elliptic_solve_convergence",
+                side_effect=lambda deck, _: SimpleNamespace(
+                    residual=deck["tol"]
+                ),
+            ),
+        ):
+            control_id(
+                id_input_file_path=self.input_file,
+                control_params=SEEDING_CONTROL_PARAMS,
+                residual_tolerance=1.0e-8,
+                elliptic_absolute_residual=1.0e-10,
+                **kwargs,
+            )
+        control_residuals = [
+            max(abs(mock_mass(INITIAL_CONFORMAL_MASS) - 0.5) for _ in "ab")
+        ] + [
+            max(abs(mock_mass(call[f"conformal_mass_{x}"]) - 0.5) for x in "ab")
+            for call in mock_control_generate_id.calls
+        ]
+        return mock_control_generate_id.calls, control_residuals
+
+    def test_elliptic_tolerance_factor(self):
+        calls, residuals = self.run_scheduled_control(
+            elliptic_tolerance_factor=1.0
+        )
+        for call, previous_residual in zip(calls[:-1], residuals):
+            self.assertEqual(call["tol"], max(1.0e-10, previous_residual))
+        # The last loose solve met the control tolerance, so it is solved
+        # again with the final tolerance
+        self.assertGreater(calls[-2]["tol"], 1.0e-10)
+        self.assertEqual(calls[-1]["tol"], 1.0e-10)
+        self.assertEqual(
+            calls[-1]["conformal_mass_a"], calls[-2]["conformal_mass_a"]
+        )
 
 
 NEWTON_LEGEND = [
