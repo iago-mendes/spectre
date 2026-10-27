@@ -173,7 +173,10 @@ DomainCreator:
       ObjectACube:      [{{ L }}, {{ L }}, {{ L }}]
       ObjectBCube:      [{{ L }}, {{ L }}, {{ L + ExtraRadRef }}]
       Envelope:         [{{ L }}, {{ L }}, {{ L + 1 }}]
-      OuterShell0:       [{{ L + 1 }}, {{ L + 1 }}, {{ L }}]
+      # The outer shell is resolved far beyond what the solution needs there:
+      # one angular refinement level less leaves the horizon parameters and the
+      # constraint norm unchanged and halves the solve time.
+      OuterShell0:       [{{ L }}, {{ L }}, {{ L }}]
     # This p-refinement represents a crude manual optimization of the domain. We
     # will need AMR to optimize the domain further.
     # The shells around the excisions have one more angular point than the
