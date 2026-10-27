@@ -57,6 +57,9 @@ Next:
 {% if numeric_initial_guess_fallback | default(False) %}
     numeric_initial_guess_fallback: True
 {% endif %}
+{% if elliptic_tolerance_factor | default(None) %}
+    elliptic_tolerance_factor: {{ "%e" | format(elliptic_tolerance_factor) }}
+{% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}
