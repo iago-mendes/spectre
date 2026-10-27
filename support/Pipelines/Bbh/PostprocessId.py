@@ -62,6 +62,7 @@ def postprocess_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     numeric_initial_guess_max_control_residual: Optional[float] = None,
+    elliptic_tolerance_factor: Optional[float] = None,
     require_converged_solve: bool = True,
     **scheduler_kwargs,
 ):
@@ -147,6 +148,8 @@ def postprocess_id(
         the previous solution only if the control residual of the previous
         solve is below this value. See ControlId.py. (Default: None, no
         threshold)
+      elliptic_tolerance_factor: Solve the control loop's solves loosely while
+        the control residual is large. See ControlId.py. (Default: None)
       require_converged_solve: Stop with an error if the elliptic solve didn't
         converge (see above). Disable only to inspect an unconverged solution.
         (Default: True)
@@ -250,6 +253,7 @@ def postprocess_id(
             numeric_initial_guess_max_control_residual=(
                 numeric_initial_guess_max_control_residual
             ),
+            elliptic_tolerance_factor=elliptic_tolerance_factor,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"

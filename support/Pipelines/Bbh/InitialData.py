@@ -271,6 +271,7 @@ def generate_id(
     numeric_initial_guess_max_control_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    elliptic_tolerance_factor: Optional[float] = None,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -355,6 +356,9 @@ def generate_id(
         solve of the control loop that started from the previous solution
         from the background if it fails. See 'support.Pipelines.Bbh.ControlId'.
         (default: False)
+      elliptic_tolerance_factor: Solve the control loop's solves loosely
+        while the control residual is large. See
+        'support.Pipelines.Bbh.ControlId'. (default: None)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -541,6 +545,7 @@ def generate_id(
             numeric_initial_guess_max_excision_move
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
+        elliptic_tolerance_factor=elliptic_tolerance_factor,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -779,6 +784,15 @@ def generate_id(
         " that started from the previous solution from the background if it"
         " fails (a full Newton step raises the residual more than tenfold, the"
         " Newton solver doesn't converge, or the solve fails)."
+    ),
+)
+@click.option(
+    "--elliptic-tolerance-factor",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "Stop the Newton iterations of every control solve at max("
+        "elliptic-absolute-residual, factor * previous control residual). The"
+        " final solve meets the elliptic-absolute-residual."
     ),
 )
 @click.option(

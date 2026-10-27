@@ -986,6 +986,7 @@ def control_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     numeric_initial_guess_max_control_residual: Optional[float] = None,
+    elliptic_tolerance_factor: Optional[float] = None,
 ):
     """Control BBH physical parameters.
 
@@ -1140,6 +1141,15 @@ def control_id(
         Combines with 'numeric_initial_guess_max_excision_move': a solve starts
         from the previous solution only if both allow it. (Default: None,
         i.e., no condition on the control residual)
+      elliptic_tolerance_factor: Solve loosely while the control residual is
+        large: every solve of the control loop stops its Newton iterations at
+        the absolute residual max(elliptic_absolute_residual, factor * R),
+        where R is the control residual of the previous solve. A solve that
+        meets the 'residual_tolerance' without reaching the
+        'elliptic_absolute_residual' is solved again with it, so the final
+        solve is as tight as without this option. Requires the
+        'elliptic_absolute_residual'. (Default: None, i.e., every solve uses
+        the 'elliptic_absolute_residual')
     """
 
     assert (
@@ -1150,6 +1160,10 @@ def control_id(
             f"Unknown step-size constraint '{constraint}'. Choose from"
             f" {STEP_SIZE_CONSTRAINTS}."
         )
+
+    assert elliptic_tolerance_factor is None or (
+        elliptic_absolute_residual is not None
+    ), "The 'elliptic_tolerance_factor' needs the 'elliptic_absolute_residual'."
 
     # Read input file
     if id_run_dir is None:
@@ -1239,8 +1253,9 @@ def control_id(
     # compared with the 'residual_tolerance'
     previous_control_residual = None
 
-    # Function to be minimized
-    def Residual(u):
+    # Function to be minimized. A 'final_solve' uses the
+    # 'elliptic_absolute_residual' even with an 'elliptic_tolerance_factor'.
+    def Residual(u, final_solve=False):
         nonlocal iteration
         nonlocal control_run_dir
         nonlocal previous_control_residual
@@ -1326,6 +1341,15 @@ def control_id(
             # Run ID and find horizons. The run continues the sequence of
             # initial-data runs in the 'id_dir', like any other run.
             guess_in_tests = numeric_initial_guess_in_tests
+            absolute_residual = elliptic_absolute_residual
+            if elliptic_tolerance_factor is not None and not final_solve:
+                absolute_residual = max(
+                    elliptic_absolute_residual,
+                    elliptic_tolerance_factor * previous_control_residual,
+                )
+                logger.info(
+                    f"Elliptic absolute residual = {absolute_residual:e}."
+                )
 
             def run_id(initial_guess_file_glob, **kwargs):
                 generate_id(
@@ -1341,7 +1365,7 @@ def control_id(
                     negative_expansion_bc=negative_expansion_bc,
                     numeric_initial_guess=numeric_initial_guess,
                     numeric_initial_guess_in_tests=guess_in_tests,
-                    elliptic_absolute_residual=elliptic_absolute_residual,
+                    elliptic_absolute_residual=absolute_residual,
                     initial_guess_file_glob=initial_guess_file_glob,
                     **kwargs,
                 )
@@ -1763,7 +1787,22 @@ def control_id(
         # Compute residual and check stopping condition
         F = Residual(u)
         if np.max(np.abs(F)) < residual_tolerance:
-            break
+            # Solve again with the 'elliptic_absolute_residual' if the solve
+            # was looser (see 'elliptic_tolerance_factor')
+            if elliptic_tolerance_factor is not None:
+                with open(Path(control_run_dir) / "InitialData.yaml") as f:
+                    _, last_input_file = yaml.safe_load_all(f)
+                newton_residual = elliptic_solve_convergence(
+                    last_input_file, control_run_dir
+                ).residual
+                if newton_residual > elliptic_absolute_residual:
+                    logger.info(
+                        f"Newton residual {newton_residual:e} >"
+                        f" {elliptic_absolute_residual:e}: solving again."
+                    )
+                    F = Residual(u, final_solve=True)
+            if np.max(np.abs(F)) < residual_tolerance:
+                break
         if delay_control:
             F[delayed_indices] = 0.0
 
