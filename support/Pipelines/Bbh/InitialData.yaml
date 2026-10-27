@@ -274,7 +274,7 @@ LinearSolver:
     OutputVolumeData: False
 
   SchwarzSmoother:
-    MaxOverlap: 2
+    MaxOverlap: 1
     Iterations: 3
     Verbosity: Silent
     SubdomainSolver:
