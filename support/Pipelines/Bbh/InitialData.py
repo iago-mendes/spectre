@@ -363,7 +363,7 @@ def generate_id(
       first_solve_order_offset: With 'control', run the first solve, whose
         control residual is the largest, this many polynomial orders below the
         'polynomial_order'. Every solve of the control loop runs at the
-        'polynomial_order'. (default: 0)
+        'polynomial_order'. Not with 'run_convergence_tests'. (default: 0)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -429,6 +429,11 @@ def generate_id(
     assert (
         control or not first_solve_order_offset
     ), "The 'first_solve_order_offset' needs 'control'."
+    # The initial convergence test starts from the first solve and takes it to
+    # be at the 'polynomial_order'
+    assert not (
+        first_solve_order_offset and run_convergence_tests
+    ), "The 'first_solve_order_offset' can't run with convergence tests."
     if eccentricity_control:
         assert (
             target_params["Eccentricity"] is not None
