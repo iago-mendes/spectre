@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import h5py
 import numpy as np
 import numpy.testing as npt
 import yaml
@@ -31,8 +32,10 @@ from spectre.Pipelines.Bbh.ControlId import (
     effective_spin,
     elliptic_solve_convergence,
     excision_move,
+    restart_control_id,
     spin_step_size_constraint,
 )
+from spectre.Pipelines.Bbh.InitialData import id_parameters
 from spectre.support.Logging import configure_logging
 
 # Control parameters of a bound binary, and the index of the first component of
@@ -1277,6 +1280,420 @@ class TestEllipticSolveConvergence(unittest.TestCase):
             UnconvergedSolveError, "did not run or did not finish"
         ):
             elliptic_solve_convergence(newton_input_file(), self.run_dir)
+
+
+# A control loop of the masses, spins and center of mass of an unequal-mass
+# binary with mock solves, to restart from its iterations. The mock solves
+# write the input file of every run like 'generate_id' renders it, and the
+# measured parameters are coupled nonlinear functions of all free data.
+RESTART_CONTROL_PARAMS = [
+    "MassA",
+    "MassB",
+    "DimensionlessSpinA",
+    "DimensionlessSpinB",
+    "CenterOfMass",
+]
+RESTART_TARGET_PARAMS = {
+    "MassA": 0.5,
+    "MassB": 0.4,
+    "MassRatio": 1.25,
+    "DimensionlessSpinA": [0.0, 0.0, 0.2],
+    "DimensionlessSpinB": [0.0, 0.0, 0.0],
+    "CenterOfMass": [0.0, 0.0, 0.0],
+}
+RESTART_SEPARATION = 10.0
+# Options of the control loop, as the first run's 'Next' section passes them on
+RESTART_NEXT_WITH = {
+    "control": True,
+    "control_params": RESTART_CONTROL_PARAMS,
+    "control_residual_tolerance": 1.0e-8,
+    "control_polynomial_order": 6,
+    "control_refinement_level": 1,
+    "negative_expansion_bc": True,
+    "numeric_initial_guess": True,
+    "numeric_initial_guess_max_control_residual": 1.0e-3,
+    "evolve": False,
+    "pipeline_dir": "None",
+}
+
+
+class SimulatedCrash(BaseException):
+    """A job that dies (e.g., a node failure or a time limit)"""
+
+
+def write_restart_run(
+    run_dir, free_data, polynomial_order, next_with, complete=True
+):
+    """A run as 'generate_id' renders it. The mock solve 'completes' if the
+    run has its free data in 'free_data.json'."""
+    params = id_parameters(
+        **free_data,
+        separation=RESTART_SEPARATION,
+        refinement_level=1,
+        polynomial_order=polynomial_order,
+        negative_expansion_bc=True,
+        target_params=RESTART_TARGET_PARAMS,
+    )
+    kerr = lambda mass: {"KerrSchild": {"Mass": mass}}
+    horizon = lambda side: {
+        "Interior": {
+            "ExciseWithBoundaryCondition": {
+                "ApparentHorizon": {
+                    "Rotation": [
+                        params[f"HorizonRotation{side}_{xyz}"] for xyz in "xyz"
+                    ]
+                }
+            }
+        }
+    }
+    metadata = {
+        "TargetParams": RESTART_TARGET_PARAMS,
+        "Next": {
+            "With": {**next_with, "control_polynomial_order": polynomial_order}
+        },
+    }
+    body = {
+        "Background": {
+            "Binary": {
+                "XCoords": [params["XLeft"], params["XRight"]],
+                "CenterOfMassOffset": [
+                    params["CenterOfMassOffset_y"],
+                    params["CenterOfMassOffset_z"],
+                ],
+                "ObjectLeft": kerr(params["ConformalMassLeft"]),
+                "ObjectRight": kerr(params["ConformalMassRight"]),
+                "AngularVelocity": params["OrbitalAngularVelocity"],
+                "Expansion": params["RadialExpansionVelocity"],
+                "LinearVelocity": [
+                    params[f"LinearVelocity_{xyz}"] for xyz in "xyz"
+                ],
+            }
+        },
+        "DomainCreator": {
+            "BinaryCompactObject": {
+                "ObjectA": horizon("Right"),
+                "ObjectB": horizon("Left"),
+            }
+        },
+    }
+    run_dir.mkdir(parents=True)
+    with open(run_dir / "InitialData.yaml", "w") as open_input_file:
+        yaml.safe_dump_all([metadata, body], open_input_file)
+    if complete:
+        to_json = lambda value: np.asarray(value, dtype=float).tolist()
+        (run_dir / "free_data.json").write_text(
+            json.dumps(
+                {key: to_json(value) for key, value in free_data.items()}
+            )
+        )
+
+
+def mock_restart_generate_id(
+    target_params, polynomial_order, initial_guess_file_glob, **kwargs
+):
+    """Runs the next segment of the control loop, or a solve of a
+    convergence test. Raises a 'SimulatedCrash' in the solve whose index (over
+    all solves of this mock) is 'mock_restart_generate_id.crash_at'."""
+    free_data = {
+        key: kwargs[key]
+        for key in [
+            "conformal_mass_a",
+            "conformal_mass_b",
+            "horizon_rotation_a",
+            "horizon_rotation_b",
+            "center_of_mass_offset",
+            "linear_velocity",
+            "radial_expansion_velocity",
+            "orbital_angular_velocity",
+        ]
+    }
+    if kwargs.get("segments_dir") is not None:
+        segments_dir = Path(kwargs["segments_dir"])
+        num_segments = len(list(segments_dir.glob("[0-9]*_InitialData")))
+        run_dir = segments_dir / f"{num_segments:04d}_InitialData"
+    else:
+        run_dir = Path(kwargs["run_dir"])
+    crash = len(mock_restart_generate_id.calls) == (
+        mock_restart_generate_id.crash_at
+    )
+    mock_restart_generate_id.calls.append(
+        dict(
+            name=run_dir.name,
+            glob=initial_guess_file_glob,
+            # The run that the solve starts from
+            seed=(
+                None
+                if initial_guess_file_glob is None
+                else Path(initial_guess_file_glob).parent.name
+            ),
+            P=polynomial_order,
+            **{
+                key: np.asarray(value, dtype=float).tolist()
+                for key, value in free_data.items()
+            },
+        )
+    )
+    write_restart_run(
+        run_dir,
+        free_data,
+        polynomial_order,
+        {**RESTART_NEXT_WITH, "control": False},
+        complete=not crash,
+    )
+    if crash:
+        raise SimulatedCrash(f"Crashed in '{run_dir}'.")
+
+
+def mock_restart_measured_params(run_dir, control_params):
+    free_data = json.loads((Path(run_dir) / "free_data.json").read_text())
+    mass_a, mass_b = (
+        free_data["conformal_mass_a"],
+        free_data["conformal_mass_b"],
+    )
+    rotation_a = np.array(free_data["horizon_rotation_a"])
+    rotation_b = np.array(free_data["horizon_rotation_b"])
+    offset = np.array(free_data["center_of_mass_offset"])
+    return {
+        "MassA": mock_mass(mass_a) + 0.01 * mass_b,
+        "MassB": mock_mass(mass_b) + 0.01 * mass_a,
+        "DimensionlessSpinA": (
+            -4.0 * mass_a * rotation_a + 0.01 * mass_b * rotation_b
+        ),
+        "DimensionlessSpinB": -4.0 * mass_b * rotation_b,
+        "CenterOfMass": (
+            offset
+            + np.array([0.3 * (mass_a - mass_b), 0.0, 0.0])
+            + 0.1 * offset**2
+        ),
+    }
+
+
+def read_control_params(id_dir):
+    with h5py.File(Path(id_dir) / "ControlParams.h5", "r") as open_h5_file:
+        return {
+            name: open_h5_file[name][()]
+            for name in open_h5_file
+            if name.endswith(".dat")
+        }
+
+
+def without_globs(calls):
+    """The solves without the paths of their initial guesses, which name the
+    directory of the control loop"""
+    return [{**call, "glob": None} for call in calls]
+
+
+def list_files(directory):
+    return sorted(
+        (str(path.relative_to(directory)), path.stat().st_size)
+        for path in Path(directory).rglob("*")
+        if path.is_file()
+    )
+
+
+class TestRestartControlId(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdRestart"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def mocks(self, crash_at=None):
+        mock_restart_generate_id.calls = []
+        mock_restart_generate_id.crash_at = crash_at
+        return (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=mock_restart_generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_restart_measured_params,
+            ),
+        )
+
+    def run_control(self, name, crash_at=None, **next_with):
+        """Runs a control loop like 'postprocess_id' does after the first
+        solve. Returns its directory, its solves, and its last run (or
+        'None' if it crashed)."""
+        id_dir = self.test_dir / name
+        next_with = {**RESTART_NEXT_WITH, **next_with}
+        initial_conformal_mass = 0.35
+        write_restart_run(
+            id_dir / "0000_InitialData",
+            dict(
+                conformal_mass_a=initial_conformal_mass,
+                conformal_mass_b=initial_conformal_mass,
+                horizon_rotation_a=[0.0, 0.0, -0.1],
+                horizon_rotation_b=[0.0, 0.0, 0.0],
+                center_of_mass_offset=[0.0, 0.0, 0.0],
+                linear_velocity=[0.0, 0.0, 0.0],
+                radial_expansion_velocity=0.0,
+                orbital_angular_velocity=0.01,
+            ),
+            next_with["control_polynomial_order"],
+            next_with,
+        )
+        generate_id, measured_params = self.mocks(crash_at)
+        last_run_dir = None
+        with generate_id, measured_params:
+            try:
+                last_run_dir = control_id(
+                    id_input_file_path=id_dir
+                    / "0000_InitialData"
+                    / "InitialData.yaml",
+                    control_params=RESTART_CONTROL_PARAMS,
+                    residual_tolerance=next_with["control_residual_tolerance"],
+                    polynomial_order=next_with["control_polynomial_order"],
+                    numeric_initial_guess=True,
+                    numeric_initial_guess_max_control_residual=next_with[
+                        "numeric_initial_guess_max_control_residual"
+                    ],
+                    run_convergence_tests=next_with.get(
+                        "run_convergence_tests", False
+                    ),
+                )
+            except SimulatedCrash:
+                pass
+        return id_dir, mock_restart_generate_id.calls, last_run_dir
+
+    def restart(self, restart_from, name, **kwargs):
+        generate_id, measured_params = self.mocks()
+        with generate_id, measured_params:
+            last_run_dir = restart_control_id(
+                restart_from, id_dir=self.test_dir / name, **kwargs
+            )
+        return (
+            self.test_dir / name,
+            mock_restart_generate_id.calls,
+            last_run_dir,
+        )
+
+    def assertSameControlParams(self, id_dir, other_id_dir):
+        control_params = read_control_params(id_dir)
+        other_control_params = read_control_params(other_id_dir)
+        self.assertEqual(sorted(control_params), sorted(other_control_params))
+        for name, data in control_params.items():
+            npt.assert_array_equal(data, other_control_params[name], name)
+
+    def test_restart_from_every_iteration(self):
+        id_dir, calls, last_run_dir = self.run_control("Uninterrupted")
+        num_iterations = len(calls) + 1
+        # The loop is long enough to cover the delayed control of the center of
+        # mass, and solves from the background and from previous solutions
+        self.assertGreater(num_iterations, 6)
+        self.assertTrue(any(call["glob"] is None for call in calls))
+        self.assertTrue(any(call["glob"] is not None for call in calls))
+        free_data = read_control_params(id_dir)["FreeData.dat"]
+        self.assertEqual(len(free_data), num_iterations)
+        self.assertNotEqual(free_data[-1, -3], 0.0)  # Center of mass offset
+        files = list_files(id_dir)
+        for restart_iteration in range(num_iterations):
+            restart_dir, restart_calls, restart_last_run_dir = self.restart(
+                id_dir,
+                f"Restart{restart_iteration}",
+                restart_iteration=restart_iteration,
+            )
+            # The restart solves the iterations after the restart iteration
+            # with the same free data and initial guesses, i.e., the same
+            # input files
+            self.assertEqual(
+                without_globs(restart_calls),
+                without_globs(calls[restart_iteration:]),
+            )
+            # The first solve starts from the same run of the previous loop
+            if restart_calls:
+                self.assertEqual(
+                    restart_calls[0]["glob"], calls[restart_iteration]["glob"]
+                )
+            self.assertSameControlParams(restart_dir, id_dir)
+            self.assertEqual(
+                Path(restart_last_run_dir).name, Path(last_run_dir).name
+            )
+            for i in range(restart_iteration + 1):
+                self.assertTrue(
+                    (restart_dir / f"{i:04d}_InitialData").is_symlink()
+                )
+        # The previous loop is unchanged
+        self.assertEqual(list_files(id_dir), files)
+
+    def test_restart_after_crash(self):
+        reference_dir, calls, _ = self.run_control("Reference")
+        for crash_at in [0, 3, len(calls) - 1]:
+            crashed_dir, crashed_calls, last_run_dir = self.run_control(
+                f"Crashed{crash_at}", crash_at=crash_at
+            )
+            self.assertIsNone(last_run_dir)
+            self.assertEqual(len(crashed_calls), crash_at + 1)
+            # The restart continues from the last completed iteration, which
+            # ran the solve before the crash
+            restart_dir, restart_calls, _ = self.restart(
+                crashed_dir, f"RestartAfterCrash{crash_at}"
+            )
+            self.assertEqual(
+                without_globs(crashed_calls[:-1] + restart_calls),
+                without_globs(calls),
+            )
+            self.assertEqual(
+                len(crashed_calls) - 1 + len(restart_calls), len(calls)
+            )
+            # The first solve after the restart starts from the same run as
+            # the one that crashed
+            self.assertEqual(
+                restart_calls[0]["glob"], crashed_calls[-1]["glob"]
+            )
+            self.assertSameControlParams(restart_dir, reference_dir)
+            # The crashed solve is not in the new directory
+            self.assertFalse(
+                (restart_dir / crashed_calls[-1]["name"]).is_symlink()
+            )
+
+    def test_restart_after_crash_in_final_convergence_test(self):
+        reference_dir, calls, _ = self.run_control(
+            "Reference", run_convergence_tests=True
+        )
+        # The control loop runs at the polynomial order that the test before
+        # the control loop selected, which is not the default
+        control_orders = {
+            call["P"] for call in calls if call["name"].endswith("_InitialData")
+        }
+        self.assertEqual(control_orders, {5})
+        final_test_calls = [
+            call for call in calls if call["name"].startswith("P")
+        ][1:]
+        self.assertEqual([call["P"] for call in final_test_calls], [4, 6, 7, 8])
+        crash_at = calls.index(final_test_calls[2])  # At P=7
+        crashed_dir, crashed_calls, _ = self.run_control(
+            "Crashed", crash_at=crash_at, run_convergence_tests=True
+        )
+        restart_dir, restart_calls, last_run_dir = self.restart(
+            crashed_dir, "Restart"
+        )
+        # The restart skips the control loop and the solves of the test that
+        # finished
+        self.assertEqual(restart_calls, calls[crash_at:])
+        self.assertEqual([call["P"] for call in restart_calls], [7, 8])
+        self.assertSameControlParams(restart_dir, reference_dir)
+
+    def test_replay_mismatch(self):
+        id_dir, calls, _ = self.run_control("Uninterrupted")
+        # A run whose free data the replay doesn't reproduce, e.g., because
+        # the previous loop ran other code
+        input_file = id_dir / "0002_InitialData" / "InitialData.yaml"
+        metadata, body = yaml.safe_load_all(input_file.read_text())
+        body["Background"]["Binary"]["ObjectRight"]["KerrSchild"]["Mass"] *= (
+            1.0 + 1.0e-8
+        )
+        input_file.write_text(yaml.safe_dump_all([metadata, body]))
+        with self.assertRaisesRegex(
+            RuntimeError, "doesn't reproduce the free data"
+        ):
+            self.restart(id_dir, "Restart", restart_iteration=3)
+        # The restart from an earlier iteration doesn't replay that run
+        self.restart(id_dir, "Restart1", restart_iteration=1)
 
 
 if __name__ == "__main__":

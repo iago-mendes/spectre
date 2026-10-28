@@ -15,6 +15,7 @@ class Bbh(click.Group):
             "find-horizon",
             "generate-id",
             "postprocess-id",
+            "restart-id",
             "start-inspiral",
             "start-ringdown",
             "run-cce",
@@ -37,6 +38,10 @@ class Bbh(click.Group):
             from .PostprocessId import postprocess_id_command
 
             return postprocess_id_command
+        elif name == "restart-id":
+            from .ControlId import restart_control_id_command
+
+            return restart_control_id_command
         elif name == "start-inspiral":
             from .Inspiral import start_inspiral_command
 
