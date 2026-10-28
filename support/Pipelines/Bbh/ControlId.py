@@ -9,8 +9,9 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Union
+from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
 
+import click
 import h5py
 import numpy as np
 import yaml
@@ -22,7 +23,7 @@ from spectre.Pipelines.Bbh.InitialData import (
     generate_id,
     id_parameters,
 )
-from spectre.support.DirectoryStructure import Segment
+from spectre.support.DirectoryStructure import Segment, list_segments
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +740,7 @@ def _convergence_test(
     max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
+    reuse_solves: bool = False,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -783,6 +785,10 @@ def _convergence_test(
     its grid, instead of from the background. The domain is the same at every
     P, so the interpolation stays within the same elements, and it is exact
     from a lower to a higher P.
+
+    With 'reuse_solves', the solves whose 'P' directories are already in the
+    'test_dir' are not solved again (e.g., a restarted control loop links the
+    solves that its previous loop finished; see 'restart_control_id').
     """
     is_initial = mode == "initial"
     label = "Initial" if is_initial else "Final"
@@ -864,8 +870,14 @@ def _convergence_test(
         if optimal_order is not None and P > stop_after_order:
             break
         P_run_dir = test_dir / f"P{P:02d}"
+        reuse = reuse_solves and P_run_dir.exists()
         initial_guess_file_glob = None
-        if numeric_initial_guess:
+        if reuse:
+            logger.info(
+                f"{label} convergence test: reusing the solve at P={P} in"
+                f" '{P_run_dir.resolve()}'."
+            )
+        elif numeric_initial_guess:
             seed_order = min(
                 run_dir_by_order, key=lambda P_i: (abs(P_i - P), -P_i)
             )
@@ -877,22 +889,23 @@ def _convergence_test(
                 f" P={seed_order}."
             )
         try:
-            generate_id(
-                target_params,
-                **free_data,
-                separation=separation,
-                run_dir=P_run_dir,
-                control=False,
-                evolve=False,
-                scheduler=None,
-                refinement_level=refinement_level,
-                polynomial_order=P,
-                negative_expansion_bc=negative_expansion_bc,
-                numeric_initial_guess_in_tests=numeric_initial_guess,
-                elliptic_absolute_residual=elliptic_absolute_residual,
-                initial_guess_file_glob=initial_guess_file_glob,
-                redirect_output=True,
-            )
+            if not reuse:
+                generate_id(
+                    target_params,
+                    **free_data,
+                    separation=separation,
+                    run_dir=P_run_dir,
+                    control=False,
+                    evolve=False,
+                    scheduler=None,
+                    refinement_level=refinement_level,
+                    polynomial_order=P,
+                    negative_expansion_bc=negative_expansion_bc,
+                    numeric_initial_guess_in_tests=numeric_initial_guess,
+                    elliptic_absolute_residual=elliptic_absolute_residual,
+                    initial_guess_file_glob=initial_guess_file_glob,
+                    redirect_output=True,
+                )
             measured_params_by_order[P] = _measured_params(
                 P_run_dir, control_params
             )
@@ -963,6 +976,246 @@ def _convergence_test(
     return optimal_order
 
 
+def _free_data_from_input_file(
+    id_metadata: Dict, id_input_file: Dict
+) -> Tuple[Dict, float]:
+    """Free data and separation of an initial data run, from its input file
+
+    'id_metadata' and 'id_input_file' are the two documents of the input file.
+    Returns the free data as the keyword arguments of 'generate_id' take it,
+    and the coordinate separation of the black holes.
+    """
+    target_params = id_metadata["TargetParams"]
+    binary_data = id_input_file["Background"]["Binary"]
+    domain_data = id_input_file["DomainCreator"]["BinaryCompactObject"]
+
+    # Get initial xyz offset
+    # Note: CenterOfMassOffset contains only the yz offsets, so we need to get
+    # the x offset from XCoords
+    x_B, x_A = binary_data["XCoords"]
+    separation = x_A - x_B
+    Newtonian_x_A = (
+        target_params["MassB"]
+        / (target_params["MassA"] + target_params["MassB"])
+        * separation
+    )
+    x_offset = x_A - Newtonian_x_A
+    y_offset, z_offset = binary_data["CenterOfMassOffset"]
+
+    # Get initial horizon rotations
+    orbital_angular_velocity = binary_data["AngularVelocity"]
+    horizon_rotation_a = list(
+        domain_data["ObjectA"]["Interior"]["ExciseWithBoundaryCondition"][
+            "ApparentHorizon"
+        ]["Rotation"]
+    )
+    horizon_rotation_a[2] -= orbital_angular_velocity
+    horizon_rotation_b = list(
+        domain_data["ObjectB"]["Interior"]["ExciseWithBoundaryCondition"][
+            "ApparentHorizon"
+        ]["Rotation"]
+    )
+    horizon_rotation_b[2] -= orbital_angular_velocity
+
+    # Combine initial choices of free data in a dictionary
+    free_data = dict(
+        conformal_mass_a=binary_data["ObjectRight"]["KerrSchild"]["Mass"],
+        conformal_mass_b=binary_data["ObjectLeft"]["KerrSchild"]["Mass"],
+        horizon_rotation_a=horizon_rotation_a,
+        horizon_rotation_b=horizon_rotation_b,
+        center_of_mass_offset=[x_offset, y_offset, z_offset],
+        linear_velocity=binary_data["LinearVelocity"],
+        radial_expansion_velocity=binary_data["Expansion"],
+        orbital_angular_velocity=orbital_angular_velocity,
+    )
+    return free_data, separation
+
+
+# A restarted control loop replays the recorded iterations of the previous loop
+# (see 'control_id'). Every quantity that the replay recomputes must match the
+# recorded one to this relative tolerance (plus RESTART_ABSOLUTE_TOLERANCE),
+# or the restart stops: the previous loop then ran other code or other options.
+# The replay on the same machine is exact. The tolerance admits the roundoff of
+# the free data read back from the input files (where, e.g., the center-of-mass
+# offset is the difference of two coordinates) and of linear algebra libraries
+# on other machines.
+RESTART_RELATIVE_TOLERANCE = 1.0e-10
+RESTART_ABSOLUTE_TOLERANCE = 1.0e-14
+
+
+def _read_dat(h5_file: Union[str, Path], subfile_name: str) -> np.ndarray:
+    """All rows of a dat subfile, or an empty array if there is none"""
+    with h5py.File(h5_file, "r") as open_h5_file:
+        if f"{subfile_name}.dat" not in open_h5_file:
+            return np.zeros((0, 0))
+        return np.atleast_2d(open_h5_file[f"{subfile_name}.dat"][()])
+
+
+def _control_runs(
+    id_dir: Union[str, Path], control_params: List[TargetParams]
+) -> Tuple[List[Segment], List[Segment]]:
+    """The runs of a control loop in its directory
+
+    Returns all segments of the 'id_dir', and the segments whose parameters
+    could be measured, i.e., the runs of the completed iterations of the control
+    loop, in order. The others are solves that failed or didn't converge (e.g.,
+    a solve from the previous solution that was redone from the background).
+    """
+    segments = [
+        segment
+        for segment in list_segments(id_dir)
+        if (segment.path / "InitialData.yaml").exists()
+    ]
+    completed = []
+    for segment in segments:
+        try:
+            _measured_params(segment.path, control_params)
+        except Exception:
+            continue
+        completed.append(segment)
+    return segments, completed
+
+
+def restart_control_id(
+    restart_from: Union[str, Path],
+    id_dir: Union[str, Path],
+    restart_iteration: Optional[int] = None,
+):
+    """Restart a control loop from an iteration of a previous control loop.
+
+    Continues the control loop in the 'restart_from' directory (the directory
+    of its runs and its 'ControlParams.h5') from its iteration
+    'restart_iteration' (default: the last completed iteration), instead of
+    starting it again from the first solve. The control loop then runs in the
+    new directory 'id_dir', with the options of the previous one (the 'Next'
+    section of its first run's input file). The previous directory is only
+    read. See 'control_id' for how the restart replays the previous loop, and
+    'restart_from' there for what it checks.
+
+    The new directory holds links to the runs of the previous loop up to the
+    restart iteration (so the numbering of the runs continues), and a complete
+    'ControlParams.h5'. If the previous loop had converged and died in its
+    final convergence test, the restart skips the control loop and reuses the
+    solves of the test that finished.
+
+    Returns the directory of the last run of the control loop.
+    """
+    restart_from = Path(restart_from).resolve()
+    id_dir = Path(id_dir).absolute()
+    assert id_dir.resolve() != restart_from, (
+        "Restart the control loop in a new directory, not in the directory"
+        " of the previous one."
+    )
+    segments = list_segments(restart_from)
+    assert segments, f"Found no runs in '{restart_from}'."
+    first_input_file = segments[0].path / "InitialData.yaml"
+    with open(first_input_file, "r") as open_input_file:
+        id_metadata, _ = yaml.safe_load_all(open_input_file)
+    options = {
+        key: None if value == "None" else value
+        for key, value in id_metadata["Next"]["With"].items()
+    }
+    assert options.get("control", False), (
+        f"The first run '{first_input_file}' didn't run a control loop"
+        " ('control' is not set in its 'Next' section)."
+    )
+    if options.get("evolve", False):
+        logger.warning(
+            "The previous control loop was set to start an evolution. The"
+            " restart only runs the control loop."
+        )
+    # The options of 'postprocess_id' (see 'PostprocessId.py') that it passes
+    # on to 'control_id', with the same defaults
+    control_options = {
+        option: options[key]
+        for key, option in {
+            "control_params": "control_params",
+            "control_residual_tolerance": "residual_tolerance",
+            "control_max_iterations": "max_iterations",
+            "control_delay": "control_delay",
+            "control_refinement_level": "refinement_level",
+            "control_polynomial_order": "polynomial_order",
+            "negative_expansion_bc": "negative_expansion_bc",
+            "control_step_size_constraints": "step_size_constraints",
+            "run_convergence_tests": "run_convergence_tests",
+            "convergence_test_tolerance": "convergence_test_tolerance",
+            "final_convergence_test_tolerance": (
+                "final_convergence_test_tolerance"
+            ),
+            "final_convergence_test_max_polynomial_order": (
+                "final_convergence_test_max_polynomial_order"
+            ),
+            "numeric_initial_guess": "numeric_initial_guess",
+            "numeric_initial_guess_in_tests": "numeric_initial_guess_in_tests",
+            "elliptic_absolute_residual": "elliptic_absolute_residual",
+            "numeric_initial_guess_max_excision_move": (
+                "numeric_initial_guess_max_excision_move"
+            ),
+            "numeric_initial_guess_fallback": "numeric_initial_guess_fallback",
+            "numeric_initial_guess_max_control_residual": (
+                "numeric_initial_guess_max_control_residual"
+            ),
+        }.items()
+        if key in options
+    }
+
+    _, completed = _control_runs(restart_from, options["control_params"])
+    assert completed and completed[0].id == segments[0].id, (
+        f"The first run of the control loop in '{restart_from}' didn't"
+        " complete, so there is nothing to restart from."
+    )
+    last_iteration = len(completed) - 1
+    if restart_iteration is None:
+        restart_iteration = last_iteration
+    assert 0 <= restart_iteration <= last_iteration, (
+        "Can restart only from a completed iteration (0 to"
+        f" {last_iteration}), not from {restart_iteration}."
+    )
+
+    # Link the runs up to the restart iteration
+    id_dir.mkdir(parents=True, exist_ok=True)
+    assert (
+        not list_segments(id_dir) and not (id_dir / "ControlParams.h5").exists()
+    ), f"The directory '{id_dir}' already holds a control loop."
+    for segment in segments:
+        if segment.id > completed[restart_iteration].id:
+            break
+        (id_dir / segment.path.name).symlink_to(segment.path.resolve())
+    # Link the solves of the convergence test before the control loop (unless
+    # the restart runs it again, see 'restart_from' in 'control_id'), and
+    # those of the convergence test after the control loop that finished
+    tests_dir = restart_from / "ConvergenceTest"
+    has_control_runs = any(
+        (segment.path / "InitialData.yaml").exists() for segment in segments[1:]
+    )
+    if (tests_dir / "Initial").exists() and has_control_runs:
+        (id_dir / "ConvergenceTest").mkdir(exist_ok=True)
+        (id_dir / "ConvergenceTest" / "Initial").symlink_to(
+            (tests_dir / "Initial").resolve()
+        )
+    if (tests_dir / "Final").exists() and restart_iteration == last_iteration:
+        final_dir = id_dir / "ConvergenceTest" / "Final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        for P_dir in sorted((tests_dir / "Final").glob("P[0-9][0-9]")):
+            # The link to the last run of the control loop is made by the test
+            if P_dir.is_symlink():
+                continue
+            try:
+                _measured_params(P_dir, options["control_params"])
+            except Exception:
+                continue
+            (final_dir / P_dir.name).symlink_to(P_dir.resolve())
+
+    first_run_dir = id_dir / segments[0].path.name
+    return control_id(
+        id_input_file_path=first_run_dir / "InitialData.yaml",
+        id_run_dir=first_run_dir,
+        restart_from=restart_from,
+        restart_iteration=restart_iteration,
+        **control_options,
+    )
+
+
 def control_id(
     id_input_file_path: Union[str, Path],
     control_params: List[TargetParams],
@@ -986,6 +1239,8 @@ def control_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     numeric_initial_guess_max_control_residual: Optional[float] = None,
+    restart_from: Optional[Union[str, Path]] = None,
+    restart_iteration: Optional[int] = None,
 ):
     """Control BBH physical parameters.
 
@@ -1140,6 +1395,31 @@ def control_id(
         Combines with 'numeric_initial_guess_max_excision_move': a solve starts
         from the previous solution only if both allow it. (Default: None,
         i.e., no condition on the control residual)
+      restart_from: Directory of a previous control loop of the same initial
+        data with the same options, to continue from its iteration
+        'restart_iteration' instead of starting from the first solve. Use
+        'restart_control_id', which sets up the new directory: the
+        'id_run_dir' is then a link to the first run of the previous loop in
+        the new directory, which holds links to its runs up to the restart
+        iteration. The control loop replays the previous loop up to the
+        restart iteration: it runs its own steps, but instead of solving it
+        measures the parameters in the recorded runs. It stops with an error
+        unless the replay reproduces the recorded free data (in the input
+        files of the runs, and in 'FreeData.dat' if the previous loop wrote
+        it), residuals, scales, Jacobians, and step sizes (in its
+        'ControlParams.h5') to 'RESTART_RELATIVE_TOLERANCE'. So the restarted
+        loop continues with the state of the previous one: free data,
+        residuals, Jacobian, delayed controls, and the run to start the next
+        solve from. With 'run_convergence_tests', the polynomial order of
+        the control loop is the one of the previous loop's control runs
+        (the test before the control loop runs again only if the previous
+        loop has no run after its first), and the test after the control
+        loop reuses the solves at the polynomial orders that are already in
+        its directory. (Default: None, i.e., no restart)
+      restart_iteration: Iteration of the previous loop to restart from (see
+        'restart_from'). The new control loop solves again none of the
+        iterations up to and including this one. (Default: the last
+        completed iteration)
     """
 
     assert (
@@ -1157,49 +1437,25 @@ def control_id(
     with open(id_input_file_path, "r") as open_input_file:
         id_metadata, id_input_file = yaml.safe_load_all(open_input_file)
     target_params = id_metadata["TargetParams"]
-    binary_data = id_input_file["Background"]["Binary"]
-    domain_data = id_input_file["DomainCreator"]["BinaryCompactObject"]
-
-    # Get initial xyz offset
-    # Note: CenterOfMassOffset contains only the yz offsets, so we need to get
-    # the x offset from XCoords
-    x_B, x_A = binary_data["XCoords"]
-    separation = x_A - x_B
+    initial_free_data, separation = _free_data_from_input_file(
+        id_metadata, id_input_file
+    )
     Newtonian_x_A = (
         target_params["MassB"]
         / (target_params["MassA"] + target_params["MassB"])
         * separation
     )
-    x_offset = x_A - Newtonian_x_A
-    y_offset, z_offset = binary_data["CenterOfMassOffset"]
-
-    # Get initial horizon rotations
-    orbital_angular_velocity = binary_data["AngularVelocity"]
-    horizon_rotation_a = domain_data["ObjectA"]["Interior"][
-        "ExciseWithBoundaryCondition"
-    ]["ApparentHorizon"]["Rotation"]
-    horizon_rotation_a[2] -= orbital_angular_velocity
-    horizon_rotation_b = domain_data["ObjectB"]["Interior"][
-        "ExciseWithBoundaryCondition"
-    ]["ApparentHorizon"]["Rotation"]
-    horizon_rotation_b[2] -= orbital_angular_velocity
-
-    # Combine initial choices of free data in a dictionary
-    initial_free_data = dict(
-        conformal_mass_a=binary_data["ObjectRight"]["KerrSchild"]["Mass"],
-        conformal_mass_b=binary_data["ObjectLeft"]["KerrSchild"]["Mass"],
-        horizon_rotation_a=horizon_rotation_a,
-        horizon_rotation_b=horizon_rotation_b,
-        center_of_mass_offset=[x_offset, y_offset, z_offset],
-        linear_velocity=binary_data["LinearVelocity"],
-        radial_expansion_velocity=binary_data["Expansion"],
-        orbital_angular_velocity=orbital_angular_velocity,
-    )
+    horizon_rotation_a = initial_free_data["horizon_rotation_a"]
+    horizon_rotation_b = initial_free_data["horizon_rotation_b"]
 
     # Prepare file and legends to output diagnostic data. Every run of the
     # control loop is a segment in the initial-data directory, so the diagnostic
-    # data goes next to them.
-    id_dir = Path(id_run_dir).resolve().parent
+    # data goes next to them. A restarted control loop runs in a new directory,
+    # whose first runs are links to the runs of the previous loop.
+    if restart_from is None:
+        id_dir = Path(id_run_dir).resolve().parent
+    else:
+        id_dir = Path(id_run_dir).absolute().parent
     output_filename = str(id_dir / "ControlParams.h5")
     residual_legend = []
     free_data_legend = []
@@ -1229,6 +1485,97 @@ def control_id(
             else:
                 jacobian_legend.extend(
                     [f"d{residual} / d{free_data}_{xyz}" for xyz in "xyz"]
+                )
+
+    # Restart: the recorded runs and diagnostic data of the previous loop
+    recorded_runs: List[Segment] = []
+    recorded_data: Dict[str, np.ndarray] = {}
+    if restart_from is not None:
+        restart_from = Path(restart_from).resolve()
+        assert restart_from != id_dir.resolve(), (
+            "Restart the control loop in a new directory, not in the"
+            " directory of the previous one."
+        )
+        assert not Path(output_filename).exists(), (
+            f"'{output_filename}' exists. Restart the control loop in a new"
+            " directory."
+        )
+        _, recorded_runs = _control_runs(restart_from, control_params)
+        for subfile_name in [
+            "Residuals",
+            "FreeData",
+            "ControlScales",
+            "Jacobian",
+            "StepSizeConstraints",
+        ]:
+            recorded_data[subfile_name] = _read_dat(
+                restart_from / "ControlParams.h5", subfile_name
+            )
+        assert len(recorded_runs) == len(recorded_data["Residuals"]), (
+            f"The previous control loop in '{restart_from}' has"
+            f" {len(recorded_runs)} runs whose parameters can be measured, but"
+            f" its 'ControlParams.h5' records {len(recorded_data['Residuals'])}"
+            " residuals."
+        )
+        if restart_iteration is None:
+            restart_iteration = len(recorded_runs) - 1
+        assert 0 <= restart_iteration < len(recorded_runs), (
+            "Can restart only from a completed iteration (0 to"
+            f" {len(recorded_runs) - 1}), not from {restart_iteration}."
+        )
+        logger.info(
+            f"Restarting the control loop in '{restart_from}' from its"
+            f" iteration {restart_iteration}: replaying iterations 0 to"
+            f" {restart_iteration} from its runs."
+        )
+
+    def replaying(iteration):
+        return restart_from is not None and iteration <= restart_iteration
+
+    def check_replay(subfile_name, row, values):
+        """Stop the restart if the replay doesn't reproduce the 'row' of the
+        previous loop's subfile (if it has that row)"""
+        recorded = recorded_data.get(subfile_name)
+        if recorded is None or row >= len(recorded):
+            return
+        values = np.asarray(values, dtype=float)
+        if recorded[row].shape != values.shape or not np.allclose(
+            values,
+            recorded[row],
+            rtol=RESTART_RELATIVE_TOLERANCE,
+            atol=RESTART_ABSOLUTE_TOLERANCE,
+        ):
+            raise RuntimeError(
+                f"The restart doesn't reproduce row {row} of '{subfile_name}'"
+                f" of the control loop in '{restart_from}': replayed {values},"
+                f" recorded {recorded[row]}. Did the previous loop run other"
+                " code or other options?"
+            )
+        logger.info(
+            f"Replayed row {row} of '{subfile_name}' (max deviation"
+            f" {np.max(np.abs(values - recorded[row]), initial=0.0):e})."
+        )
+
+    def check_replayed_free_data(free_data, run_dir):
+        """Stop the restart if the free data doesn't match the input file of
+        the recorded run"""
+        with open(Path(run_dir) / "InitialData.yaml", "r") as open_input_file:
+            run_metadata, run_input_file = yaml.safe_load_all(open_input_file)
+        recorded_free_data, _ = _free_data_from_input_file(
+            run_metadata, run_input_file
+        )
+        for key, value in free_data.items():
+            if not np.allclose(
+                value,
+                recorded_free_data[key],
+                rtol=RESTART_RELATIVE_TOLERANCE,
+                atol=RESTART_ABSOLUTE_TOLERANCE,
+            ):
+                raise RuntimeError(
+                    "The restart doesn't reproduce the free data of the run"
+                    f" '{run_dir}': replayed {key} = {value}, the run has"
+                    f" {recorded_free_data[key]}. Did the previous loop run"
+                    " other code or other options?"
                 )
 
     iteration = 0
@@ -1323,79 +1670,99 @@ def control_id(
                     + ("previous solution." if seed else "background.")
                 )
 
-            # Run ID and find horizons. The run continues the sequence of
-            # initial-data runs in the 'id_dir', like any other run.
-            guess_in_tests = numeric_initial_guess_in_tests
-
-            def run_id(initial_guess_file_glob, **kwargs):
-                generate_id(
-                    target_params,
-                    **free_data,
-                    separation=separation,
-                    segments_dir=id_dir,
-                    control=False,
-                    evolve=False,
-                    scheduler=None,
-                    refinement_level=refinement_level,
-                    polynomial_order=polynomial_order,
-                    negative_expansion_bc=negative_expansion_bc,
-                    numeric_initial_guess=numeric_initial_guess,
-                    numeric_initial_guess_in_tests=guess_in_tests,
-                    elliptic_absolute_residual=elliptic_absolute_residual,
-                    initial_guess_file_glob=initial_guess_file_glob,
-                    **kwargs,
+            if replaying(iteration):
+                # Measure the parameters in the recorded run of the previous
+                # control loop instead of solving
+                control_run_dir = str(
+                    id_dir / recorded_runs[iteration].path.name
                 )
+                check_replayed_free_data(free_data, control_run_dir)
+                logger.info(
+                    f"Replayed control iteration {iteration} from the run"
+                    f" '{Path(control_run_dir).resolve()}'."
+                )
+            else:
+                # Run ID and find horizons. The run continues the sequence of
+                # initial-data runs in the 'id_dir', like any other run.
+                guess_in_tests = numeric_initial_guess_in_tests
 
-            seed_glob = str(Path(control_run_dir).resolve() / "BbhVolume*.h5")
-            try:
-                if not seed:
-                    run_id(None)
-                elif not numeric_initial_guess_fallback:
-                    run_id(seed_glob)
-                else:
-                    previous_segment = Segment.last(id_dir)
-                    stop, failure = threading.Event(), []
-                    watcher = threading.Thread(
-                        target=_watch_seeded_solve,
-                        args=(
-                            id_dir,
-                            previous_segment.path if previous_segment else None,
-                            stop,
-                            failure,
-                        ),
-                        daemon=True,
+                def run_id(initial_guess_file_glob, **kwargs):
+                    generate_id(
+                        target_params,
+                        **free_data,
+                        separation=separation,
+                        segments_dir=id_dir,
+                        control=False,
+                        evolve=False,
+                        scheduler=None,
+                        refinement_level=refinement_level,
+                        polynomial_order=polynomial_order,
+                        negative_expansion_bc=negative_expansion_bc,
+                        numeric_initial_guess=numeric_initial_guess,
+                        numeric_initial_guess_in_tests=guess_in_tests,
+                        elliptic_absolute_residual=elliptic_absolute_residual,
+                        initial_guess_file_glob=initial_guess_file_glob,
+                        **kwargs,
                     )
-                    watcher.start()
-                    try:
-                        run_id(seed_glob, redirect_output=True)
-                    except subprocess.CalledProcessError as error:
-                        if not failure:
-                            failure.append(
-                                f"the solve exited with code {error.returncode}"
-                            )
-                    except UnconvergedSolveError as error:
-                        # Raised by the postprocessing of the solve (see
-                        # 'PostprocessId.py')
-                        failure.append(str(error))
-                    finally:
-                        stop.set()
-                        watcher.join()
-                    if failure:
-                        logger.warning(
-                            "The solve from the previous solution failed:"
-                            f" {failure[0].rstrip('.')}. Solving again from"
-                            " the background."
-                        )
+
+                seed_glob = str(
+                    Path(control_run_dir).resolve() / "BbhVolume*.h5"
+                )
+                try:
+                    if not seed:
                         run_id(None)
-            except UnconvergedSolveError as error:
-                # The postprocessing of the solve stops before finding horizons
-                # if the solve didn't converge. The measured parameters of an
-                # unconverged solve would steer the control loop with noise.
-                raise UnconvergedSolveError(
-                    f"Control iteration {iteration}: {error} Stopping the"
-                    " control loop."
-                ) from error
-            control_run_dir = str(Segment.last(id_dir).path)
+                    elif not numeric_initial_guess_fallback:
+                        run_id(seed_glob)
+                    else:
+                        previous_segment = Segment.last(id_dir)
+                        stop, failure = threading.Event(), []
+                        watcher = threading.Thread(
+                            target=_watch_seeded_solve,
+                            args=(
+                                id_dir,
+                                (
+                                    previous_segment.path
+                                    if previous_segment
+                                    else None
+                                ),
+                                stop,
+                                failure,
+                            ),
+                            daemon=True,
+                        )
+                        watcher.start()
+                        try:
+                            run_id(seed_glob, redirect_output=True)
+                        except subprocess.CalledProcessError as error:
+                            if not failure:
+                                failure.append(
+                                    "the solve exited with code"
+                                    f" {error.returncode}"
+                                )
+                        except UnconvergedSolveError as error:
+                            # Raised by the postprocessing of the solve (see
+                            # 'PostprocessId.py')
+                            failure.append(str(error))
+                        finally:
+                            stop.set()
+                            watcher.join()
+                        if failure:
+                            logger.warning(
+                                "The solve from the previous solution failed:"
+                                f" {failure[0].rstrip('.')}. Solving again from"
+                                " the background."
+                            )
+                            run_id(None)
+                except UnconvergedSolveError as error:
+                    # The postprocessing of the solve stops before finding
+                    # horizons if the solve didn't converge. The measured
+                    # parameters of an unconverged solve would steer the
+                    # control loop with noise.
+                    raise UnconvergedSolveError(
+                        f"Control iteration {iteration}: {error} Stopping the"
+                        " control loop."
+                    ) from error
+                control_run_dir = str(Segment.last(id_dir).path)
             previous_free_data.clear()
             previous_free_data.update(free_data)
 
@@ -1416,11 +1783,20 @@ def control_id(
                 residual = np.append(residual, measured_params[key] - target)
         previous_control_residual = float(np.max(np.abs(residual)))
         logger.info(f"Control Residual = {previous_control_residual:e}")
+        if replaying(iteration):
+            check_replay("Residuals", iteration, residual)
+            check_replay("FreeData", iteration, u)
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Residuals", residual_legend, 0
             )
             dat_file.append(residual)
+            output_file.close_current_object()
+            # The free data of the solve, at full precision
+            dat_file = output_file.try_insert_dat(
+                "FreeData", free_data_legend, 0
+            )
+            dat_file.append(np.asarray(u, dtype=float))
 
         return residual
 
@@ -1435,8 +1811,37 @@ def control_id(
     # Initial residual
     F = Residual(u)
 
+    # A restart takes the polynomial order that the previous loop selected
+    # from its control runs (the first run after the first), if it has any
+    restarted_polynomial_order = None
+    if run_convergence_tests and restart_from is not None:
+        for segment in list_segments(restart_from)[1:]:
+            if not (segment.path / "InitialData.yaml").exists():
+                continue
+            with open(segment.path / "InitialData.yaml", "r") as open_file:
+                run_metadata, _ = yaml.safe_load_all(open_file)
+            restarted_polynomial_order = int(
+                run_metadata["Next"]["With"]["control_polynomial_order"]
+            )
+            logger.info(
+                "Restart: the previous loop's control runs used"
+                f" P={restarted_polynomial_order} (from '{segment.path}')."
+            )
+            # The errors of the previous loop's convergence test
+            with h5py.File(restart_from / "ControlParams.h5", "r") as source:
+                if "InitialConvergenceTest.dat" in source:
+                    with h5py.File(output_filename, "a") as target:
+                        source.copy(
+                            source["InitialConvergenceTest.dat"],
+                            target,
+                            "InitialConvergenceTest.dat",
+                        )
+            break
+
     # Select the polynomial order for the control loop
-    if run_convergence_tests:
+    if restarted_polynomial_order is not None:
+        polynomial_order = restarted_polynomial_order
+    elif run_convergence_tests:
         polynomial_order = _convergence_test(
             run_dir=control_run_dir,
             test_dir=id_dir / "ConvergenceTest" / "Initial",
@@ -1553,6 +1958,9 @@ def control_id(
         control_params, param_index_map, target_params, u, len(u)
     )
     J *= u_scale[np.newaxis, :] / f_scale[:, np.newaxis]
+    if restart_from is not None:
+        check_replay("ControlScales", 0, np.concatenate([u_scale, f_scale]))
+        check_replay("Jacobian", 0, J.flatten())
     with spectre_h5.H5File(output_filename, "a") as output_file:
         dat_file = output_file.try_insert_dat(
             "ControlScales", free_data_legend + residual_legend, 0
@@ -1742,15 +2150,19 @@ def control_id(
                 f" {alpha:g}. Effective spins after the step:"
                 f" {effective_spins_after_step}."
             )
+        step_size_row = (
+            [alphas[constraint] for constraint in STEP_SIZE_CONSTRAINTS]
+            + [alpha]
+            + effective_spins_after_step
+        )
+        # A restart also checks the step from its last replayed iteration
+        if replaying(iteration - 1):
+            check_replay("StepSizeConstraints", iteration - 1, step_size_row)
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "StepSizeConstraints", step_size_legend, 0
             )
-            dat_file.append(
-                [alphas[constraint] for constraint in STEP_SIZE_CONSTRAINTS]
-                + [alpha]
-                + effective_spins_after_step
-            )
+            dat_file.append(step_size_row)
         if alpha <= 0.0:
             raise RuntimeError(
                 f"The step-size constraints {binding} allow no step of the"
@@ -1773,6 +2185,8 @@ def control_id(
         J += np.outer(F / f_scale, scaled_Delta_u) / np.dot(
             scaled_Delta_u, scaled_Delta_u
         )
+        if replaying(iteration):
+            check_replay("Jacobian", iteration, J.flatten())
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Jacobian", jacobian_legend, 0
@@ -1808,6 +2222,41 @@ def control_id(
             max_polynomial_order=final_convergence_test_max_polynomial_order,
             numeric_initial_guess=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
+            reuse_solves=restart_from is not None,
         )
 
     return control_run_dir
+
+
+@click.command(name="restart-id", help=restart_control_id.__doc__)
+@click.argument(
+    "restart_from",
+    type=click.Path(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        path_type=Path,
+    ),
+)
+@click.option(
+    "--id-dir",
+    "-o",
+    type=click.Path(writable=True, path_type=Path),
+    required=True,
+    help="New directory in which the restarted control loop runs.",
+)
+@click.option(
+    "--restart-iteration",
+    "-i",
+    type=click.IntRange(0, None),
+    help="Iteration of the previous control loop to restart from.",
+    show_default="the last completed iteration",
+)
+def restart_control_id_command(**kwargs):
+    _rich_traceback_guard = True  # Hide traceback until here
+    restart_control_id(**kwargs)
+
+
+if __name__ == "__main__":
+    restart_control_id_command(help_option_names=["-h", "--help"])
