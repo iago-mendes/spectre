@@ -1076,36 +1076,85 @@ def _control_runs(
     return segments, completed
 
 
-def restart_control_id(
-    restart_from: Union[str, Path],
-    id_dir: Union[str, Path],
-    restart_iteration: Optional[int] = None,
-):
-    """Restart a control loop from an iteration of a previous control loop.
+# Options of a restarted control loop that may differ from the previous loop's:
+# they act only on iterations after the restart (and the restart refuses if
+# they would have changed a replayed one). Keys are the arguments of
+# 'control_id', values the keys of the 'Next' section of the input files (see
+# 'postprocess_id').
+RESTART_OPTIONS = {
+    "step_size_constraints": "control_step_size_constraints",
+    "max_iterations": "control_max_iterations",
+    "final_convergence_test_tolerance": "final_convergence_test_tolerance",
+    "final_convergence_test_max_polynomial_order": (
+        "final_convergence_test_max_polynomial_order"
+    ),
+}
+# The line of the input file template after which a restart records the
+# options it changed
+RESTART_TEMPLATE_ANCHOR = (
+    "    run_convergence_tests: {{ run_convergence_tests }}\n"
+)
+# Subdirectory of a scheduled restart's directory, in which the restart is
+# checked before it is scheduled (see 'restart_control_id')
+RESTART_CHECK_DIR = "RestartCheck"
 
-    Continues the control loop in the 'restart_from' directory (the directory
-    of its runs and its 'ControlParams.h5') from its iteration
-    'restart_iteration' (default: the last completed iteration), instead of
-    starting it again from the first solve. The control loop then runs in the
-    new directory 'id_dir', with the options of the previous one (the 'Next'
-    section of its first run's input file). The previous directory is only
-    read. See 'control_id' for how the restart replays the previous loop, and
-    'restart_from' there for what it checks.
 
-    The new directory holds links to the runs of the previous loop up to the
-    restart iteration (so the numbering of the runs continues), and a complete
-    'ControlParams.h5'. If the previous loop had converged and died in its
-    final convergence test, the restart skips the control loop and reuses the
-    solves of the test that finished.
+class _RestartDryRun(Exception):
+    """Ends a dry run of a restart before its first solve"""
 
-    Returns the directory of the last run of the control loop.
-    """
-    restart_from = Path(restart_from).resolve()
-    id_dir = Path(id_dir).absolute()
-    assert id_dir.resolve() != restart_from, (
-        "Restart the control loop in a new directory, not in the directory"
-        " of the previous one."
+    def __init__(self, run_dir: Optional[Path]):
+        super().__init__(run_dir)
+        self.run_dir = run_dir
+
+
+def _yaml_value(value) -> str:
+    """A value as YAML on one line (flow style, without the document end)"""
+    text = yaml.safe_dump(value, default_flow_style=True)
+    return text.removesuffix("...\n").strip()
+
+
+def _restart_input_file_template(directory: Path, options: Dict) -> Path:
+    """The pipeline's input file template with the 'options' (keys of the
+    'Next' section) added to its 'Next' section, so the input files of the
+    restarted runs record them"""
+    from spectre.Pipelines.Bbh.InitialData import ID_INPUT_FILE_TEMPLATE
+
+    text = Path(ID_INPUT_FILE_TEMPLATE).read_text()
+    assert text.count(RESTART_TEMPLATE_ANCHOR) == 1, (
+        f"Can't find the line '{RESTART_TEMPLATE_ANCHOR.strip()}' in the input"
+        f" file template '{ID_INPUT_FILE_TEMPLATE}'."
     )
+    for key in options:
+        assert f"    {key}:" not in text, (
+            f"The input file template '{ID_INPUT_FILE_TEMPLATE}' already sets"
+            f" '{key}'."
+        )
+    lines = "".join(
+        f"    {key}: {_yaml_value(value)}\n" for key, value in options.items()
+    )
+    template = directory / "RestartTemplate" / Path(ID_INPUT_FILE_TEMPLATE).name
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(
+        text.replace(RESTART_TEMPLATE_ANCHOR, RESTART_TEMPLATE_ANCHOR + lines)
+    )
+    return template
+
+
+def _restart_control_options(
+    restart_from: Path, overrides: Dict
+) -> Tuple[Dict, Dict, List[Segment], List[Segment]]:
+    """Options of the restarted control loop: the previous loop's (from the
+    'Next' section of its first run's input file), with the 'overrides'.
+    Returns the options as the arguments of 'control_id', the changed options
+    as keys of the 'Next' section with their old and new values, and the
+    segments and completed runs of the previous loop."""
+    unknown = set(overrides) - set(RESTART_OPTIONS)
+    if unknown:
+        raise ValueError(
+            f"A restart can't change the options {sorted(unknown)}, because"
+            " they would change the replayed iterations. It can change"
+            f" {sorted(RESTART_OPTIONS)}."
+        )
     segments = list_segments(restart_from)
     assert segments, f"Found no runs in '{restart_from}'."
     first_input_file = segments[0].path / "InitialData.yaml"
@@ -1126,43 +1175,180 @@ def restart_control_id(
         )
     # The options of 'postprocess_id' (see 'PostprocessId.py') that it passes
     # on to 'control_id', with the same defaults
+    option_names = {
+        "control_params": "control_params",
+        "control_residual_tolerance": "residual_tolerance",
+        "control_max_iterations": "max_iterations",
+        "control_delay": "control_delay",
+        "control_refinement_level": "refinement_level",
+        "control_polynomial_order": "polynomial_order",
+        "negative_expansion_bc": "negative_expansion_bc",
+        "control_step_size_constraints": "step_size_constraints",
+        "run_convergence_tests": "run_convergence_tests",
+        "convergence_test_tolerance": "convergence_test_tolerance",
+        "final_convergence_test_tolerance": "final_convergence_test_tolerance",
+        "final_convergence_test_max_polynomial_order": (
+            "final_convergence_test_max_polynomial_order"
+        ),
+        "numeric_initial_guess": "numeric_initial_guess",
+        "numeric_initial_guess_in_tests": "numeric_initial_guess_in_tests",
+        "elliptic_absolute_residual": "elliptic_absolute_residual",
+        "numeric_initial_guess_max_excision_move": (
+            "numeric_initial_guess_max_excision_move"
+        ),
+        "numeric_initial_guess_fallback": "numeric_initial_guess_fallback",
+        "numeric_initial_guess_max_control_residual": (
+            "numeric_initial_guess_max_control_residual"
+        ),
+    }
     control_options = {
         option: options[key]
-        for key, option in {
-            "control_params": "control_params",
-            "control_residual_tolerance": "residual_tolerance",
-            "control_max_iterations": "max_iterations",
-            "control_delay": "control_delay",
-            "control_refinement_level": "refinement_level",
-            "control_polynomial_order": "polynomial_order",
-            "negative_expansion_bc": "negative_expansion_bc",
-            "control_step_size_constraints": "step_size_constraints",
-            "run_convergence_tests": "run_convergence_tests",
-            "convergence_test_tolerance": "convergence_test_tolerance",
-            "final_convergence_test_tolerance": (
-                "final_convergence_test_tolerance"
-            ),
-            "final_convergence_test_max_polynomial_order": (
-                "final_convergence_test_max_polynomial_order"
-            ),
-            "numeric_initial_guess": "numeric_initial_guess",
-            "numeric_initial_guess_in_tests": "numeric_initial_guess_in_tests",
-            "elliptic_absolute_residual": "elliptic_absolute_residual",
-            "numeric_initial_guess_max_excision_move": (
-                "numeric_initial_guess_max_excision_move"
-            ),
-            "numeric_initial_guess_fallback": "numeric_initial_guess_fallback",
-            "numeric_initial_guess_max_control_residual": (
-                "numeric_initial_guess_max_control_residual"
-            ),
-        }.items()
+        for key, option in option_names.items()
         if key in options
     }
+    defaults = dict(
+        step_size_constraints=list(DEFAULT_STEP_SIZE_CONSTRAINTS),
+        max_iterations=DEFAULT_MAX_ITERATIONS,
+        final_convergence_test_tolerance=None,
+        final_convergence_test_max_polynomial_order=None,
+    )
+    changed = {}
+    for option, value in overrides.items():
+        if option == "step_size_constraints":
+            value = list(value)
+        old_value = control_options.get(option, defaults[option])
+        if value != old_value:
+            changed[RESTART_OPTIONS[option]] = dict(old=old_value, new=value)
+        control_options[option] = value
 
-    _, completed = _control_runs(restart_from, options["control_params"])
+    _, completed = _control_runs(
+        restart_from, control_options["control_params"]
+    )
     assert completed and completed[0].id == segments[0].id, (
         f"The first run of the control loop in '{restart_from}' didn't"
         " complete, so there is nothing to restart from."
+    )
+    return control_options, changed, segments, completed
+
+
+def _render_restart_submit_script(
+    id_dir: Path,
+    restart_command: List[str],
+    submit_script_template: Union[str, Path],
+    job_name: str,
+    extra_params: Dict,
+    **context,
+) -> Path:
+    """Render the submit script of a restart from a submit script template
+    (e.g., the machine's), replacing its 'run_command' block by the
+    'restart_command'"""
+    import shlex
+    import shutil
+
+    import jinja2
+
+    from spectre.support import Schedule
+
+    submit_script_template = Path(submit_script_template).resolve()
+    template_env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(submit_script_template.parent),
+        undefined=jinja2.StrictUndefined,
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    # The restart runs in place of the executable. It ends the job, so the
+    # template's 'Next' entrypoint (or resubmission) doesn't run.
+    child = template_env.from_string(
+        "{% extends parent_template %}\n{% block run_command %}\n"
+        + shlex.join(restart_command).replace(
+            "'${SPECTRE_CLI}'", "${SPECTRE_CLI}"
+        )
+        + "\nexit $?\n{% endblock %}\n"
+    )
+    executable = shutil.which("SolveXcts") or "SolveXcts"
+    rendered = child.render(
+        parent_template=submit_script_template.name,
+        job_name=job_name,
+        run_dir=str(id_dir),
+        out_file=str(id_dir / "spectre.out"),
+        input_file="Restart.yaml",
+        executable=executable,
+        spectre_cli=str(
+            Path(Schedule.__file__).parent.parent.parent.parent / "spectre"
+        ),
+        **{key: value for key, value in context.items() if value is not None},
+        **extra_params,
+    )
+    submit_script = id_dir / "Submit.sh"
+    submit_script.write_text(rendered)
+    return submit_script
+
+
+def restart_control_id(
+    restart_from: Union[str, Path],
+    id_dir: Union[str, Path],
+    restart_iteration: Optional[int] = None,
+    dry_run: bool = False,
+    scheduler: Optional[Union[str, Sequence[str]]] = None,
+    submit_script_template: Optional[Union[str, Path]] = None,
+    job_name: Optional[str] = None,
+    queue: Optional[str] = None,
+    time_limit: Optional[str] = None,
+    extra_params: Optional[Dict] = None,
+    submit: Optional[bool] = None,
+    **overrides,
+):
+    """Restart a control loop from an iteration of a previous control loop.
+
+    Continues the control loop in the 'restart_from' directory (the directory
+    of its runs and its 'ControlParams.h5') from its iteration
+    'restart_iteration' (default: the last completed iteration), instead of
+    starting it again from the first solve. The control loop then runs in the
+    new directory 'id_dir', with the options of the previous one (the 'Next'
+    section of its first run's input file). The previous directory is only
+    read. See 'control_id' for how the restart replays the previous loop, and
+    'restart_from' there for what it checks.
+
+    The new directory holds links to the runs of the previous loop up to the
+    restart iteration (so the numbering of the runs continues), a complete
+    'ControlParams.h5', and a record of the restart in 'Restart.yaml'. If the
+    previous loop had converged and died in its final convergence test, the
+    restart skips the control loop and reuses the solves of the test that
+    finished.
+
+    Options that act only after the restart iteration can be changed (the
+    'overrides', see 'RESTART_OPTIONS'): 'step_size_constraints',
+    'max_iterations', 'final_convergence_test_tolerance' and
+    'final_convergence_test_max_polynomial_order'. The restart refuses if
+    the new options would have changed a replayed iteration (e.g., a
+    step-size constraint that binds on a replayed step), and names it. The
+    input files of the new runs record the changed options in their 'Next'
+    section.
+
+    With 'dry_run', the restart replays and checks the previous loop, renders
+    the input file of its first solve (and checks it with the executable's
+    '--check-options'), and stops without solving.
+
+    With a 'scheduler', the restart first runs dry in the subdirectory
+    'RestartCheck' of the 'id_dir', then writes a submit script 'Submit.sh'
+    from the 'submit_script_template' (with the 'job_name', 'queue',
+    'time_limit' and 'extra_params', like 'schedule') that runs the restart
+    in the 'id_dir', and submits it unless 'submit' is False.
+
+    Returns the directory of the last run of the control loop (with
+    'dry_run': of the rendered run, or None if the replay finished the
+    control loop; with a 'scheduler': the submit script).
+    """
+    restart_from = Path(restart_from).resolve()
+    id_dir = Path(id_dir).absolute()
+    assert id_dir.resolve() != restart_from, (
+        "Restart the control loop in a new directory, not in the directory"
+        " of the previous one."
+    )
+    overrides = {key: value for key, value in overrides.items() if value}
+    control_options, changed, segments, completed = _restart_control_options(
+        restart_from, overrides
     )
     last_iteration = len(completed) - 1
     if restart_iteration is None:
@@ -1171,6 +1357,71 @@ def restart_control_id(
         "Can restart only from a completed iteration (0 to"
         f" {last_iteration}), not from {restart_iteration}."
     )
+    if control_options.get("max_iterations", DEFAULT_MAX_ITERATIONS) <= (
+        restart_iteration
+    ):
+        raise ValueError(
+            "The maximum number of iterations"
+            f" {control_options['max_iterations']} would end the control loop"
+            f" in the replayed iterations (up to {restart_iteration})."
+        )
+    for key, values in changed.items():
+        logger.info(
+            f"Restart changes '{key}' from {values['old']} to {values['new']}."
+        )
+
+    if scheduler:
+        # Check the restart before scheduling it
+        restart_control_id(
+            restart_from,
+            id_dir / RESTART_CHECK_DIR,
+            restart_iteration=restart_iteration,
+            dry_run=True,
+            **overrides,
+        )
+        restart_command = (
+            ["${SPECTRE_CLI}", "bbh", "restart-id", str(restart_from)]
+            + ["-o", str(id_dir), "-i", str(restart_iteration)]
+            + [
+                f"--step-size-constraint={constraint}"
+                for constraint in overrides.get("step_size_constraints", [])
+            ]
+            + [
+                f"--{option.replace('_', '-')}={overrides[option]}"
+                for option in [
+                    "max_iterations",
+                    "final_convergence_test_tolerance",
+                    "final_convergence_test_max_polynomial_order",
+                ]
+                if option in overrides
+            ]
+            + ["--no-schedule"]
+        )
+        submit_script = _render_restart_submit_script(
+            id_dir,
+            restart_command,
+            submit_script_template,
+            job_name=job_name or f"restart-{restart_from.name}",
+            extra_params=extra_params or {},
+            queue=queue,
+            time_limit=time_limit,
+        )
+        logger.info(f"Wrote the submit script '{submit_script}'.")
+        if submit or (
+            submit is None
+            and click.confirm(f"Submit '{submit_script}'?", default=True)
+        ):
+            if isinstance(scheduler, str):
+                scheduler = [scheduler]
+            process = subprocess.run(
+                list(scheduler) + [submit_script.name],
+                cwd=id_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logger.info(f"Submitted '{submit_script}': {process.stdout}")
+        return submit_script
 
     # Link the runs up to the restart iteration
     id_dir.mkdir(parents=True, exist_ok=True)
@@ -1183,7 +1434,9 @@ def restart_control_id(
         (id_dir / segment.path.name).symlink_to(segment.path.resolve())
     # Link the solves of the convergence test before the control loop (unless
     # the restart runs it again, see 'restart_from' in 'control_id'), and
-    # those of the convergence test after the control loop that finished
+    # those of the convergence test after the control loop that finished. The
+    # final test ran with the free data of the last iteration only if the
+    # control loop converged there.
     tests_dir = restart_from / "ConvergenceTest"
     has_control_runs = any(
         (segment.path / "InitialData.yaml").exists() for segment in segments[1:]
@@ -1193,7 +1446,15 @@ def restart_control_id(
         (id_dir / "ConvergenceTest" / "Initial").symlink_to(
             (tests_dir / "Initial").resolve()
         )
-    if (tests_dir / "Final").exists() and restart_iteration == last_iteration:
+    residuals = _read_dat(restart_from / "ControlParams.h5", "Residuals")
+    converged = len(residuals) > 0 and np.max(np.abs(residuals[-1])) < (
+        control_options.get("residual_tolerance", DEFAULT_RESIDUAL_TOLERANCE)
+    )
+    if (
+        (tests_dir / "Final").exists()
+        and restart_iteration == last_iteration
+        and converged
+    ):
         final_dir = id_dir / "ConvergenceTest" / "Final"
         final_dir.mkdir(parents=True, exist_ok=True)
         for P_dir in sorted((tests_dir / "Final").glob("P[0-9][0-9]")):
@@ -1201,19 +1462,45 @@ def restart_control_id(
             if P_dir.is_symlink():
                 continue
             try:
-                _measured_params(P_dir, options["control_params"])
+                _measured_params(P_dir, control_options["control_params"])
             except Exception:
                 continue
             (final_dir / P_dir.name).symlink_to(P_dir.resolve())
 
-    first_run_dir = id_dir / segments[0].path.name
-    return control_id(
-        id_input_file_path=first_run_dir / "InitialData.yaml",
-        id_run_dir=first_run_dir,
-        restart_from=restart_from,
-        restart_iteration=restart_iteration,
-        **control_options,
+    # Record the restart and the options it runs with
+    with open(id_dir / "Restart.yaml", "w") as open_record:
+        yaml.safe_dump(
+            dict(
+                restart_from=str(restart_from),
+                restart_iteration=restart_iteration,
+                restart_run=str(completed[restart_iteration].path.resolve()),
+                dry_run=dry_run,
+                changed_options=changed,
+                options=control_options,
+            ),
+            open_record,
+        )
+    id_input_file_template = (
+        _restart_input_file_template(
+            id_dir, {key: values["new"] for key, values in changed.items()}
+        )
+        if changed
+        else None
     )
+
+    first_run_dir = id_dir / segments[0].path.name
+    try:
+        return control_id(
+            id_input_file_path=first_run_dir / "InitialData.yaml",
+            id_run_dir=first_run_dir,
+            restart_from=restart_from,
+            restart_iteration=restart_iteration,
+            restart_dry_run=dry_run,
+            restart_input_file_template=id_input_file_template,
+            **control_options,
+        )
+    except _RestartDryRun as dry_run_end:
+        return dry_run_end.run_dir
 
 
 def control_id(
@@ -1241,6 +1528,8 @@ def control_id(
     numeric_initial_guess_max_control_residual: Optional[float] = None,
     restart_from: Optional[Union[str, Path]] = None,
     restart_iteration: Optional[int] = None,
+    restart_dry_run: bool = False,
+    restart_input_file_template: Optional[Union[str, Path]] = None,
 ):
     """Control BBH physical parameters.
 
@@ -1420,6 +1709,11 @@ def control_id(
         'restart_from'). The new control loop solves again none of the
         iterations up to and including this one. (Default: the last
         completed iteration)
+      restart_dry_run: Stop a restart before its first solve, after
+        rendering and checking its input file (see 'restart_control_id').
+      restart_input_file_template: Input file template of the solves after
+        the restart iteration (see 'restart_control_id'). (Default: the
+        pipeline's)
     """
 
     assert (
@@ -1532,13 +1826,16 @@ def control_id(
     def replaying(iteration):
         return restart_from is not None and iteration <= restart_iteration
 
-    def check_replay(subfile_name, row, values):
+    def check_replay(subfile_name, row, values, first_columns=False):
         """Stop the restart if the replay doesn't reproduce the 'row' of the
-        previous loop's subfile (if it has that row)"""
+        previous loop's subfile (if it has that row), or only its first
+        columns"""
         recorded = recorded_data.get(subfile_name)
         if recorded is None or row >= len(recorded):
             return
         values = np.asarray(values, dtype=float)
+        if first_columns:
+            recorded = recorded[:, : values.size]
         if recorded[row].shape != values.shape or not np.allclose(
             values,
             recorded[row],
@@ -1702,12 +1999,31 @@ def control_id(
                         numeric_initial_guess_in_tests=guess_in_tests,
                         elliptic_absolute_residual=elliptic_absolute_residual,
                         initial_guess_file_glob=initial_guess_file_glob,
+                        **(
+                            dict(
+                                id_input_file_template=(
+                                    restart_input_file_template
+                                )
+                            )
+                            if restart_input_file_template is not None
+                            else {}
+                        ),
                         **kwargs,
                     )
 
                 seed_glob = str(
                     Path(control_run_dir).resolve() / "BbhVolume*.h5"
                 )
+                if restart_dry_run:
+                    # Render and check the input file, but don't solve
+                    run_id(seed_glob if seed else None, submit=False)
+                    run_dir = Segment.last(id_dir).path
+                    logger.info(
+                        "Dry run of the restart: the replay reproduces the"
+                        " previous loop, and the input file of iteration"
+                        f" {iteration} is in '{run_dir}'. Not solving."
+                    )
+                    raise _RestartDryRun(run_dir)
                 try:
                     if not seed:
                         run_id(None)
@@ -2155,9 +2471,35 @@ def control_id(
             + [alpha]
             + effective_spins_after_step
         )
-        # A restart also checks the step from its last replayed iteration
-        if replaying(iteration - 1):
+        # A replayed step must be the recorded one. The enforced constraints
+        # may differ from the previous loop's, but not change a replayed step.
+        if replaying(iteration):
+            recorded_steps = recorded_data["StepSizeConstraints"]
+            if iteration - 1 < len(recorded_steps) and not np.isclose(
+                alpha,
+                recorded_steps[iteration - 1][3],
+                rtol=RESTART_RELATIVE_TOLERANCE,
+                atol=RESTART_ABSOLUTE_TOLERANCE,
+            ):
+                raise RuntimeError(
+                    f"The step-size constraints {list(step_size_constraints)}"
+                    " change the replayed step of control iteration"
+                    f" {iteration}: they apply alpha = {alpha:g} (binding:"
+                    f" {binding}), the previous loop applied alpha ="
+                    f" {recorded_steps[iteration - 1][3]:g}. Restart from an"
+                    " earlier iteration, or with other constraints."
+                )
             check_replay("StepSizeConstraints", iteration - 1, step_size_row)
+        elif replaying(iteration - 1):
+            # The first new step: its alphas (of every constraint, enforced
+            # or not) are computed from the replayed state, so they are the
+            # recorded ones. The applied alpha may differ.
+            check_replay(
+                "StepSizeConstraints",
+                iteration - 1,
+                step_size_row[: len(STEP_SIZE_CONSTRAINTS)],
+                first_columns=True,
+            )
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "StepSizeConstraints", step_size_legend, 0
@@ -2192,6 +2534,14 @@ def control_id(
                 "Jacobian", jacobian_legend, 0
             )
             dat_file.append(J.flatten())
+
+    if restart_dry_run:
+        logger.info(
+            "Dry run of the restart: the replay reproduces the previous loop"
+            " and ends the control loop. Not running the final convergence"
+            " test."
+        )
+        raise _RestartDryRun(None)
 
     # Check the polynomial order that the control loop used
     if run_convergence_tests:
@@ -2228,6 +2578,12 @@ def control_id(
     return control_run_dir
 
 
+def _restart_cli_scheduler_defaults():
+    from spectre.support.Schedule import default_submit_script_template
+
+    return default_submit_script_template
+
+
 @click.command(name="restart-id", help=restart_control_id.__doc__)
 @click.argument(
     "restart_from",
@@ -2253,8 +2609,94 @@ def control_id(
     help="Iteration of the previous control loop to restart from.",
     show_default="the last completed iteration",
 )
-def restart_control_id_command(**kwargs):
+@click.option(
+    "--step-size-constraint",
+    "step_size_constraints",
+    type=click.Choice(STEP_SIZE_CONSTRAINTS),
+    multiple=True,
+    help=(
+        "Step-size constraints to enforce after the restart (repeat for"
+        " several), instead of the previous loop's."
+    ),
+    show_default="the previous loop's",
+)
+@click.option(
+    "--max-iterations",
+    type=click.IntRange(1, None),
+    help="Maximum number of control iterations, instead of the previous's.",
+)
+@click.option(
+    "--final-convergence-test-tolerance",
+    type=click.FloatRange(0.0, None),
+    help="Tolerance of the final convergence test, instead of the previous's.",
+)
+@click.option(
+    "--final-convergence-test-max-polynomial-order",
+    type=click.IntRange(1, None),
+    help=(
+        "Polynomial order that the final convergence test climbs to, instead"
+        " of the previous's."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help=(
+        "Replay and check the previous loop and render the input file of the"
+        " first solve, without solving."
+    ),
+)
+@click.option(
+    "--scheduler",
+    default=("sbatch" if _restart_cli_scheduler_defaults().exists() else None),
+    show_default=True,
+    help=(
+        "The scheduler invoked to queue the restart. The restart is checked"
+        " with a dry run in the 'RestartCheck' subdirectory first."
+    ),
+)
+@click.option(
+    "--no-schedule",
+    is_flag=True,
+    help="Run the restart directly, without scheduling it.",
+)
+@click.option(
+    "--submit-script-template",
+    default=str(_restart_cli_scheduler_defaults()),
+    show_default=True,
+    help=(
+        "Submit script template (e.g., the machine's). Its 'run_command' block"
+        " is replaced by the restart."
+    ),
+)
+@click.option("--job-name", "-J", help="A short name for the job.")
+@click.option("--queue", help="Name of the queue.")
+@click.option("--time-limit", "-t", help="Wall time limit.")
+@click.option(
+    "--param",
+    "-p",
+    "extra_params",
+    multiple=True,
+    callback=lambda ctx, param, values: dict(
+        value.split("=", 1) for value in values
+    ),
+    help=(
+        "Forward an additional 'key=value' parameter to the submit script"
+        " template. Can be specified multiple times."
+    ),
+)
+@click.option(
+    "--submit/--no-submit",
+    default=None,
+    help=(
+        "Submit the restart automatically. If neither option is specified, a"
+        " prompt asks for confirmation."
+    ),
+)
+def restart_control_id_command(no_schedule, **kwargs):
     _rich_traceback_guard = True  # Hide traceback until here
+    if no_schedule:
+        kwargs["scheduler"] = None
     restart_control_id(**kwargs)
 
 

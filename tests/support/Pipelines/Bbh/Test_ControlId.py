@@ -1416,6 +1416,11 @@ def mock_restart_generate_id(
     crash = len(mock_restart_generate_id.calls) == (
         mock_restart_generate_id.crash_at
     )
+    # A dry run renders the input file, but doesn't solve
+    dry_run = kwargs.get("submit") is False
+    mock_restart_generate_id.templates.append(
+        kwargs.get("id_input_file_template")
+    )
     mock_restart_generate_id.calls.append(
         dict(
             name=run_dir.name,
@@ -1438,10 +1443,27 @@ def mock_restart_generate_id(
         free_data,
         polynomial_order,
         {**RESTART_NEXT_WITH, "control": False},
-        complete=not crash,
+        complete=not (crash or dry_run or x_right(free_data) <= 0.0),
     )
     if crash:
         raise SimulatedCrash(f"Crashed in '{run_dir}'.")
+    # What the domain creator says when the input file is checked
+    if x_right(free_data) <= 0.0:
+        raise RuntimeError(
+            "InvalidInputFileError: The x-coordinate of ObjectA's center is"
+            " expected to be positive."
+        )
+
+
+def x_right(free_data):
+    return id_parameters(
+        **free_data,
+        separation=RESTART_SEPARATION,
+        refinement_level=1,
+        polynomial_order=6,
+        negative_expansion_bc=True,
+        target_params=RESTART_TARGET_PARAMS,
+    )["XRight"]
 
 
 def mock_restart_measured_params(run_dir, control_params):
@@ -1464,6 +1486,8 @@ def mock_restart_measured_params(run_dir, control_params):
             offset
             + np.array([0.3 * (mass_a - mass_b), 0.0, 0.0])
             + 0.1 * offset**2
+            # Moves the center of mass that the control aims for
+            + np.array([mock_restart_measured_params.com_shift, 0.0, 0.0])
         ),
     }
 
@@ -1475,6 +1499,22 @@ def read_control_params(id_dir):
             for name in open_h5_file
             if name.endswith(".dat")
         }
+
+
+def free_data_of(call):
+    return {
+        key: call[key]
+        for key in [
+            "conformal_mass_a",
+            "conformal_mass_b",
+            "horizon_rotation_a",
+            "horizon_rotation_b",
+            "center_of_mass_offset",
+            "linear_velocity",
+            "radial_expansion_velocity",
+            "orbital_angular_velocity",
+        ]
+    }
 
 
 def without_globs(calls):
@@ -1493,6 +1533,7 @@ def list_files(directory):
 
 class TestRestartControlId(unittest.TestCase):
     def setUp(self):
+        mock_restart_measured_params.com_shift = 0.0
         self.test_dir = Path(
             unit_test_build_path(), "support/Pipelines/Bbh/ControlIdRestart"
         )
@@ -1503,6 +1544,7 @@ class TestRestartControlId(unittest.TestCase):
 
     def mocks(self, crash_at=None):
         mock_restart_generate_id.calls = []
+        mock_restart_generate_id.templates = []
         mock_restart_generate_id.crash_at = crash_at
         return (
             patch(
@@ -1515,13 +1557,19 @@ class TestRestartControlId(unittest.TestCase):
             ),
         )
 
-    def run_control(self, name, crash_at=None, **next_with):
+    def run_control(
+        self,
+        name,
+        crash_at=None,
+        initial_conformal_mass=0.35,
+        allow_failure=False,
+        **next_with,
+    ):
         """Runs a control loop like 'postprocess_id' does after the first
         solve. Returns its directory, its solves, and its last run (or
-        'None' if it crashed)."""
+        'None' if it crashed, or failed and 'allow_failure')."""
         id_dir = self.test_dir / name
         next_with = {**RESTART_NEXT_WITH, **next_with}
-        initial_conformal_mass = 0.35
         write_restart_run(
             id_dir / "0000_InitialData",
             dict(
@@ -1558,6 +1606,9 @@ class TestRestartControlId(unittest.TestCase):
                 )
             except SimulatedCrash:
                 pass
+            except RuntimeError:
+                if not allow_failure:
+                    raise
         return id_dir, mock_restart_generate_id.calls, last_run_dir
 
     def restart(self, restart_from, name, **kwargs):
@@ -1677,6 +1728,188 @@ class TestRestartControlId(unittest.TestCase):
         self.assertEqual(restart_calls, calls[crash_at:])
         self.assertEqual([call["P"] for call in restart_calls], [7, 8])
         self.assertSameControlParams(restart_dir, reference_dir)
+
+    def test_restart_with_constraint_that_did_not_bind(self):
+        # The center of mass that the control aims for needs the larger black
+        # hole at negative x, so the step that starts the control of the
+        # center of mass crosses x_A = 0 and the loop dies, as in the survey
+        mock_restart_measured_params.com_shift = 6.0
+        id_dir, calls, last_run_dir = self.run_control(
+            "Uninterrupted", allow_failure=True
+        )
+        self.assertIsNone(last_run_dir)
+        self.assertLessEqual(x_right(free_data_of(calls[-1])), 0.0)
+        steps = read_control_params(id_dir)["StepSizeConstraints.dat"]
+        com_alpha, applied_alpha = 1, 3
+        # The 'com' constraint (not enforced) would have shortened only the
+        # fatal step
+        npt.assert_array_equal(steps[:-1, com_alpha], 1.0)
+        self.assertLess(steps[-1, com_alpha], 1.0)
+        self.assertEqual(steps[-1, applied_alpha], 1.0)
+        for dry_run in [True, False]:
+            restart_dir, restart_calls, run_dir = self.restart(
+                id_dir,
+                f"Restart{dry_run}",
+                step_size_constraints=["spin", "com"],
+                dry_run=dry_run,
+                # One more iteration than the previous loop completed
+                max_iterations=len(calls),
+            )
+            # The restart replays the loop and takes the shortened step
+            new_steps = read_control_params(restart_dir)[
+                "StepSizeConstraints.dat"
+            ]
+            npt.assert_array_equal(new_steps[:-1], steps[:-1])
+            npt.assert_array_equal(new_steps[-1, :3], steps[-1, :3])
+            self.assertEqual(new_steps[-1, applied_alpha], steps[-1, com_alpha])
+            self.assertGreater(x_right(free_data_of(restart_calls[0])), 0.0)
+            self.assertEqual(restart_calls[0]["name"], calls[-1]["name"])
+            # The new runs record the changed constraints
+            template = mock_restart_generate_id.templates[0].read_text()
+            self.assertIn(
+                "    control_step_size_constraints: [spin, com]\n", template
+            )
+            record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+            self.assertEqual(
+                record["changed_options"],
+                {
+                    "control_step_size_constraints": {
+                        "old": ["spin"],
+                        "new": ["spin", "com"],
+                    },
+                    "control_max_iterations": {"old": 30, "new": len(calls)},
+                },
+            )
+            if dry_run:
+                # The dry run renders the input file and stops
+                self.assertEqual(len(restart_calls), 1)
+                self.assertEqual(Path(run_dir).name, calls[-1]["name"])
+                self.assertFalse((Path(run_dir) / "free_data.json").exists())
+            else:
+                # The restarted loop solves the shortened step and stops at
+                # its maximum number of iterations
+                self.assertEqual(len(restart_calls), 1)
+                self.assertEqual(Path(run_dir).name, calls[-1]["name"])
+                self.assertTrue((Path(run_dir) / "free_data.json").exists())
+
+    def test_restart_refuses_constraint_that_binds(self):
+        # From a small initial conformal mass, the first steps change the
+        # masses by more than the 'mass' constraint allows (not enforced)
+        id_dir, calls, _ = self.run_control(
+            "Uninterrupted", initial_conformal_mass=0.15
+        )
+        steps = read_control_params(id_dir)["StepSizeConstraints.dat"]
+        mass_alpha, applied_alpha = 0, 3
+        binding_iteration = 1 + int(np.flatnonzero(steps[:, mass_alpha] < 1)[0])
+        self.assertLess(binding_iteration, len(calls))
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "change the replayed step of control iteration"
+            f" {binding_iteration}:",
+        ):
+            self.restart(
+                id_dir,
+                "Refused",
+                restart_iteration=binding_iteration,
+                step_size_constraints=["spin", "mass"],
+                dry_run=True,
+            )
+        # From the iteration before, the binding step is the first new one
+        restart_dir, _, _ = self.restart(
+            id_dir,
+            "Accepted",
+            restart_iteration=binding_iteration - 1,
+            step_size_constraints=["spin", "mass"],
+            dry_run=True,
+        )
+        new_steps = read_control_params(restart_dir)["StepSizeConstraints.dat"]
+        self.assertEqual(len(new_steps), binding_iteration)
+        self.assertEqual(
+            new_steps[-1, applied_alpha], steps[binding_iteration - 1, 0]
+        )
+
+    def test_restart_options(self):
+        id_dir, calls, _ = self.run_control("Uninterrupted")
+        # Options that would change the replayed iterations can't change
+        with self.assertRaisesRegex(ValueError, "can't change the options"):
+            self.restart(id_dir, "Tolerance", residual_tolerance=1.0e-3)
+        with self.assertRaisesRegex(ValueError, "maximum number of iterations"):
+            self.restart(
+                id_dir, "MaxIterations", restart_iteration=3, max_iterations=3
+            )
+        # Options that don't change anything are recorded as unchanged
+        restart_dir, restart_calls, _ = self.restart(
+            id_dir, "Same", restart_iteration=2, step_size_constraints=["spin"]
+        )
+        self.assertEqual(without_globs(restart_calls), without_globs(calls[2:]))
+        self.assertEqual(set(mock_restart_generate_id.templates), {None})
+        record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+        self.assertEqual(record["changed_options"], {})
+
+    def test_scheduled_restart(self):
+        id_dir, calls, last_run_dir = self.run_control("Uninterrupted")
+        submit_script_template = self.test_dir / "Template.sh"
+        submit_script_template.write_text(
+            "#!/bin/bash -\n"
+            "#SBATCH -J {{ job_name }}\n"
+            "#SBATCH -t {{ time_limit }}\n"
+            "#SBATCH -A {{ account }}\n"
+            "export RUN_DIR={{ run_dir }}\n"
+            "export SPECTRE_CLI={{ spectre_cli }}\n"
+            "cd ${RUN_DIR}\n"
+            "{% block run_command %}\n"
+            "{{ executable }} --input-file {{ input_file }}\n"
+            "{% endblock %}\n"
+            "${SPECTRE_CLI} run-next {{ input_file }} -i .\n"
+        )
+        restart_dir = self.test_dir / "Scheduled"
+        generate_id, measured_params = self.mocks()
+        with generate_id, measured_params:
+            submit_script = restart_control_id(
+                id_dir,
+                restart_dir,
+                restart_iteration=2,
+                step_size_constraints=["spin", "com"],
+                scheduler="sbatch",
+                submit_script_template=submit_script_template,
+                job_name="restart-test",
+                time_limit="1:00:00",
+                extra_params=dict(account="uzh66"),
+                submit=False,
+            )
+        # The restart is checked with a dry run, which renders one solve
+        self.assertEqual(len(mock_restart_generate_id.calls), 1)
+        check = yaml.safe_load(
+            (restart_dir / "RestartCheck" / "Restart.yaml").read_text()
+        )
+        self.assertTrue(check["dry_run"])
+        # The submit script runs the restart in place of the executable
+        text = submit_script.read_text()
+        self.assertIn("#SBATCH -J restart-test\n", text)
+        self.assertIn("#SBATCH -A uzh66\n", text)
+        self.assertIn(f"export RUN_DIR={restart_dir}\n", text)
+        self.assertIn(
+            f"${{SPECTRE_CLI}} bbh restart-id {id_dir.resolve()} -o"
+            f" {restart_dir} -i 2 --step-size-constraint=spin"
+            " --step-size-constraint=com --no-schedule\nexit $?\n",
+            text,
+        )
+        self.assertNotIn("--input-file", text)
+        # The job then runs the restart in the directory, which holds no
+        # control loop yet. The 'com' constraint doesn't bind in this loop,
+        # so the restart reproduces it.
+        self.assertFalse((restart_dir / "ControlParams.h5").exists())
+        _, restart_calls, restart_last_run_dir = self.restart(
+            id_dir,
+            "Scheduled",
+            restart_iteration=2,
+            step_size_constraints=["spin", "com"],
+        )
+        self.assertEqual(without_globs(restart_calls), without_globs(calls[2:]))
+        self.assertSameControlParams(restart_dir, id_dir)
+        self.assertEqual(
+            Path(restart_last_run_dir).name, Path(last_run_dir).name
+        )
 
     def test_replay_mismatch(self):
         id_dir, calls, _ = self.run_control("Uninterrupted")
