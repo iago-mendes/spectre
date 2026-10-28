@@ -251,11 +251,11 @@ Observers:
 NonlinearSolver:
   NewtonRaphson:
     ConvergenceCriteria:
-      MaxIterations: 20
+      MaxIterations: 40
       RelativeResidual: 0.
       AbsoluteResidual: {{ newton_absolute_residual }}
     SufficientDecrease: 1.e-4
-    MaxGlobalizationSteps: 10
+    MaxGlobalizationSteps: 40
     DampingFactor: 1.
     Verbosity: Verbose
 
