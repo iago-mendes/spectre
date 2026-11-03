@@ -1179,6 +1179,7 @@ def _restart_control_options(
         "control_params": "control_params",
         "control_residual_tolerance": "residual_tolerance",
         "control_max_iterations": "max_iterations",
+        "control_raise_at_max_iterations": "raise_at_max_iterations",
         "control_delay": "control_delay",
         "control_refinement_level": "refinement_level",
         "control_polynomial_order": "polynomial_order",
@@ -1509,6 +1510,7 @@ def control_id(
     id_run_dir: Optional[Union[str, Path]] = None,
     residual_tolerance: float = DEFAULT_RESIDUAL_TOLERANCE,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    raise_at_max_iterations: bool = False,
     control_delay: int = DEFAULT_CONTROL_DELAY,
     refinement_level: int = 1,
     polynomial_order: int = 6,
@@ -1615,7 +1617,12 @@ def control_id(
         (Default: 1.e-4)
       max_iterations: Maximum of iterations allowed. Note: each iteration is
         very expensive as it needs to solve an entire initial data problem.
-        (Default: 30)
+        A loop that reaches it without converging logs a warning and runs the
+        final convergence test with its last free data. (Default: 30)
+      raise_at_max_iterations: Raise an error instead when the loop reaches
+        'max_iterations' without converging, so that the job fails rather
+        than completing with free data that misses the 'residual_tolerance'.
+        (Default: False)
       control_delay: Minimum number of iterations before control of delayed
         parameters starts. We have found that delaying the control of
         asymptotic quantities (ADM mass, ADM momenta, and center of mass) helps
@@ -2401,6 +2408,7 @@ def control_id(
             )
         return alphas
 
+    converged = False
     while iteration < max_iterations:
         iteration += 1
 
@@ -2517,6 +2525,7 @@ def control_id(
         # Compute residual and check stopping condition
         F = Residual(u)
         if np.max(np.abs(F)) < residual_tolerance:
+            converged = True
             break
         if delay_control:
             F[delayed_indices] = 0.0
@@ -2542,6 +2551,20 @@ def control_id(
             " test."
         )
         raise _RestartDryRun(None)
+
+    if not converged:
+        message = (
+            f"The control loop reached the maximum of {max_iterations}"
+            " iterations without converging: control residual"
+            f" {previous_control_residual:e} >= {residual_tolerance:e}."
+        )
+        if raise_at_max_iterations:
+            raise RuntimeError(message)
+        logger.warning(
+            message
+            + " Continuing with the last free data, which miss the"
+            " residual tolerance."
+        )
 
     # Check the polynomial order that the control loop used
     if run_convergence_tests:

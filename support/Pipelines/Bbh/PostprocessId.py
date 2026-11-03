@@ -41,6 +41,7 @@ def postprocess_id(
     control: bool = True,
     control_residual_tolerance: float = DEFAULT_RESIDUAL_TOLERANCE,
     control_max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    control_raise_at_max_iterations: bool = False,
     control_refinement_level: int = 1,
     control_polynomial_order: int = 6,
     control_delay: int = DEFAULT_CONTROL_DELAY,
@@ -106,6 +107,9 @@ def postprocess_id(
       control: Control BBH physical parameters (default: True).
       control_residual_tolerance: Residual tolerance used for control.
       control_max_iterations: Maximum of iterations allowed for control.
+      control_raise_at_max_iterations: Raise an error when the control loop
+        reaches 'control_max_iterations' without converging, instead of
+        logging a warning and continuing. See ControlId.py. (Default: False)
       control_refinement_level: h-refinement used for control.
       control_polynomial_order: p-refinement used for control.
       control_delay: Minimum number of iterations before control of delayed
@@ -229,6 +233,7 @@ def postprocess_id(
             id_run_dir=id_run_dir,
             residual_tolerance=control_residual_tolerance,
             max_iterations=control_max_iterations,
+            raise_at_max_iterations=control_raise_at_max_iterations,
             control_delay=control_delay,
             refinement_level=control_refinement_level,
             polynomial_order=control_polynomial_order,

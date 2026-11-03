@@ -40,6 +40,9 @@ Next:
 {% if numeric_initial_guess | default(False) %}
     numeric_initial_guess: True
 {% endif %}
+{% if control_raise_at_max_iterations | default(False) %}
+    control_raise_at_max_iterations: True
+{% endif %}
 {% if numeric_initial_guess_in_tests | default(False) %}
     numeric_initial_guess_in_tests: True
 {% endif %}

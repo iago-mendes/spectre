@@ -1058,6 +1058,49 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_control()
 
+    def reset_control(self):
+        """Removes the control loop's runs and records, keeping its first
+        run."""
+        for path in self.id_dir.glob("[0-9]*_InitialData"):
+            if path != self.run_dir:
+                shutil.rmtree(path)
+        (self.id_dir / "ControlParams.h5").unlink(missing_ok=True)
+        mock_control_generate_id.calls = []
+
+    def test_max_iterations_without_convergence(self):
+        # A loop that reaches 'max_iterations' without converging warns and
+        # returns its last run, or raises with 'raise_at_max_iterations'
+        with self.assertLogs(
+            "spectre.Pipelines.Bbh.ControlId", level="WARNING"
+        ) as logs:
+            last_run_dir = self.run_control(
+                numeric_initial_guess=False, max_iterations=1
+            )[0]
+        self.assertEqual(last_run_dir.name, "0001_InitialData")
+        self.assertTrue(
+            any(
+                "reached the maximum of 1 iterations without converging" in line
+                for line in logs.output
+            )
+        )
+        self.reset_control()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"reached the maximum of 1 iterations without converging: control"
+            r" residual .* >= 1\.000000e-08",
+        ):
+            self.run_control(
+                numeric_initial_guess=False,
+                max_iterations=1,
+                raise_at_max_iterations=True,
+            )
+        # A loop that converges neither warns nor raises
+        self.reset_control()
+        with self.assertNoLogs("spectre.Pipelines.Bbh.ControlId", "WARNING"):
+            self.run_control(
+                numeric_initial_guess=False, raise_at_max_iterations=True
+            )
+
     def test_unconverged_control_solve(self):
         # An unconverged solve stops the control loop with an error that names
         # the control iteration, instead of measuring its parameters
