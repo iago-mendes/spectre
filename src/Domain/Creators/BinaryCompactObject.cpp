@@ -436,15 +436,13 @@ BinaryCompactObject::BinaryCompactObject(
     number_of_blocks_ -= 11;
   }
 
-  if (x_coord_a_ <= 0.0) {
-    PARSE_ERROR(
-        context,
-        "The x-coordinate of ObjectA's center is expected to be positive.");
-  }
-  if (x_coord_b_ >= 0.0) {
-    PARSE_ERROR(
-        context,
-        "The x-coordinate of ObjectB's center is expected to be negative.");
+  // Only the order of the objects matters: the maps use their separation and
+  // midpoint, not the signs of their x-coordinates. So a large mass ratio
+  // with a center-of-mass offset may put ObjectA at x <= 0.
+  if (x_coord_a_ <= x_coord_b_) {
+    PARSE_ERROR(context,
+                "The x-coordinate of ObjectA's center is expected to be larger "
+                "than ObjectB's.");
   }
   if (envelope_radius_ <= length_inner_cube_ * sqrt(3.0)) {
     const double suggested_value = 2.0 * length_inner_cube_ * sqrt(3.0);

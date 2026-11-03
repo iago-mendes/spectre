@@ -101,8 +101,10 @@ namespace domain::creators {
  *   shells.
  *
  * \par Notes:
- * - Object A is located to the right of the origin (along the positive x-axis)
- *   and Object B is located to the left of the origin in the Grid frame.
+ * - Object A is located to the right of Object B (along the positive x-axis)
+ *   in the Grid frame, typically on opposite sides of the origin. Only their
+ *   order is required: e.g. at a large mass ratio, a center-of-mass offset can
+ *   put Object A at x <= 0.
  * - This domain offers some grid anchors. See
  *   `domain::creators::bco::create_grid_anchors` for which ones are offered.
  * - "Cutting plane" refers to the plane along which the domain divides into two

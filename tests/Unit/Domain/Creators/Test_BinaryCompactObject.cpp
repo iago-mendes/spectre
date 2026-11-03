@@ -435,13 +435,16 @@ void test_connectivity() {
 // only a few times 1e-6 across, so distinct corners of its blocks are closer
 // to each other than an absolute tolerance of 1e-6. Finding the block
 // neighbors must not identify these corners with each other.
-void test_small_object() {
+// A center-of-mass offset along x of 'offset_in_units_of_x_a' times the
+// Newtonian x-coordinate of object A, e.g. -2 puts object A at x < 0
+void test_small_object(const double offset_in_units_of_x_a) {
   INFO("Small object");
+  CAPTURE(offset_in_units_of_x_a);
   const double separation = 10.0;
   const double mass_ratio = 1.0e6;
   const double mass_b = 1.0 / (1.0 + mass_ratio);
   const double mass_a = 1.0 - mass_b;
-  const double x_coord_a = mass_b * separation;
+  const double x_coord_a = (1.0 + offset_in_units_of_x_a) * mass_b * separation;
   const double x_coord_b = x_coord_a - separation;
   // Excisions at 0.93 r_+ for conformal masses 0.82 M
   const double inner_radius_a = 0.93 * 2.0 * 0.82 * mass_a;
@@ -466,6 +469,10 @@ void test_small_object() {
       Distribution::Linear,
       120.0};
   const auto domain = binary_compact_object.create_domain();
+  CHECK(domain.excision_spheres().at("ExcisionSphereA").center()[0] ==
+        approx(x_coord_a));
+  CHECK(domain.excision_spheres().at("ExcisionSphereB").center()[0] ==
+        approx(x_coord_b));
   const auto& blocks = domain.blocks();
   REQUIRE(blocks.size() == 44);
   // The only external boundaries are the two excision surfaces (the inner
@@ -970,7 +977,8 @@ void test_parse_errors() {
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
           Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
-          "The x-coordinate of ObjectA's center is expected to be positive."));
+          "The x-coordinate of ObjectA's center is expected to be larger "
+          "than ObjectB's."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
           Object{0.5,
@@ -988,7 +996,8 @@ void test_parse_errors() {
           120.0, false, false, std::nullopt, create_outer_boundary_condition(),
           Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
-          "The x-coordinate of ObjectB's center is expected to be negative."));
+          "The x-coordinate of ObjectA's center is expected to be larger "
+          "than ObjectB's."));
   CHECK_THROWS_WITH(
       domain::creators::BinaryCompactObject(
           Object{0.3,
@@ -1681,7 +1690,8 @@ void test_kerr_horizon_conforming() {
 SPECTRE_TEST_CASE("Unit.Domain.Creators.BinaryCompactObject",
                   "[Domain][Unit]") {
   test_connectivity();
-  test_small_object();
+  test_small_object(0.0);
+  test_small_object(-2.0);
   test_bns_domain_with_cubes();
   for (const auto& [with_bc, add_time_dep, excise_B] :
        cartesian_product(make_array(true, false), make_array(true, false),
