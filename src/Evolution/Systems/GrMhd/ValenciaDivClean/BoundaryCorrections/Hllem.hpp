@@ -241,7 +241,12 @@ class Hllem final : public evolution::BoundaryCorrection {
         "complement is upwind/dissipative), the HLLEM block complement removes "
         "the numerical dissipation from the collapsed slow/Alfven transverse "
         "modes, which is unstable at sharp relativistic shear layers -- leave "
-        "false and rely on the per-wave path (which matches PLUTO's HLLEM)."};
+        "false and rely on the per-wave path (which matches PLUTO's HLLEM). "
+        "The block covers the dropped wave's degenerate cluster (every wave "
+        "within DegeneracyTolerance of it, restored or not), is the "
+        "complement of every wave outside the cluster, and carries the "
+        "smallest Einfeldt coefficient over the cluster; waves outside the "
+        "cluster keep their own per-wave terms."};
     using type = bool;
   };
   struct MagneticFieldMagnitudeForHydro {
@@ -260,8 +265,13 @@ class Hllem final : public evolution::BoundaryCorrection {
     using type = Options::Auto<double, Options::AutoLabel::None>;
     static constexpr Options::String help = {
         "Drop a restored wave where its eigenvalue condition number "
-        "|l| |r| / |l.r| exceeds this value (at least 1). None disables the "
-        "check."};
+        "|l| |r| / |l.r| exceeds this value times the equation-of-state floor "
+        "max(1, chi_e/c_s^2) at the interface state (chi_e = p/(rho eps), "
+        "Gamma - 1 for an ideal gas): in conserved variables the contact and "
+        "slow waves have condition numbers chi_e/c_s^2 and chi_e/(2 c_s^2) on "
+        "every face of a cold gas, set by the equation of state and not by "
+        "any degeneracy, so the guard is measured relative to that floor. "
+        "Positive; None disables the check."};
   };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
