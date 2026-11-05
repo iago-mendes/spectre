@@ -8,6 +8,7 @@ spectre_target_sources(
   CartoonGhost.cpp
   DemandOutgoingCharSpeeds.cpp
   DirichletAnalytic.cpp
+  DirichletAnalyticInNozzle.cpp
   HydroFreeOutflow.cpp
   Reflective.cpp
   )
@@ -20,6 +21,7 @@ spectre_target_headers(
   CartoonGhost.hpp
   DemandOutgoingCharSpeeds.hpp
   DirichletAnalytic.hpp
+  DirichletAnalyticInNozzle.hpp
   Factory.hpp
   HydroFreeOutflow.hpp
   Reflective.hpp
