@@ -116,9 +116,9 @@ Hllem::Hllem(const HllemWaves waves_to_restore,
       light_speed_density_cutoff_(light_speed_density_cutoff),
       max_condition_number_(max_condition_number) {
   if (max_condition_number_.has_value() and
-      not(*max_condition_number_ > 0.0)) {
+      not(*max_condition_number_ >= 1.0)) {
     PARSE_ERROR(context,
-                "MaxConditionNumber must be positive (or None), but is "
+                "MaxConditionNumber must be at least 1 (or None), but is "
                     << *max_condition_number_);
   }
 }
@@ -643,46 +643,6 @@ void Hllem::dg_boundary_terms(
   const Scalar<DataVector> enthalpy_avg =
       hydro::relativistic_specific_enthalpy(rho_avg, eps_avg, p_at_avg_state);
 
-  // The condition guard's floor. The eigenvalue condition number
-  // |l||r|/|l.r| of the contact and slow waves has a value set by the
-  // equation of state alone, with no degeneracy involved: in conserved
-  // variables the entropy and acoustic eigenvectors differ only at O(c_s),
-  // the sound wave's tau component being c_s^2/chi_e of its density component
-  // (chi_e = dp/d(rho eps)|_rho, Gamma - 1 for an ideal gas), so for a gas at
-  // rest
-  //     kappa_contact = chi_e / c_s^2,   kappa_slow = chi_e / (2 c_s^2)
-  // on EVERY face, with the speeds well apart. At p/rho = 1e-4 (the strong-B_x
-  // Dai-Woodward tube) that is 4e3 and 2e3: MaxConditionNumber = 1e3 dropped
-  // the slow pair and the contact on every face, which with the projection
-  // off made HLLEM-All the HLL flux, and with it on fed the Alfven pair the
-  // contact's coefficient (see the block below) and blew the run up
-  // (2026-11-05). The guard is therefore measured RELATIVE to this floor: a
-  // wave is dropped where its condition number exceeds MaxConditionNumber
-  // times max(1, chi_e/c_s^2) at the interface state. On a hot gas the floor
-  // is of order one and the guard is what it was. chi_e is taken as
-  // p/(rho eps), exact for an ideal gas and the right order for any other;
-  // c_s^2 comes from the equation of state at the same (rho, eps) as the
-  // eigensystem. A non-finite floor (an atmosphere state) is taken as 1.
-  DataVector condition_floor{num_points, 1.0};
-  if (max_condition_number_.has_value()) {
-    const auto temperature_avg =
-        equation_of_state.temperature_from_density_and_energy(rho_avg, eps_avg,
-                                                              ye_avg);
-    const Scalar<DataVector> sound_speed_squared_avg =
-        equation_of_state.sound_speed_squared_from_density_and_temperature(
-            rho_avg, temperature_avg, ye_avg);
-    for (size_t pt = 0; pt < num_points; ++pt) {
-      const double chi_e =
-          get(p_at_avg_state)[pt] /
-          std::max(get(rho_avg)[pt] * get(eps_avg)[pt], 1.0e-300);
-      const double floor =
-          chi_e / std::max(get(sound_speed_squared_avg)[pt], 1.0e-300);
-      if (std::isfinite(floor) and floor > 1.0) {
-        condition_floor[pt] = floor;
-      }
-    }
-  }
-
   // flat-space geometry
   tnsr::ii<DataVector, 3, Frame::Inertial> flat_metric{num_points, 0.0};
   for (size_t i = 0; i < 3; ++i) {
@@ -954,9 +914,20 @@ void Hllem::dg_boundary_terms(
     }
     // Conditioning guard: drop the wave where the norm of its spectral
     // projector, |l| |r| / |l.r| (the eigenvalue condition number), exceeds
-    // MaxConditionNumber times the equation-of-state floor computed above.
-    // Unlike the floor on |l.r|, this is invariant to the eigenvectors'
-    // normalization.
+    // MaxConditionNumber. Unlike the floor on |l.r|, this is invariant to the
+    // eigenvectors' normalization. Note what it measures on a cold gas: in
+    // conserved variables the contact and slow eigenvectors differ only at
+    // O(c_s), so their condition numbers are chi_e/c_s^2 and chi_e/(2 c_s^2)
+    // (chi_e = dp/d(rho eps)|_rho, Gamma - 1 for an ideal gas) on EVERY
+    // face -- 4e3 and 2e3 at p/rho = 1e-4 -- with the speeds well apart. The
+    // guard then trips everywhere, and what follows must be right: with the
+    // projection off the waves are simply not restored (HLL for them); with
+    // it on they are restored as ONE block with a common coefficient (below),
+    // which is the correct treatment of a nearly parallel group -- restored
+    // one by one, their coefficients differ by a few per cent and, times
+    // kappa, that amplifies any jump that is not a clean combination of
+    // eigenvectors (a boundary mismatch, floor rows) into a transverse-field
+    // drift. On a cold gas use the projection.
     if (max_condition_number_.has_value()) {
       DataVector norm_l{num_points, 0.0};
       DataVector norm_r{num_points, 0.0};
@@ -967,8 +938,7 @@ void Hllem::dg_boundary_terms(
       for (size_t pt = 0; pt < num_points; ++pt) {
         if (ok[pt] > 0.0 and
             not(sqrt(norm_l[pt] * norm_r[pt]) <=
-                *max_condition_number_ * condition_floor[pt] *
-                    std::abs(diag[pt]))) {
+                *max_condition_number_ * std::abs(diag[pt]))) {
           ok[pt] = 0.0;
           drop[pt] = 1.0;
         }

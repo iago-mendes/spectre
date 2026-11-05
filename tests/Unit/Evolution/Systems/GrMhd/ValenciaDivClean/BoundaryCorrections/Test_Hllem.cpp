@@ -1400,10 +1400,9 @@ std::array<double, 10> hllem_correction(
   return flatten_correction(c_d, c_ye, c_tau, c_phi, c_s, c_b);
 }
 
-// MaxConditionNumber on one generic interface: at 1e-6 every restored wave is
-// dropped (its condition number is at least 1, the floor at least 1, so no
-// wave passes), so All equals None; with None (no guard) the result is the
-// unguarded one.
+// MaxConditionNumber on one generic interface: at 1 every restored wave whose
+// l and r are not parallel is dropped (|l.r| <= |l| |r|), so All equals None;
+// with None (no guard) the result is the unguarded one.
 void test_max_condition_number(
     const InterfaceState& state_int, const InterfaceState& state_ext,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
@@ -1416,7 +1415,7 @@ void test_max_condition_number(
   };
   const auto none = run(bc::HllemWaves::None, std::nullopt);
   const auto all = run(bc::HllemWaves::All, std::nullopt);
-  const auto all_guard_tiny = run(bc::HllemWaves::All, 1.0e-6);
+  const auto all_guard_one = run(bc::HllemWaves::All, 1.0);
   const auto all_guard_huge = run(bc::HllemWaves::All, 1.0e100);
   double scale = 0.0;
   double restored = 0.0;
@@ -1430,7 +1429,7 @@ void test_max_condition_number(
   CHECK(restored > 1.0e-3 * scale);
   for (size_t n = 0; n < 10; ++n) {
     CAPTURE(n);
-    CHECK(gsl::at(all_guard_tiny, n) == gsl::at(none, n));
+    CHECK(gsl::at(all_guard_one, n) == gsl::at(none, n));
     CHECK(gsl::at(all_guard_huge, n) == gsl::at(all, n));
   }
 }
@@ -1475,26 +1474,38 @@ void test_complementary_projection_keeps_glm_on_hll(
   CHECK(block[7] == approx(none[7]));
 }
 
-// The condition guard on a cold gas. On the strong-B_x Dai-Woodward tube
-// (p/rho = 1e-4, B nearly along the normal, Gamma = 5/3) the Euclidean
-// condition numbers of the contact and slow waves are (Gamma-1)/c_s^2 = 4e3
-// and half of it on EVERY face, set by the equation of state (the entropy and
-// acoustic eigenvectors differ only at O(c_s) in conserved variables), with the
-// wave speeds well apart. Measured against that floor, the guard at 1e3 must
-// drop nothing: All with the guard equals All without it, and both restore
-// something. At 1e-6 relative to the floor every wave is dropped and All is
-// None. (Before 2026-11-05 the guard at 1e3 dropped the slow pair and the
-// contact everywhere here and HLLEM-All was the HLL flux on this tube.)
-void test_cold_gas_guard_measures_the_equation_of_state() {
+// The condition guard on a cold gas, and the block that follows it. On the
+// strong-B_x Dai-Woodward tube (p/rho = 1e-4, B nearly along the normal,
+// Gamma = 5/3) the Euclidean condition numbers of the contact and slow waves
+// are (Gamma-1)/c_s^2 = 4e3 and half of it on EVERY face, set by the equation
+// of state (the entropy and acoustic eigenvectors differ only at O(c_s) in
+// conserved variables), with the wave speeds well apart, so the guard at 1e3
+// drops the contact and the slow pair and keeps the Alfven pair (condition
+// number 1.01, at the fan edge with coefficient ~0.01). Three facts:
+//  1. with the projection off, the guard removes nearly the whole
+//     anti-diffusion (what is left is the Alfven pair's few per cent);
+//  2. with the projection on, the dropped three are restored as one block
+//     carried by the smallest of their coefficients (0.97 here, against
+//     0.97-1.00 individually), and the Alfven pair keeps its own per-wave
+//     terms, so the result sits within a few per cent of the unguarded
+//     per-wave flux and differs from the guarded projection-off flux;
+//  3. the unguarded flux restores something (so 1. and 2. discriminate).
+// The block of before 2026-11-05 -- the complement of the fast/GLM waves
+// alone, carried by the contact's coefficient and REPLACING the per-wave
+// terms -- re-restored the Alfven pair with coefficient ~1 instead of ~0.01
+// and fails fact 2 by a wide margin; in evolution it blew the tube up.
+void test_cold_gas_block_restores_the_dropped_group() {
   const double adiabatic_index = 5.0 / 3.0;
   const auto equation_of_state =
       EquationsOfState::IdealFluid<true>{adiabatic_index}.promote_to_3d_eos();
   // the tube's two states (ZPL26's Dai-Woodward states at c = 1), at rest
   const auto state_int = make_state_at_rest(
-      1.08, 9.5e-5, {{0.5641895835477563, 0.010155412503859613, 0.005641895835477563}},
+      1.08, 9.5e-5,
+      {{0.5641895835477563, 0.010155412503859613, 0.005641895835477563}},
       adiabatic_index, 1);
   const auto state_ext = make_state_at_rest(
-      1.0, 1.0e-4, {{0.5641895835477563, 0.011283791670955126, 0.005641895835477563}},
+      1.0, 1.0e-4,
+      {{0.5641895835477563, 0.011283791670955126, 0.005641895835477563}},
       adiabatic_index, 1);
   const std::array<double, 3> normal{{1.0, 0.0, 0.0}};
   const auto run = [&](const bc::HllemWaves waves, const bool projection,
@@ -1505,50 +1516,33 @@ void test_cold_gas_guard_measures_the_equation_of_state() {
   };
   const auto none = run(bc::HllemWaves::None, false, std::nullopt);
   const auto all = run(bc::HllemWaves::All, false, std::nullopt);
-  const auto all_guarded = run(bc::HllemWaves::All, false, 1.0e3);
-  const auto all_guard_tiny = run(bc::HllemWaves::All, false, 1.0e-6);
+  const auto guarded_off = run(bc::HllemWaves::All, false, 1.0e3);
+  const auto guarded_on = run(bc::HllemWaves::All, true, 1.0e3);
   double scale = 0.0;
   double restored = 0.0;
-  for (size_t n = 0; n < 10; ++n) {
-    scale = std::max(scale, std::abs(gsl::at(none, n)));
-    restored = std::max(restored, std::abs(gsl::at(all, n) - gsl::at(none, n)));
-  }
-  CAPTURE(scale);
-  CAPTURE(restored);
-  CHECK(restored > 1.0e-3 * scale);
-  for (size_t n = 0; n < 10; ++n) {
-    CAPTURE(n);
-    CHECK(gsl::at(all_guarded, n) == gsl::at(all, n));
-    CHECK(gsl::at(all_guard_tiny, n) == gsl::at(none, n));
-  }
-
-  // The block restores only the dropped cluster, with its own coefficient.
-  // A guard of 0.3 relative to the floor drops the contact (condition number
-  // 1.0 floors) and the slow pair (0.5 floors) but keeps the Alfven pair
-  // (about 1e-4 floors). With the projection on, the dropped three are then
-  // restored as one block carried by the smallest of their coefficients
-  // (0.97 here against 0.97-1.00 individually), and the Alfven pair keeps
-  // its own per-wave terms. The result must therefore sit within a few per
-  // cent of the restored part of the unguarded per-wave flux, and must differ
-  // from the guarded projection-off flux (the block did fire). The block of
-  // before 2026-11-05 -- the complement of the fast/GLM waves alone, carried
-  // by the contact's coefficient -- re-restored the Alfven pair with
-  // coefficient ~1 instead of ~0.01 and fails the first check by a wide
-  // margin.
-  const auto guarded_off = run(bc::HllemWaves::All, false, 0.3);
-  const auto guarded_on = run(bc::HllemWaves::All, true, 0.3);
+  double left_without_projection = 0.0;
   double block_error = 0.0;
   double block_effect = 0.0;
   for (size_t n = 0; n < 10; ++n) {
+    scale = std::max(scale, std::abs(gsl::at(none, n)));
+    restored = std::max(restored, std::abs(gsl::at(all, n) - gsl::at(none, n)));
+    left_without_projection =
+        std::max(left_without_projection,
+                 std::abs(gsl::at(guarded_off, n) - gsl::at(none, n)));
     block_error = std::max(
         block_error, std::abs(gsl::at(guarded_on, n) - gsl::at(all, n)));
     block_effect = std::max(block_effect, std::abs(gsl::at(guarded_on, n) -
                                                    gsl::at(guarded_off, n)));
   }
+  CAPTURE(scale);
+  CAPTURE(restored);
+  CAPTURE(left_without_projection);
   CAPTURE(block_error);
   CAPTURE(block_effect);
+  CHECK(restored > 1.0e-3 * scale);
+  CHECK(left_without_projection < 0.1 * restored);
   CHECK(block_error < 0.05 * restored);
-  CHECK(block_effect > 0.1 * restored);
+  CHECK(block_effect > 0.5 * restored);
 }
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
@@ -1702,9 +1696,9 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                           "DegeneracyTolerance: 1.0e-10\n"
                           "MagneticFieldMagnitudeForHydro: 1.0e-30\n"
                           "LightSpeedDensityCutoff: 1.0e-8\n"
-                          "MaxConditionNumber: 0.0\n")),
+                          "MaxConditionNumber: 0.5\n")),
                       Catch::Matchers::ContainsSubstring(
-                          "MaxConditionNumber must be positive"));
+                          "MaxConditionNumber must be at least 1"));
   }
 
   CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -1765,7 +1759,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   }
 
   test_fast_speeds_are_packaged_per_side();
-  test_cold_gas_guard_measures_the_equation_of_state();
+  test_cold_gas_block_restores_the_dropped_group();
   report_when_denominator_floors_bind();
   test_vanishing_tangential_field_stays_finite();
   test_strong_blast_states_stay_finite();

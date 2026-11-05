@@ -265,13 +265,15 @@ class Hllem final : public evolution::BoundaryCorrection {
     using type = Options::Auto<double, Options::AutoLabel::None>;
     static constexpr Options::String help = {
         "Drop a restored wave where its eigenvalue condition number "
-        "|l| |r| / |l.r| exceeds this value times the equation-of-state floor "
-        "max(1, chi_e/c_s^2) at the interface state (chi_e = p/(rho eps), "
-        "Gamma - 1 for an ideal gas): in conserved variables the contact and "
-        "slow waves have condition numbers chi_e/c_s^2 and chi_e/(2 c_s^2) on "
-        "every face of a cold gas, set by the equation of state and not by "
-        "any degeneracy, so the guard is measured relative to that floor. "
-        "Positive; None disables the check."};
+        "|l| |r| / |l.r| exceeds this value (at least 1). None disables the "
+        "check. On a cold gas (p/rho below about 1e-3) the contact and slow "
+        "waves exceed 1e3 on every face -- their condition numbers are "
+        "chi_e/c_s^2 and chi_e/(2 c_s^2), set by the equation of state -- so "
+        "there the guard trips everywhere: with UseComplementaryProjection "
+        "false they are then not restored (HLL for them), with it true they "
+        "are restored as one block with a common coefficient, which is the "
+        "right treatment of a nearly parallel group. Use the projection on a "
+        "cold gas."};
   };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
