@@ -9,8 +9,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/TaggedTuple.hpp"
@@ -1545,6 +1548,138 @@ void test_cold_gas_block_restores_the_dropped_group() {
   CHECK(block_effect > 0.5 * restored);
 }
 
+// The fan admissibility guard (2026-11-09). The flux fixes the average state
+// in each half of the HLL fan; HLLEM's are U_hll - w_int A and U_hll + w_ext A
+// (A the anti-diffusion over its coefficient), and the guard scales A, i.e.
+// the whole anti-diffusion, by the largest theta in [0, 1] that keeps both
+// physical (SPECTRE_HLLEM_FAN_GUARD=0 turns it off). Three facts:
+//  1. on a clean stationary contact the halves are the two sides' own states,
+//     so the guard does nothing, bitwise (a first version tested the EDGES of
+//     the linear fan profile instead, which overshoot both sides by design: it
+//     cut the anti-diffusion on this very 1:10 contact);
+//  2. on a face where it engages, the guarded correction is G_HLL - theta *
+//     antidiff for ONE theta in [0, 1) across all ten components: the guard
+//     scales the anti-diffusion, it does not reshape it;
+//  3. with the guard off the correction is the unguarded one, so 2. compares
+//     against the flux of the runs made before the guard.
+// The engaging face is the first of a fixed list of near-vacuum and
+// strong-blast pairs on which the guarded and unguarded corrections differ;
+// at least one must, or 2. tests nothing.
+void test_fan_admissibility_guard() {
+  const double adiabatic_index = 5.0 / 3.0;
+  const auto equation_of_state =
+      EquationsOfState::IdealFluid<true>{adiabatic_index}.promote_to_3d_eos();
+  const std::array<double, 3> normal{{1.0, 0.0, 0.0}};
+  const bc::Hllem all{bc::HllemWaves::All, true, 1.0e-10, 1.0e-16, 1.0e-8,
+                      1.0e3};
+  const bc::Hllem none{bc::HllemWaves::None, true, 1.0e-10, 1.0e-16, 1.0e-8,
+                       1.0e3};
+  const auto correction = [&equation_of_state, &normal](
+                              const bool guard_on, const bc::Hllem& solver,
+                              const InterfaceState& state_int,
+                              const InterfaceState& state_ext) {
+    if (guard_on) {
+      unsetenv("SPECTRE_HLLEM_FAN_GUARD");
+    } else {
+      setenv("SPECTRE_HLLEM_FAN_GUARD", "0", 1);
+    }
+    const auto result = hllem_correction(solver, state_int, state_ext,
+                                         *equation_of_state, normal);
+    unsetenv("SPECTRE_HLLEM_FAN_GUARD");
+    return result;
+  };
+
+  {
+    INFO("1. a stationary contact: the guard does nothing");
+    const std::array<double, 3> magnetic_field{{0.5, 0.3, 0.2}};
+    const auto state_int =
+        make_state_at_rest(1.0, 1.0, magnetic_field, adiabatic_index, 1);
+    const auto state_ext =
+        make_state_at_rest(10.0, 1.0, magnetic_field, adiabatic_index, 1);
+    const auto guarded = correction(true, all, state_int, state_ext);
+    const auto unguarded = correction(false, all, state_int, state_ext);
+    for (size_t n = 0; n < 10; ++n) {
+      CAPTURE(n);
+      CHECK(gsl::at(guarded, n) == gsl::at(unguarded, n));
+    }
+  }
+
+  // Near-vacuum faces from the MUB09 jet's axis (a cell at the density floor
+  // beside a beam cell), in both orientations and with the field along and
+  // across the normal; then strong blasts and a cold, strongly magnetized
+  // gas next to a near vacuum.
+  std::vector<std::pair<InterfaceState, InterfaceState>> candidates{};
+  const auto add = [&candidates](InterfaceState first, InterfaceState second) {
+    candidates.emplace_back(first, second);
+    candidates.emplace_back(std::move(second), std::move(first));
+  };
+  add(make_state(1.72, 0.468, {{-0.017, 0.425, 0.0}}, {{0.0046, 1.27, 0.716}},
+                 adiabatic_index, 1),
+      make_state(1.0e-15, 1.0e-30, {{0.0, 0.0, 0.0}}, {{0.0092, 1.25, 0.475}},
+                 adiabatic_index, 1));
+  add(make_state(1.72, 0.468, {{0.425, -0.017, 0.0}}, {{1.27, 0.0046, 0.716}},
+                 adiabatic_index, 1),
+      make_state(1.0e-15, 1.0e-30, {{0.0, 0.0, 0.0}}, {{1.25, 0.0092, 0.475}},
+                 adiabatic_index, 1));
+  add(make_state(0.33, 0.33, {{-0.0137, 0.49, 0.0}}, {{-0.0246, 1.24, 0.634}},
+                 adiabatic_index, 1),
+      make_state(1.0e-15, 1.0e-30, {{0.0, 0.0, 0.0}}, {{-0.0025, 1.28, 0.72}},
+                 adiabatic_index, 1));
+  add(make_state(1.0, 1000.0, {{0.0, 0.0, 0.0}}, {{0.5, 1.0, 0.0}},
+                 adiabatic_index, 1),
+      make_state(1.0, 0.01, {{0.0, 0.0, 0.0}}, {{0.5, 1.0, 0.0}},
+                 adiabatic_index, 1));
+  add(make_state(1.0, 1.0e3, {{0.9, 0.0, 0.0}}, {{0.1, 4.0, 2.0}},
+                 adiabatic_index, 1),
+      make_state(1.0e-6, 1.0e-6, {{-0.9, 0.0, 0.0}}, {{0.1, 4.0, 2.0}},
+                 adiabatic_index, 1));
+  add(make_state(1.0, 1.0e-4, {{0.0, 0.0, 0.0}}, {{0.5, 1.0, 0.0}},
+                 adiabatic_index, 1),
+      make_state(1.0e-12, 1.0e-16, {{0.0, 0.0, 0.0}}, {{0.5, 1.2, 0.3}},
+                 adiabatic_index, 1));
+
+  bool engaged_somewhere = false;
+  for (size_t c = 0; c < candidates.size() and not engaged_somewhere; ++c) {
+    const auto& [state_int, state_ext] = candidates[c];
+    const auto guarded = correction(true, all, state_int, state_ext);
+    const auto unguarded = correction(false, all, state_int, state_ext);
+    const auto hll = correction(true, none, state_int, state_ext);
+    double change = 0.0;
+    double largest_antidiffusion = 0.0;
+    size_t largest_component = 0;
+    for (size_t n = 0; n < 10; ++n) {
+      change = std::max(change,
+                        std::abs(gsl::at(guarded, n) - gsl::at(unguarded, n)));
+      if (std::abs(gsl::at(hll, n) - gsl::at(unguarded, n)) >
+          largest_antidiffusion) {
+        largest_antidiffusion = std::abs(gsl::at(hll, n) - gsl::at(unguarded, n));
+        largest_component = n;
+      }
+    }
+    if (change == 0.0) {
+      continue;
+    }
+    engaged_somewhere = true;
+    INFO("2. the guard engages on candidate " << c << ": it scales");
+    const double theta =
+        (gsl::at(hll, largest_component) - gsl::at(guarded, largest_component)) /
+        (gsl::at(hll, largest_component) -
+         gsl::at(unguarded, largest_component));
+    CAPTURE(theta);
+    CAPTURE(largest_antidiffusion);
+    CHECK(theta >= 0.0);
+    CHECK(theta < 1.0);
+    Approx approx = Approx::custom().epsilon(1.0e-12).scale(largest_antidiffusion);
+    for (size_t n = 0; n < 10; ++n) {
+      CAPTURE(n);
+      CHECK(std::isfinite(gsl::at(guarded, n)));
+      CHECK(gsl::at(hll, n) - gsl::at(guarded, n) ==
+            approx(theta * (gsl::at(hll, n) - gsl::at(unguarded, n))));
+    }
+  }
+  CHECK(engaged_somewhere);
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
   PUPable_reg(bc::Hllem);
@@ -1763,5 +1898,6 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   report_when_denominator_floors_bind();
   test_vanishing_tangential_field_stays_finite();
   test_strong_blast_states_stay_finite();
+  test_fan_admissibility_guard();
 }
 }  // namespace

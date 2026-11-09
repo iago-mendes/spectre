@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <iomanip>
 #include <ostream>
 #include <pup.h>
 
@@ -26,11 +28,13 @@
 #include "NumericalAlgorithms/DiscontinuousGalerkin/NormalDotFlux.hpp"
 #include "Options/Options.hpp"
 #include "Options/ParseOptions.hpp"
+#include "Parallel/Printf/Printf.hpp"
 #include "PointwiseFunctions/Hydro/SpecificEnthalpy.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/MakeString.hpp"
 #include "Utilities/Serialization/PupStlCpp17.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
@@ -99,6 +103,125 @@ std::vector<size_t> restored_wave_indices(const HllemWaves waves) {
     default:
       ERROR("Unknown HllemWaves");
   }
+}
+
+// --- Fan admissibility guard (see where it is applied in dg_boundary_terms) --
+// SPECTRE_HLLEM_FAN_GUARD=0 turns the guard off, to reproduce runs made before
+// 2026-11-09 or to compare both from one binary and one checkpoint; unset or
+// any other value leaves it on. Read on every call, so a test can toggle it.
+bool fan_guard_enabled() {
+  const char* const value = std::getenv("SPECTRE_HLLEM_FAN_GUARD");
+  return value == nullptr or std::strtol(value, nullptr, 10) != 0;
+}
+
+// Three necessary conditions on a flat-space RMHD state in the eigenvector
+// ordering [S_x, S_y, S_z, B_x, B_y, B_z, D, Tau]:
+//   1. D > 0;
+//   2. Tau >= B^2/2: the energy holds at least the field's own energy;
+//   3. E = Tau + D >= sqrt(D^2 + S^2).
+// Every physical state with an ideal-gas equation of state (Gamma <= 2) meets
+// all three (checked on 4e5 random states with W up to 300, B up to 1e3 and
+// p down to 0). They are not sufficient: the S.B constraint is not checked.
+// The slack absorbs round-off, which puts cold static magnetized states
+// (Tau = B^2/2 exactly) and W >> 1 states (E - |S| ~ E/(2 W^2)) at the edge.
+// Returns 0 if the state passes, else the number of the first failed test.
+int fan_state_failure(const std::array<double, 8>& state) {
+  constexpr double slack = 1.0e-12;
+  const double d = state[6];
+  const double tau = state[7];
+  const double s_squared =
+      square(state[0]) + square(state[1]) + square(state[2]);
+  const double b_squared =
+      square(state[3]) + square(state[4]) + square(state[5]);
+  const double energy = tau + d;
+  if (not(d > 0.0)) {
+    return 1;
+  }
+  if (not(tau - 0.5 * b_squared >= -slack * (std::abs(tau) + 0.5 * b_squared))) {
+    return 2;
+  }
+  if (not(energy > 0.0 and square(energy) - square(d) - s_squared >=
+                                -slack * square(energy))) {
+    return 3;
+  }
+  return 0;
+}
+
+// The two half-fan averages with the anti-diffusion scaled by theta:
+// u_hll - theta weight_int a on the interior side and u_hll + theta weight_ext
+// a on the exterior side (weight_int = lambda_max / (lambda_max - lambda_min),
+// weight_ext = -lambda_min / (lambda_max - lambda_min); see dg_boundary_terms).
+std::array<std::array<double, 8>, 2> fan_half_averages(
+    const std::array<double, 8>& u_hll, const std::array<double, 8>& a,
+    const double weight_int, const double weight_ext, const double theta) {
+  std::array<std::array<double, 8>, 2> halves{};
+  for (size_t n = 0; n < 8; ++n) {
+    gsl::at(halves[0], n) =
+        gsl::at(u_hll, n) - theta * weight_int * gsl::at(a, n);
+    gsl::at(halves[1], n) =
+        gsl::at(u_hll, n) + theta * weight_ext * gsl::at(a, n);
+  }
+  return halves;
+}
+
+// The largest theta in [0, 1] for which both half-fan averages pass
+// fan_state_failure: 1 if they pass as they are, 0 if even u_hll fails (the
+// face then keeps the HLL flux), otherwise found by bisection. Each condition
+// holds on a convex set (D and E - sqrt(D^2 + S^2) are concave in the state,
+// Tau - B^2/2 too) and the averages are affine in theta, so the passing thetas
+// form one interval [0, theta_max]. Sixty halvings resolve theta to round-off,
+// so the two sides of a face, which solve the same problem mirrored, agree on
+// it to round-off and the flux stays conservative.
+double fan_guard_theta(const std::array<double, 8>& u_hll,
+                       const std::array<double, 8>& a, const double weight_int,
+                       const double weight_ext) {
+  const auto halves_pass = [&u_hll, &a, weight_int,
+                            weight_ext](const double theta) {
+    const auto halves =
+        fan_half_averages(u_hll, a, weight_int, weight_ext, theta);
+    return fan_state_failure(halves[0]) == 0 and
+           fan_state_failure(halves[1]) == 0;
+  };
+  if (halves_pass(1.0)) {
+    return 1.0;
+  }
+  if (not halves_pass(0.0)) {
+    return 0.0;
+  }
+  double lower = 0.0;
+  double upper = 1.0;
+  for (size_t iteration = 0; iteration < 60; ++iteration) {
+    const double middle = 0.5 * (lower + upper);
+    if (halves_pass(middle)) {
+      lower = middle;
+    } else {
+      upper = middle;
+    }
+  }
+  return lower;
+}
+
+// Engagement counters. SPECTRE_HLLEM_STATS_EVERY=N prints this thread's
+// cumulative counts every N calls of dg_boundary_terms;
+// SPECTRE_HLLEM_FAN_GUARD_DUMP=N prints the first N limited faces of each
+// thread in full (both sides' primitives, the edge states, theta).
+struct FanGuardStats {
+  size_t calls = 0;
+  size_t faces = 0;
+  size_t limited = 0;
+  size_t to_hll = 0;
+  size_t dumped = 0;
+  std::array<size_t, 4> first_failure{};
+  double theta_sum = 0.0;
+};
+thread_local FanGuardStats fan_guard_stats{};
+
+size_t env_count(const char* const name) {
+  const char* const value = std::getenv(name);
+  return value == nullptr
+             ? 0
+             : static_cast<size_t>(
+                   std::max(0L, std::strtol(value, nullptr, 10)));
 }
 }  // namespace
 
@@ -1080,6 +1203,183 @@ void Hllem::dg_boundary_terms(
   }
   for (size_t n = 0; n < 9; ++n) {
     gsl::at(antidiff, n) *= mask;
+  }
+
+  // Fan admissibility guard (2026-11-09). With the numerical flux F* across
+  // the fan [lambda_min, lambda_max], integrating the conservation law over
+  // each half of the fan fixes the AVERAGE state in that half, whatever the
+  // fan looks like inside:
+  //   interior half [lambda_min, 0]:  U_int + (F* - F_int) / lambda_min,
+  //   exterior half [0, lambda_max]:  U_ext - (F_ext - F*) / lambda_max,
+  // and a first-order update of a cell (CFL <= 1/2) is a convex combination of
+  // its own state and the half-fan averages of its two faces. HLL's two halves
+  // are both U_hll, an average of the exact fan, which is why HLL stays
+  // physical. HLLEM's flux F* = F_HLL - coeff A, with
+  //   A = antidiff / coeff = sum_k delta_k r_k (l_k.dU)/(l_k.r_k) (+ block),
+  // gives the halves
+  //   U_hll - lambda_max / (lambda_max - lambda_min) A   (interior),
+  //   U_hll - lambda_min / (lambda_max - lambda_min) A   (exterior),
+  // and nothing above keeps them physical. (On an exact stationary contact they
+  // are the two sides' own states; the EDGES U_hll -+ A of the linear profile
+  // the HLLEM flux also corresponds to overshoot both sides by design and are
+  // the wrong test: they fail on a 1:10 contact.) Where a half is not physical,
+  // every update that uses the face averages an unphysical state into a cell.
+  // So it went on MUB09's jet at 416 x 832 (jet/run11_mub09_poster): cells next
+  // to the axis emptied to the density floor, the energy of one ran away within
+  // a few steps and the fixer's root find aborted, with the complementary
+  // projection on (t ~ 177) and off (t ~ 112), while HLL, HLLD and HLLx ran the
+  // same setup to t = 300.
+  //
+  // The guard scales the anti-diffusion at such a point by the largest theta
+  // in [0, 1] for which both half-fan averages pass fan_state_failure;
+  // theta = 0 is the HLL flux. It is the counterpart of HLLD's switch to HLL
+  // where its intermediate states fail, and of the theta gate of the 2026-09
+  // design notes (hlld_slow_antidiffusion). U_hll uses the fast bounds of the
+  // fluid variables' baseline; the normal field, continuous across the fluid
+  // waves, takes the GLM fan's middle value (the baseline's light-speed HLL
+  // state, exact for the linear GLM subsystem), and A's normal field
+  // component, zero for every fluid wave, is dropped.
+  if (fan_guard_enabled()) {
+    static const bool reported_on = [] {
+      Parallel::printf("Hllem: fan admissibility guard ON\n");
+      return true;
+    }();
+    (void)reported_on;
+    FanGuardStats& stats = fan_guard_stats;
+    const size_t dump_limit = env_count("SPECTRE_HLLEM_FAN_GUARD_DUMP");
+    std::array<double, 8> u_hll{};
+    std::array<double, 8> a{};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      if (coeff[pt] == 0.0 or mask[pt] == 0.0) {
+        continue;
+      }
+      ++stats.faces;
+      const double s_min = fast_lambda_min[pt];
+      const double s_max = fast_lambda_max[pt];
+      const double inv_width = fast_inv_dl[pt];
+      const auto hll_state = [s_min, s_max, inv_width](
+                                 const double u_int, const double nf_int,
+                                 const double u_ext, const double nf_ext) {
+        return (s_max * u_ext - s_min * u_int + nf_ext + nf_int) * inv_width;
+      };
+      double bn_int = 0.0;
+      double bn_ext = 0.0;
+      double nf_bn_int = 0.0;
+      double nf_bn_ext = 0.0;
+      for (size_t k = 0; k < 3; ++k) {
+        gsl::at(u_hll, k) = hll_state(
+            tilde_s_int.get(k)[pt], normal_dot_flux_tilde_s_int.get(k)[pt],
+            tilde_s_ext.get(k)[pt], normal_dot_flux_tilde_s_ext.get(k)[pt]);
+        gsl::at(u_hll, 3 + k) = hll_state(
+            tilde_b_int.get(k)[pt], normal_dot_flux_tilde_b_int.get(k)[pt],
+            tilde_b_ext.get(k)[pt], normal_dot_flux_tilde_b_ext.get(k)[pt]);
+        const double n_k = unit_normal.get(k)[pt];
+        bn_int += tilde_b_int.get(k)[pt] * n_k;
+        bn_ext += tilde_b_ext.get(k)[pt] * n_k;
+        nf_bn_int += normal_dot_flux_tilde_b_int.get(k)[pt] * n_k;
+        nf_bn_ext += normal_dot_flux_tilde_b_ext.get(k)[pt] * n_k;
+      }
+      u_hll[6] = hll_state(get(tilde_d_int)[pt], get(normal_dot_flux_tilde_d_int)[pt],
+                           get(tilde_d_ext)[pt], get(normal_dot_flux_tilde_d_ext)[pt]);
+      u_hll[7] =
+          hll_state(get(tilde_tau_int)[pt], get(normal_dot_flux_tilde_tau_int)[pt],
+                    get(tilde_tau_ext)[pt], get(normal_dot_flux_tilde_tau_ext)[pt]);
+      const double bn_star = (lambda_max[pt] * bn_ext - lambda_min[pt] * bn_int +
+                              nf_bn_ext + nf_bn_int) *
+                             inv_dl[pt];
+      for (size_t n = 0; n < 8; ++n) {
+        gsl::at(a, n) = gsl::at(antidiff, n)[pt] / coeff[pt];
+      }
+      double bn_fast = 0.0;
+      double a_bn = 0.0;
+      for (size_t k = 0; k < 3; ++k) {
+        bn_fast += gsl::at(u_hll, 3 + k) * unit_normal.get(k)[pt];
+        a_bn += gsl::at(a, 3 + k) * unit_normal.get(k)[pt];
+      }
+      for (size_t k = 0; k < 3; ++k) {
+        gsl::at(u_hll, 3 + k) += (bn_star - bn_fast) * unit_normal.get(k)[pt];
+        gsl::at(a, 3 + k) -= a_bn * unit_normal.get(k)[pt];
+      }
+      const double weight_int = s_max * inv_width;
+      const double weight_ext = -s_min * inv_width;
+      const double theta = fan_guard_theta(u_hll, a, weight_int, weight_ext);
+      if (theta < 1.0) {
+        ++stats.limited;
+        stats.theta_sum += theta;
+        if (theta == 0.0) {
+          ++stats.to_hll;
+        }
+        // the lowest-numbered test either half fails at theta = 1
+        const auto halves =
+            fan_half_averages(u_hll, a, weight_int, weight_ext, 1.0);
+        const int failure_int = fan_state_failure(halves[0]);
+        const int failure_ext = fan_state_failure(halves[1]);
+        const int failure =
+            failure_int == 0
+                ? failure_ext
+                : (failure_ext == 0 ? failure_int
+                                    : std::min(failure_int, failure_ext));
+        ++gsl::at(stats.first_failure, static_cast<size_t>(failure));
+        if (stats.dumped < dump_limit) {
+          ++stats.dumped;
+          const auto side = [pt](const Scalar<DataVector>& rho,
+                                 const Scalar<DataVector>& p,
+                                 const tnsr::I<DataVector, 3>& v,
+                                 const tnsr::I<DataVector, 3>& b) {
+            return MakeString{} << std::scientific << std::setprecision(16)
+                                << "rho " << get(rho)[pt] << " p "
+                                << get(p)[pt] << " v (" << v.get(0)[pt] << ", "
+                                << v.get(1)[pt] << ", " << v.get(2)[pt]
+                                << ") B (" << b.get(0)[pt] << ", "
+                                << b.get(1)[pt] << ", " << b.get(2)[pt] << ")";
+          };
+          const auto state_string = [](const std::array<double, 8>& s) {
+            return MakeString{} << std::scientific << std::setprecision(6)
+                                << "S (" << s[0] << ", " << s[1] << ", " << s[2]
+                                << ") B (" << s[3] << ", " << s[4] << ", "
+                                << s[5] << ") D " << s[6] << " Tau " << s[7];
+          };
+          Parallel::printf(
+              "Hllem fan guard: theta %.6e (failed test %d at theta 1), "
+              "normal (%g, %g, %g), fan [%.6e, %.6e]\n  int %s\n  ext %s\n"
+              "  U_hll %s\n  half_int %s\n  half_ext %s\n",
+              theta, failure, unit_normal.get(0)[pt], unit_normal.get(1)[pt],
+              unit_normal.get(2)[pt], s_min, s_max,
+              std::string(side(rest_mass_density_int, pressure_int,
+                               spatial_velocity_int, tilde_b_int)),
+              std::string(side(rest_mass_density_ext, pressure_ext,
+                               spatial_velocity_ext, tilde_b_ext)),
+              std::string(state_string(u_hll)),
+              std::string(state_string(halves[0])),
+              std::string(state_string(halves[1])));
+        }
+        for (size_t n = 0; n < 9; ++n) {
+          gsl::at(antidiff, n)[pt] *= theta;
+        }
+      }
+    }
+    ++stats.calls;
+    if (const size_t every = env_count("SPECTRE_HLLEM_STATS_EVERY");
+        every > 0 and stats.calls % every == 0) {
+      Parallel::printf(
+          "Hllem fan guard (one thread, %zu calls): %zu faces, %zu limited "
+          "(%.3e of faces; failed test D %zu, Tau %zu, E %zu), %zu to HLL, "
+          "mean theta when limited %.4f\n",
+          stats.calls, stats.faces, stats.limited,
+          static_cast<double>(stats.limited) /
+              static_cast<double>(std::max(stats.faces, size_t{1})),
+          stats.first_failure[1], stats.first_failure[2],
+          stats.first_failure[3], stats.to_hll,
+          stats.theta_sum /
+              static_cast<double>(std::max(stats.limited, size_t{1})));
+    }
+  } else {
+    static const bool reported_off = [] {
+      Parallel::printf(
+          "Hllem: fan admissibility guard OFF (SPECTRE_HLLEM_FAN_GUARD=0)\n");
+      return true;
+    }();
+    (void)reported_off;
   }
 
   // G_HLLEM = G_HLL - antidiff, so subtract from the HLL boundary correction.
