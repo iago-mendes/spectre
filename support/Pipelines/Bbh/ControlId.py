@@ -566,6 +566,20 @@ def _watch_seeded_solve(
             return
 
 
+def _horizon_l_max(run_dir: Union[str, Path]) -> List[int]:
+    """The l_max at which the horizons A and B of a run were found, read from
+    the 'Lmax' column of their coefficients in its 'Horizons.h5'"""
+    l_max = []
+    with spectre_h5.H5File(f"{run_dir}/Horizons.h5", "r") as horizons_file:
+        for object_label in ["AhA", "AhB"]:
+            coefficients = to_dataframe(
+                horizons_file.get_dat(f"{object_label}/Coefficients.dat")
+            ).iloc[-1]
+            l_max.append(int(coefficients["Lmax"]))
+            horizons_file.close_current_object()
+    return l_max
+
+
 def _measured_params(
     run_dir: Union[str, Path], control_params: List[TargetParams]
 ) -> Dict[TargetParams, Union[float, np.ndarray]]:
@@ -741,6 +755,7 @@ def _convergence_test(
     numeric_initial_guess: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
     reuse_solves: bool = False,
+    horizon_l_max: Optional[Sequence[int]] = None,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -789,6 +804,9 @@ def _convergence_test(
     With 'reuse_solves', the solves whose 'P' directories are already in the
     'test_dir' are not solved again (e.g., a restarted control loop links the
     solves that its previous loop finished; see 'restart_control_id').
+
+    The 'horizon_l_max' of each black hole, A and B, is passed on to every
+    solve (see 'generate_id').
     """
     is_initial = mode == "initial"
     label = "Initial" if is_initial else "Final"
@@ -904,6 +922,7 @@ def _convergence_test(
                     numeric_initial_guess_in_tests=numeric_initial_guess,
                     elliptic_absolute_residual=elliptic_absolute_residual,
                     initial_guess_file_glob=initial_guess_file_glob,
+                    horizon_l_max=horizon_l_max,
                     redirect_output=True,
                 )
             measured_params_by_order[P] = _measured_params(
@@ -1183,6 +1202,7 @@ def _restart_control_options(
         "control_refinement_level": "refinement_level",
         "control_polynomial_order": "polynomial_order",
         "negative_expansion_bc": "negative_expansion_bc",
+        "adaptive_horizon_l_max": "adaptive_horizon_l_max",
         "control_step_size_constraints": "step_size_constraints",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
@@ -1513,6 +1533,7 @@ def control_id(
     refinement_level: int = 1,
     polynomial_order: int = 6,
     negative_expansion_bc: bool = True,
+    adaptive_horizon_l_max: bool = False,
     step_size_constraints: Sequence[
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
@@ -1625,6 +1646,10 @@ def control_id(
       refinement_level: h-refinement used in control loop.
       polynomial_order: p-refinement used in control loop.
       negative_expansion_bc: Place the excisions inside of apparent horizons.
+      adaptive_horizon_l_max: The horizons of the first run were found at an
+        l_max chosen for each black hole (see 'PostprocessId.py'). Find the
+        horizons of every later run at these values of l_max, which are read
+        from the first run's 'Horizons.h5'. (Default: False)
       step_size_constraints: Step-size constraints to enforce, any of 'mass',
         'com' and 'spin' (see above). All of them are computed and reported
         regardless. (Default: ['spin'])
@@ -1741,6 +1766,11 @@ def control_id(
     )
     horizon_rotation_a = initial_free_data["horizon_rotation_a"]
     horizon_rotation_b = initial_free_data["horizon_rotation_b"]
+    horizon_l_max = (
+        _horizon_l_max(id_run_dir) if adaptive_horizon_l_max else None
+    )
+    if horizon_l_max is not None:
+        logger.info(f"Horizon l_max of A and B in every run: {horizon_l_max}.")
 
     # Prepare file and legends to output diagnostic data. Every run of the
     # control loop is a segment in the initial-data directory, so the diagnostic
@@ -1999,6 +2029,7 @@ def control_id(
                         numeric_initial_guess_in_tests=guess_in_tests,
                         elliptic_absolute_residual=elliptic_absolute_residual,
                         initial_guess_file_glob=initial_guess_file_glob,
+                        horizon_l_max=horizon_l_max,
                         **(
                             dict(
                                 id_input_file_template=(
@@ -2173,6 +2204,7 @@ def control_id(
             output_filename=output_filename,
             numeric_initial_guess=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
+            horizon_l_max=horizon_l_max,
         )
 
     # Initialize Jacobian as an identity matrix
@@ -2573,6 +2605,7 @@ def control_id(
             numeric_initial_guess=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
             reuse_solves=restart_from is not None,
+            horizon_l_max=horizon_l_max,
         )
 
     return control_run_dir

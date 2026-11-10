@@ -438,6 +438,19 @@ class TestControlId(unittest.TestCase):
         self.assertEqual(errors["CenterOfMass_x"].iloc[-1], 0.0)
         self.assertGreater(errors["CenterOfMass_x"].iloc[-2], 1.0e-9)
 
+    def test_convergence_test_holds_horizon_l_max(self):
+        _, _, generate_id = self.run_convergence_test(
+            polynomial_order=3,
+            mode="initial",
+            control_params=["MassA"],
+            tolerance=1.0e-9,
+            max_polynomial_order=5,
+            horizon_l_max=[14, 10],
+        )
+        self.assertTrue(generate_id.mock_calls)
+        for call in generate_id.mock_calls:
+            self.assertEqual(call.kwargs["horizon_l_max"], [14, 10])
+
     def test_initial_convergence_test_reaches_max(self):
         result, _, generate_id = self.run_convergence_test(
             polynomial_order=3,

@@ -18,9 +18,13 @@ from spectre.Domain.Creators import Sphere
 from spectre.Informer import unit_test_build_path
 from spectre.IO.H5.IterElements import Element
 from spectre.NumericalAlgorithms.LinearOperators import partial_derivative
-from spectre.Pipelines.Bbh.ControlId import UnconvergedSolveError
+from spectre.Pipelines.Bbh.ControlId import (
+    UnconvergedSolveError,
+    _horizon_l_max,
+)
 from spectre.Pipelines.Bbh.InitialData import generate_id
 from spectre.Pipelines.Bbh.PostprocessId import (
+    converged_horizon_l_max,
     postprocess_id,
     postprocess_id_command,
 )
@@ -29,6 +33,7 @@ from spectre.PointwiseFunctions.AnalyticSolutions.GeneralRelativity import (
 )
 from spectre.PointwiseFunctions.GeneralRelativity import ricci_tensor
 from spectre.Spectral import Basis, Mesh, Quadrature
+from spectre.Strahlkorper import Frame, Strahlkorper
 from spectre.support.Logging import configure_logging
 
 
@@ -248,6 +253,69 @@ class TestPostprocessId(unittest.TestCase):
                     obs_time,
                 )
                 h5file.close_current_object()
+
+    def test_converged_horizon_l_max(self):
+        found_l_max = []
+
+        def find(mass_at):
+            # A finder whose mass converges like 'mass_at(l_max)'
+            def find_at(initial_guess):
+                found_l_max.append(initial_guess.l_max)
+                return initial_guess, {
+                    "ChristodoulouMass": mass_at(initial_guess.l_max)
+                }
+
+            return find_at
+
+        initial_guess = Strahlkorper[Frame.Inertial](
+            l_max=10, radius=2.0, center=[0.0, 0.0, 0.0]
+        )
+        # The mass changes by 0.75 * 2^-l_max from l_max to l_max + 2, which
+        # is below 1e-7 from l_max = 24 to 26
+        horizon = converged_horizon_l_max(
+            find(lambda l_max: 1.0 + 2.0**-l_max), initial_guess
+        )
+        self.assertEqual(horizon.l_max, 26)
+        self.assertEqual(found_l_max, list(range(10, 27, 2)))
+        # A mass that doesn't converge stops at the cap
+        found_l_max.clear()
+        horizon = converged_horizon_l_max(
+            find(lambda l_max: 1.0 + 1.0e-3 * l_max), initial_guess
+        )
+        self.assertEqual(horizon.l_max, 40)
+        self.assertEqual(found_l_max, list(range(10, 41, 2)))
+
+    def test_adaptive_horizon_l_max(self):
+        run_dir = self.test_dir / "Adaptive"
+        id_input_file_path = self.write_schwarzschild_run(
+            run_dir, 3.0, newton_residuals=[1.0, 1.0e-4, 1.0e-11]
+        )
+        postprocess_id(
+            id_input_file_path,
+            horizon_l_max=24,
+            adaptive_horizon_l_max=True,
+            control=False,
+        )
+        # The horizon is a sphere, so its mass is the same from l_max = 10 to
+        # 12, and both horizons are found at 12. The control loop reads them.
+        self.assertEqual(_horizon_l_max(run_dir), [12, 12])
+        with spectre_h5.H5File(str(run_dir / "Horizons.h5"), "r") as h5file:
+            quantities = h5file.get_dat("AhA.dat")
+            legend = quantities.get_legend()
+            npt.assert_allclose(
+                quantities.get_data()[0, legend.index("ChristodoulouMass")],
+                1.0,
+                atol=1e-3,
+            )
+        # Without the option, the given l_max for each black hole
+        run_dir = self.test_dir / "PerHole"
+        id_input_file_path = self.write_schwarzschild_run(
+            run_dir, 3.0, newton_residuals=[1.0, 1.0e-4, 1.0e-11]
+        )
+        postprocess_id(
+            id_input_file_path, horizon_l_max=[14, 10], control=False
+        )
+        self.assertEqual(_horizon_l_max(run_dir), [14, 10])
 
     def test_unconverged_solve(self):
         # The solve reached MaxIterations = 3 above the AbsoluteResidual 1e-10:

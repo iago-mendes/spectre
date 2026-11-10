@@ -4,7 +4,7 @@
 import glob
 import logging
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import click
 import yaml
@@ -32,11 +32,67 @@ from spectre.Visualization.ReadInputFile import find_event
 
 logger = logging.getLogger(__name__)
 
+# Each horizon's l_max from the convergence of its mass (see
+# 'converged_horizon_l_max')
+ADAPTIVE_HORIZON_L_MAX_START = 10
+ADAPTIVE_HORIZON_L_MAX_STEP = 2
+ADAPTIVE_HORIZON_L_MAX_CAP = 40
+ADAPTIVE_HORIZON_MASS_TOLERANCE = 1.0e-7
+
+
+def converged_horizon_l_max(
+    find: Callable[
+        [Strahlkorper[Frame.Inertial]],
+        Tuple[Strahlkorper[Frame.Inertial], Dict],
+    ],
+    initial_guess: Strahlkorper[Frame.Inertial],
+    step: int = ADAPTIVE_HORIZON_L_MAX_STEP,
+    l_max_cap: int = ADAPTIVE_HORIZON_L_MAX_CAP,
+    mass_tolerance: float = ADAPTIVE_HORIZON_MASS_TOLERANCE,
+) -> Strahlkorper[Frame.Inertial]:
+    """Find a horizon at increasing l_max until its mass has converged
+
+    Finds the horizon with 'find' at the l_max of the 'initial_guess', then at
+    l_max + 'step', l_max + 2 * 'step', ..., each from the previous horizon,
+    until the Christodoulou mass changes by less than 'mass_tolerance'
+    (relative) from one find to the next, or the next l_max would exceed
+    'l_max_cap'.
+
+    The mass measures the surface: a horizon found at too low an l_max sits
+    off the horizon by more than its truncated shape suggests. Too high an
+    l_max fits noise in the volume data instead, which the spin shows first.
+    So the search starts low and stops at the first l_max at which the mass
+    has converged.
+
+    Returns the last horizon found.
+    """
+    horizon, quantities = find(initial_guess)
+    while True:
+        l_max = horizon.l_max
+        if l_max + step > l_max_cap:
+            logger.warning(
+                f"Horizon l_max reached the cap {l_max_cap} before its mass"
+                f" converged to {mass_tolerance:.1e}."
+            )
+            return horizon
+        mass = quantities["ChristodoulouMass"]
+        horizon, quantities = find(
+            Strahlkorper[Frame.Inertial](l_max + step, l_max + step, horizon)
+        )
+        mass_change = abs(quantities["ChristodoulouMass"] - mass) / mass
+        logger.info(
+            f"Horizon mass changed by {mass_change:.2e} from l_max={l_max} to"
+            f" l_max={l_max + step}."
+        )
+        if mass_change < mass_tolerance:
+            return horizon
+
 
 def postprocess_id(
     id_input_file_path: Union[str, Path],
     id_run_dir: Optional[Union[str, Path]] = None,
-    horizon_l_max: int = 16,
+    horizon_l_max: Union[int, Sequence[int]] = 16,
+    adaptive_horizon_l_max: bool = False,
     horizons_file: Optional[Union[str, Path]] = None,
     control: bool = True,
     control_residual_tolerance: float = DEFAULT_RESIDUAL_TOLERANCE,
@@ -100,7 +156,12 @@ def postprocess_id(
       id_run_dir: Directory of the initial data run. Paths in the input file are
         relative to this directory. If not provided, the directory of the input
         file is used.
-      horizon_l_max: Maximum l-mode for the horizon search.
+      horizon_l_max: Maximum l-mode for the horizon search, for both black
+        holes or for each black hole, A and B.
+      adaptive_horizon_l_max: Choose each horizon's l_max from the convergence
+        of its mass, starting at l_max=10 (see 'converged_horizon_l_max'), and
+        hold it in every later run of the control loop. The 'horizon_l_max' is
+        then not used. (Default: False)
       horizons_file: Path to the file where the horizon data is written to.
         Default is 'Horizons.h5' in the 'id_run_dir'.
       control: Control BBH physical parameters (default: True).
@@ -183,20 +244,45 @@ def postprocess_id(
     # Find horizons and write to the output file
     if not horizons_file:
         horizons_file = Path(id_run_dir) / "Horizons.h5"
-    for object_label, xcoord, excision_radius in zip(
-        ["AhA", "AhB"], [x_A, x_B], [excision_radius_A, excision_radius_B]
+    if isinstance(horizon_l_max, int):
+        horizon_l_max = [horizon_l_max, horizon_l_max]
+    for object_label, xcoord, excision_radius, l_max in zip(
+        ["AhA", "AhB"],
+        [x_A, x_B],
+        [excision_radius_A, excision_radius_B],
+        horizon_l_max,
     ):
         if negative_expansion_bc:
+            initial_guess = Strahlkorper[Frame.Inertial](
+                l_max=(
+                    ADAPTIVE_HORIZON_L_MAX_START
+                    if adaptive_horizon_l_max
+                    else l_max
+                ),
+                radius=excision_radius * 1.5,
+                center=[xcoord, y_offset, z_offset],
+            )
+            if adaptive_horizon_l_max:
+                initial_guess = converged_horizon_l_max(
+                    lambda guess: find_horizon(
+                        id_volfiles,
+                        subfile_name=id_subfile_name,
+                        obs_id=obs_id,
+                        obs_time=obs_time,
+                        initial_guess=guess,
+                    ),
+                    initial_guess,
+                )
+                logger.info(
+                    f"{object_label} l_max is {initial_guess.l_max}, where its"
+                    " mass has converged."
+                )
             _, horizon_quantities = find_horizon(
                 id_volfiles,
                 subfile_name=id_subfile_name,
                 obs_id=obs_id,
                 obs_time=obs_time,
-                initial_guess=Strahlkorper[Frame.Inertial](
-                    l_max=horizon_l_max,
-                    radius=excision_radius * 1.5,
-                    center=[xcoord, y_offset, z_offset],
-                ),
+                initial_guess=initial_guess,
                 output_surfaces_file=horizons_file,
                 output_coeffs_subfile=f"{object_label}/Coefficients",
                 output_coords_subfile=f"{object_label}/Coordinates",
@@ -209,7 +295,7 @@ def postprocess_id(
                 subfile_name=id_subfile_name,
                 obs_id=obs_id,
                 obs_time=obs_time,
-                l_max=horizon_l_max,
+                l_max=l_max,
                 radius=excision_radius,
                 center=[xcoord, y_offset, z_offset],
                 output_reductions_file=horizons_file,
@@ -233,6 +319,7 @@ def postprocess_id(
             refinement_level=control_refinement_level,
             polynomial_order=control_polynomial_order,
             negative_expansion_bc=negative_expansion_bc,
+            adaptive_horizon_l_max=adaptive_horizon_l_max,
             step_size_constraints=control_step_size_constraints,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
@@ -320,6 +407,14 @@ def postprocess_id(
     help="Maximum l-mode for the horizon search.",
     default=16,
     show_default=True,
+)
+@click.option(
+    "--adaptive-horizon-l-max",
+    is_flag=True,
+    help=(
+        "Choose each horizon's l_max from the convergence of its mass, and hold"
+        " it in every later run of the control loop."
+    ),
 )
 @click.option(
     "--horizons-file",
