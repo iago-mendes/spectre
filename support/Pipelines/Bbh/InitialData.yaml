@@ -21,7 +21,14 @@ Next:
     id_input_file_path: __file__
     id_run_dir: ./
     pipeline_dir: {{ pipeline_dir | default("None") }}
+{% if horizon_l_max | default(None) %}
+    horizon_l_max: {{ horizon_l_max }}
+{% else %}
     horizon_l_max: {{ HorizonLMax }}
+{% endif %}
+{% if adaptive_horizon_l_max | default(False) %}
+    adaptive_horizon_l_max: True
+{% endif %}
     control: {{ control }}
     control_delay: {{ control_delay | default(2) }}
     control_refinement_level: {{ L }}

@@ -272,6 +272,8 @@ def generate_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     initial_guess_file_glob: Optional[str] = None,
+    adaptive_horizon_l_max: bool = False,
+    horizon_l_max: Optional[Sequence[int]] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
     segments_dir: Optional[Union[str, Path]] = None,
@@ -359,6 +361,14 @@ def generate_id(
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
         'numeric_initial_guess' is True.
+      adaptive_horizon_l_max: If set to True, the postprocessing of this run
+        chooses each horizon's l_max from the convergence of its mass, and a
+        control loop holds these values in all later runs. See
+        'support.Pipelines.Bbh.PostprocessId'. (default: False)
+      horizon_l_max: The l_max of the horizon search for each black hole, A
+        and B, in the postprocessing of this run. Set by the control loop when
+        'adaptive_horizon_l_max' is True. (default: None, i.e., one l_max for
+        both black holes, chosen from their spins)
       pipeline_dir: Directory of the simulation, in which the pipeline
         creates its runs. Required when 'evolve' is set to True. The initial
         data runs in the 'ID' directory of the next eccentricity-control
@@ -542,6 +552,13 @@ def generate_id(
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         initial_guess_file_glob=initial_guess_file_glob,
+        adaptive_horizon_l_max=adaptive_horizon_l_max,
+        # As a string, because 'schedule' would scan over a list
+        horizon_l_max=(
+            None
+            if horizon_l_max is None
+            else str([int(l_max) for l_max in horizon_l_max])
+        ),
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
         segments_dir=segments_dir,
@@ -779,6 +796,14 @@ def generate_id(
         " that started from the previous solution from the background if it"
         " fails (a full Newton step raises the residual more than tenfold, the"
         " Newton solver doesn't converge, or the solve fails)."
+    ),
+)
+@click.option(
+    "--adaptive-horizon-l-max",
+    is_flag=True,
+    help=(
+        "Choose each horizon's l_max from the convergence of its mass after the"
+        " first solve, and hold it in every later solve of the control loop."
     ),
 )
 @click.option(

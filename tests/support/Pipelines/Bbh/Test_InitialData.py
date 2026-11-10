@@ -438,6 +438,64 @@ class TestInitialData(unittest.TestCase):
             (1.0e-10, 1.0e-10, 1.0e-11),
         )
 
+    def test_horizon_l_max(self):
+        target_params = {
+            "MassA": 0.6,
+            "MassB": 0.4,
+            "DimensionlessSpinA": [0.0, 0.0, 0.0],
+            "DimensionlessSpinB": [0.0, 0.0, 0.0],
+        }
+        common_kwargs = dict(
+            separation=20.0,
+            orbital_angular_velocity=0.01,
+            radial_expansion_velocity=-1.0e-5,
+            polynomial_order=5,
+            executable=str(self.bin_dir / "SolveXcts"),
+            scheduler=None,
+            submit=False,
+        )
+
+        def read_deck(run_dir):
+            with open(run_dir / "InitialData.yaml", "r") as open_input_file:
+                metadata, input_file = yaml.safe_load_all(open_input_file)
+            return (
+                metadata["Next"]["With"],
+                input_file["DomainCreator"]["BinaryCompactObject"][
+                    "TimeDependentMaps"
+                ]["ShapeMapA"]["LMax"],
+            )
+
+        # By default one l_max for both black holes, chosen from the spins
+        generate_id(
+            target_params,
+            run_dir=self.test_dir / "Default",
+            **common_kwargs,
+        )
+        next_with, shape_l_max = read_deck(self.test_dir / "Default")
+        self.assertEqual(next_with["horizon_l_max"], 20)
+        self.assertNotIn("adaptive_horizon_l_max", next_with)
+        self.assertEqual(shape_l_max, 20)
+        # The first run of a control loop chooses each l_max, and the later
+        # runs get them. The shape maps of the domain keep theirs.
+        generate_id(
+            target_params,
+            run_dir=self.test_dir / "Adaptive",
+            adaptive_horizon_l_max=True,
+            **common_kwargs,
+        )
+        next_with, _ = read_deck(self.test_dir / "Adaptive")
+        self.assertTrue(next_with["adaptive_horizon_l_max"])
+        generate_id(
+            target_params,
+            run_dir=self.test_dir / "Held",
+            horizon_l_max=[14, 10],
+            **common_kwargs,
+        )
+        next_with, shape_l_max = read_deck(self.test_dir / "Held")
+        self.assertEqual(next_with["horizon_l_max"], [14, 10])
+        self.assertNotIn("adaptive_horizon_l_max", next_with)
+        self.assertEqual(shape_l_max, 20)
+
     def test_numeric_initial_guess_options(self):
         common_args = [
             "--mass-ratio",
