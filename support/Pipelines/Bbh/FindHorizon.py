@@ -3,6 +3,8 @@
 
 import glob
 import logging
+import math
+import sys
 from pathlib import Path
 from typing import Optional, Sequence, Type, Union
 
@@ -307,7 +309,8 @@ def use_excision_as_horizon(
       obs_id: Observation ID in the volume data.
       obs_time: Time of the observation.
       l_max: Maximum l-mode for the horizon Ylm representation.
-      radius: Radius of the excision.
+      radius: Radius of the excision. The horizon quantities are computed on
+        a sphere 100 roundoff units of the coordinates outside of it.
       center: Center of the excision.
       output_reductions_file: Optional. H5 output file where the reduction
         quantities on the horizon will be written, e.g. masses and spins.
@@ -333,6 +336,14 @@ def use_excision_as_horizon(
             "SpatialChristoffelSecondKind",
             "SpatialRicci",
         ]
+
+    # Measure on a sphere just outside the excision boundary, moved outward by
+    # many roundoff units of the coordinates, so its points are located in a
+    # block despite roundoff in the inverse maps. A point exactly on the
+    # boundary can be found in no block, e.g. around a small excision far from
+    # the origin with a logarithmic radial distribution, where the roundoff in
+    # the coordinates is large relative to the excision radius.
+    radius += 100.0 * sys.float_info.epsilon * (math.hypot(*center) + radius)
 
     # Define excision in the grid frame
     excision_grid = Strahlkorper[Frame.Grid](l_max, radius, center)
