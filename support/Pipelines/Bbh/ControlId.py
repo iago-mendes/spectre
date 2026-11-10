@@ -1184,6 +1184,7 @@ def _restart_control_options(
         "control_polynomial_order": "polynomial_order",
         "negative_expansion_bc": "negative_expansion_bc",
         "control_step_size_constraints": "step_size_constraints",
+        "control_jacobian_scaling": "jacobian_scaling",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
@@ -1516,6 +1517,7 @@ def control_id(
     step_size_constraints: Sequence[
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
+    jacobian_scaling: bool = True,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
@@ -1628,6 +1630,11 @@ def control_id(
       step_size_constraints: Step-size constraints to enforce, any of 'mass',
         'com' and 'spin' (see above). All of them are computed and reported
         regardless. (Default: ['spin'])
+      jacobian_scaling: Pose Broyden's method in the non-dimensional variables
+        of 'control_scales'. If False, all scales are 1, i.e., the Newton step
+        and the Broyden update are those of the raw free data and residuals.
+        Only the Broyden update depends on this: the Newton step is invariant
+        under the scaling. (Default: True)
       run_convergence_tests: Run resolution convergence tests. A test before
         the control loop selects the polynomial order for the control loop,
         and a test after the control loop checks that it was appropriate. The
@@ -2273,6 +2280,8 @@ def control_id(
     u_scale, f_scale = control_scales(
         control_params, param_index_map, target_params, u, len(u)
     )
+    if not jacobian_scaling:
+        u_scale, f_scale = np.ones(len(u)), np.ones(len(u))
     J *= u_scale[np.newaxis, :] / f_scale[:, np.newaxis]
     if restart_from is not None:
         check_replay("ControlScales", 0, np.concatenate([u_scale, f_scale]))

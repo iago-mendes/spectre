@@ -271,6 +271,7 @@ def generate_id(
     numeric_initial_guess_max_control_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    control_jacobian_scaling: bool = True,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -355,6 +356,9 @@ def generate_id(
         solve of the control loop that started from the previous solution
         from the background if it fails. See 'support.Pipelines.Bbh.ControlId'.
         (default: False)
+      control_jacobian_scaling: Pose Broyden's method of the control loop in
+        non-dimensional variables. If False, it works in the raw free data
+        and residuals. See 'support.Pipelines.Bbh.ControlId'. (default: True)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -541,6 +545,7 @@ def generate_id(
             numeric_initial_guess_max_excision_move
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
+        control_jacobian_scaling=control_jacobian_scaling,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -779,6 +784,16 @@ def generate_id(
         " that started from the previous solution from the background if it"
         " fails (a full Newton step raises the residual more than tenfold, the"
         " Newton solver doesn't converge, or the solve fails)."
+    ),
+)
+@click.option(
+    "--control-jacobian-scaling/--no-control-jacobian-scaling",
+    default=True,
+    show_default=True,
+    help=(
+        "Pose Broyden's method of the control loop in non-dimensional"
+        " variables. With '--no-control-jacobian-scaling' it works in the raw"
+        " free data and residuals."
     ),
 )
 @click.option(

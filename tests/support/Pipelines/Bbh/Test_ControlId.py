@@ -1144,6 +1144,113 @@ def write_newton_residuals(run_dir, rows):
             )
 
 
+class TestJacobianScaling(unittest.TestCase):
+    # The mass-only control loop of 'TestNumericInitialGuessInControl', with
+    # unequal target masses, so that the scales of the two conformal masses
+    # differ and the scaled and unscaled Broyden updates do too
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdScaling"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        self.id_dir = self.test_dir / "ID"
+        run_dir = self.id_dir / "0000_InitialData"
+        write_seeding_segment(
+            run_dir,
+            {
+                "conformal_mass_a": INITIAL_CONFORMAL_MASS,
+                "conformal_mass_b": INITIAL_CONFORMAL_MASS,
+            },
+            GOOD_SOLVE_OUTPUT,
+        )
+        metadata, body = seeding_input_file()
+        metadata["TargetParams"].update(MassA=0.6, MassB=0.4, MassRatio=1.5)
+        self.input_file = run_dir / "InitialData.yaml"
+        with open(self.input_file, "w") as open_input_file:
+            yaml.safe_dump_all([metadata, body], open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def run_control(self, jacobian_scaling):
+        """Two iterations without step-size constraints. Returns the scales,
+        the first two Jacobians in raw units, the residuals, and the conformal
+        masses of the first two solves."""
+        with (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=mock_control_generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_control_measured_params,
+            ),
+        ):
+            control_id(
+                id_input_file_path=self.input_file,
+                control_params=SEEDING_CONTROL_PARAMS,
+                residual_tolerance=1.0e-12,
+                max_iterations=2,
+                step_size_constraints=[],
+                jacobian_scaling=jacobian_scaling,
+            )
+        with h5py.File(self.id_dir / "ControlParams.h5", "r") as open_file:
+            scales = np.array(open_file["ControlScales.dat"])[0]
+            jacobians = np.array(open_file["Jacobian.dat"])
+            residuals = np.array(open_file["Residuals.dat"])
+        n = residuals.shape[1]
+        u_scale, f_scale = scales[:n], scales[n:]
+        jacobians = [
+            jacobian.reshape(n, n) * f_scale[:, None] / u_scale[None, :]
+            for jacobian in jacobians[:2]
+        ]
+        # The first solve is the one 'setUp' wrote, the second the first that
+        # the control loop runs
+        first_call = mock_control_generate_id.calls[0]
+        masses = [
+            np.full(2, INITIAL_CONFORMAL_MASS),
+            np.array(
+                [first_call["conformal_mass_a"], first_call["conformal_mass_b"]]
+            ),
+        ]
+        return scales, jacobians, residuals, masses
+
+    def first_step(self, jacobians, residuals, masses):
+        """The Newton step of the raw system, whose conformal-mass components
+        must be the ones the control loop took."""
+        step = -np.linalg.solve(jacobians[0], residuals[0])
+        npt.assert_allclose(masses[1], masses[0] + step[:2], rtol=1e-14)
+        return step
+
+    def test_unscaled(self):
+        scales, jacobians, residuals, masses = self.run_control(False)
+        npt.assert_array_equal(scales, np.ones_like(scales))
+        step = self.first_step(jacobians, residuals, masses)
+        # The unscaled Broyden update, J += outer(F, du) / (du . du)
+        npt.assert_allclose(
+            jacobians[1],
+            jacobians[0] + np.outer(residuals[1], step) / np.dot(step, step),
+            rtol=1e-12,
+            atol=1e-14,
+        )
+
+    def test_scaled(self):
+        # The default: the same first step (the Newton step is invariant under
+        # the scaling), but a different Broyden update
+        scales, jacobians, residuals, masses = self.run_control(True)
+        self.assertEqual(list(scales[:2]), [0.6, 0.4])
+        step = self.first_step(jacobians, residuals, masses)
+        difference = jacobians[1] - (
+            jacobians[0] + np.outer(residuals[1], step) / np.dot(step, step)
+        )
+        self.assertGreater(
+            np.linalg.norm(difference), 0.1 * np.linalg.norm(jacobians[1])
+        )
+
+
 # Residuals of a solve that converged in 5 iterations (jarrus, 'q1' P = 4,
 # solve 0, Newton 1e-10)
 CONVERGED_ROWS = [
