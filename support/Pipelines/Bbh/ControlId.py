@@ -53,6 +53,7 @@ MIN_X_A = 1.0e-10
 MAX_EFFECTIVE_SPIN = 1.0 - 1.0e-4
 DEFAULT_CONVERGENCE_TEST_TOLERANCE = 1.0e-5
 CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER = 12
+DEFAULT_AMR_SAFETY_FACTOR = 3.0
 
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
@@ -1532,6 +1533,8 @@ def control_id(
     restart_iteration: Optional[int] = None,
     restart_dry_run: bool = False,
     restart_input_file_template: Optional[Union[str, Path]] = None,
+    amr_max_polynomial_order: Optional[int] = None,
+    amr_safety_factor: float = DEFAULT_AMR_SAFETY_FACTOR,
 ):
     """Control BBH physical parameters.
 
@@ -1721,6 +1724,29 @@ def control_id(
       restart_input_file_template: Input file template of the solves after
         the restart iteration (see 'restart_control_id'). (Default: the
         pipeline's)
+      amr_max_polynomial_order: Choose the polynomial order of the solves
+        from an estimate of the truncation error of the controlled parameters,
+        starting at the 'polynomial_order' and up to this one (p-AMR in the
+        control loop, coupled to the control residual as in Ossokine et al.
+        2015, arXiv:1506.01689, Sec. II.C). The estimate is the difference
+        |F(P) - F(P - 1)| of the controlled parameters when the polynomial
+        order was last raised, which re-solves the same free data at the new
+        order. Its maximum over the parameters whose control has started is
+        the error estimate e. After every solve, the polynomial order is
+        raised while 'amr_safety_factor' * e > max(control residual,
+        'residual_tolerance'). So the loop starts by raising the order with
+        the initial free data, and the control residual stays above the
+        truncation error. The loop stops when the control residual is below
+        the 'residual_tolerance' and 'amr_safety_factor' * e is too, or at
+        this polynomial order with a warning. The differences F(P) - F(P - 1)
+        of every raise are written to 'ControlParams.h5' (subfile
+        'AmrLevelDifferences'). Replaces the
+        'run_convergence_tests'. (Default: None, i.e., every solve is at the
+        'polynomial_order')
+      amr_safety_factor: See 'amr_max_polynomial_order'. The estimate e is the
+        error of the lower polynomial order, so it bounds the error of the
+        higher one if the parameters converge with polynomial order; the
+        factor covers where they converge slowly. (Default: 3)
     """
 
     assert (
@@ -1731,6 +1757,9 @@ def control_id(
             f"Unknown step-size constraint '{constraint}'. Choose from"
             f" {STEP_SIZE_CONSTRAINTS}."
         )
+    assert amr_max_polynomial_order is None or not (
+        run_convergence_tests or restart_from
+    ), "The 'amr_max_polynomial_order' excludes convergence tests and restarts."
 
     # Read input file
     if id_run_dir is None:
@@ -1890,8 +1919,10 @@ def control_id(
     # compared with the 'residual_tolerance'
     previous_control_residual = None
 
-    # Function to be minimized
-    def Residual(u):
+    # Function to be minimized. A solve of the 'same_free_data' at a higher
+    # polynomial order (see 'amr_max_polynomial_order') starts from the
+    # previous solution whenever seeding is on.
+    def Residual(u, same_free_data=False):
         nonlocal iteration
         nonlocal control_run_dir
         nonlocal previous_control_residual
@@ -1965,7 +1996,7 @@ def control_id(
                         allowed,
                     )
                 )
-            if seed_conditions:
+            if seed_conditions and not same_free_data:
                 seed = all(allowed for _, allowed in seed_conditions)
                 logger.info(
                     "Numeric initial guess: "
@@ -2335,6 +2366,48 @@ def control_id(
             horizon_indices = np.append(horizon_indices, [is_horizon_param] * 3)
     delay_control = np.any(delayed_indices)
 
+    # Truncation-error estimate of the measured parameters (see
+    # 'amr_max_polynomial_order'): the differences of the last raise
+    level_differences = np.full(len(u), np.inf)
+
+    def amr_error():
+        active = ~delayed_indices if delay_control else np.full(len(u), True)
+        return np.max(level_differences[active], initial=0.0)
+
+    def raise_polynomial_order(F):
+        nonlocal polynomial_order, iteration, level_differences
+        while (
+            amr_max_polynomial_order is not None
+            and polynomial_order < amr_max_polynomial_order
+            and amr_safety_factor * amr_error()
+            > max(np.max(np.abs(F)), residual_tolerance)
+        ):
+            polynomial_order += 1
+            iteration += 1
+            logger.info(
+                f"AMR: error estimate {amr_error():e} needs a higher"
+                f" resolution. Solving again at P={polynomial_order}."
+            )
+            F_previous = F
+            F = Residual(u, same_free_data=True)
+            level_differences = np.abs(F - F_previous)
+            logger.info(
+                f"AMR: P={polynomial_order}, error estimate {amr_error():e}"
+                " (max |F(P) - F(P - 1)| over the active parameters)."
+            )
+            with spectre_h5.H5File(output_filename, "a") as output_file:
+                dat_file = output_file.try_insert_dat(
+                    "AmrLevelDifferences",
+                    ["PolynomialOrder"] + residual_legend,
+                    0,
+                )
+                dat_file.append(
+                    [float(polynomial_order)] + list(F - F_previous)
+                )
+        return F
+
+    F = raise_polynomial_order(F)
+
     def horizon_free_data(u, Delta_u):
         """Conformal mass, horizon rotation, and their steps for each black
         hole, along with its conformal spin. Free data that is not controlled
@@ -2522,18 +2595,33 @@ def control_id(
 
         u += Delta_u
 
-        # Compute residual and check stopping condition
+        # Compute residual and check stopping condition. The Broyden update
+        # uses the residual at the polynomial order of the step.
         F = Residual(u)
+        F_step = F.copy()
+        F = raise_polynomial_order(F)
         if np.max(np.abs(F)) < residual_tolerance:
+            # Below the residual tolerance, the AMR estimate misses its
+            # target only at the maximum polynomial order
+            if (
+                amr_max_polynomial_order is not None
+                and amr_safety_factor * amr_error() > residual_tolerance
+            ):
+                logger.warning(
+                    f"AMR: stopping at the maximum P={polynomial_order} with"
+                    f" an error estimate {amr_error():e} above the residual"
+                    f" tolerance / {amr_safety_factor:g}."
+                )
             converged = True
             break
         if delay_control:
             F[delayed_indices] = 0.0
+            F_step[delayed_indices] = 0.0
 
         # Update the Jacobian using Broyden's method, in scaled variables so
         # that no single control can dominate the update
         scaled_Delta_u = Delta_u / u_scale
-        J += np.outer(F / f_scale, scaled_Delta_u) / np.dot(
+        J += np.outer(F_step / f_scale, scaled_Delta_u) / np.dot(
             scaled_Delta_u, scaled_Delta_u
         )
         if replaying(iteration):

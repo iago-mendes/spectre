@@ -11,6 +11,7 @@ import yaml
 
 from spectre.IO.H5 import open_volfiles, select_observation
 from spectre.Pipelines.Bbh.ControlId import (
+    DEFAULT_AMR_SAFETY_FACTOR,
     DEFAULT_CONTROL_DELAY,
     DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     DEFAULT_MAX_ITERATIONS,
@@ -63,6 +64,8 @@ def postprocess_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     numeric_initial_guess_max_control_residual: Optional[float] = None,
+    amr_max_polynomial_order: Optional[int] = None,
+    amr_safety_factor: float = DEFAULT_AMR_SAFETY_FACTOR,
     require_converged_solve: bool = True,
     **scheduler_kwargs,
 ):
@@ -151,6 +154,10 @@ def postprocess_id(
         the previous solution only if the control residual of the previous
         solve is below this value. See ControlId.py. (Default: None, no
         threshold)
+      amr_max_polynomial_order: Choose the polynomial order of the control
+        solves from a truncation-error estimate, up to this one. See
+        ControlId.py. (Default: None, i.e., off)
+      amr_safety_factor: See ControlId.py. (Default: 3)
       require_converged_solve: Stop with an error if the elliptic solve didn't
         converge (see above). Disable only to inspect an unconverged solution.
         (Default: True)
@@ -255,6 +262,8 @@ def postprocess_id(
             numeric_initial_guess_max_control_residual=(
                 numeric_initial_guess_max_control_residual
             ),
+            amr_max_polynomial_order=amr_max_polynomial_order,
+            amr_safety_factor=amr_safety_factor,
         )
         id_run_dir = last_control_run_dir
         id_input_file_path = f"{last_control_run_dir}/InitialData.yaml"

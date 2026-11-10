@@ -1972,6 +1972,159 @@ class TestRestartControlId(unittest.TestCase):
         self.restart(id_dir, "Restart1", restart_iteration=1)
 
 
+# The measured masses of the AMR tests carry a truncation error
+# AMR_TRUNCATION * 10^(-P) at polynomial order P
+AMR_TRUNCATION = 1.0
+AMR_INITIAL_ORDER = 2
+
+
+def mock_amr_generate_id(
+    target_params, segments_dir, initial_guess_file_glob, **kwargs
+):
+    mock_control_generate_id(
+        target_params, segments_dir, initial_guess_file_glob, **kwargs
+    )
+    call = mock_control_generate_id.calls[-1]
+    call["P"] = kwargs["polynomial_order"]
+    free_data_file = call["run_dir"] / "free_data.json"
+    free_data = json.loads(free_data_file.read_text())
+    free_data_file.write_text(json.dumps({**free_data, "P": call["P"]}))
+
+
+def mock_amr_measured_params(run_dir, control_params):
+    measured = mock_control_measured_params(run_dir, control_params)
+    P = json.loads((Path(run_dir) / "free_data.json").read_text())["P"]
+    for key in ["MassA", "MassB"]:
+        measured[key] += AMR_TRUNCATION * 10.0 ** (-P)
+    return measured
+
+
+class TestAmrInControl(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdAmr"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        self.id_dir = self.test_dir / "ID"
+        self.run_dir = self.id_dir / "0000_InitialData"
+        self.initial_free_data = {
+            "conformal_mass_a": INITIAL_CONFORMAL_MASS,
+            "conformal_mass_b": INITIAL_CONFORMAL_MASS,
+        }
+        write_seeding_segment(
+            self.run_dir,
+            {**self.initial_free_data, "P": AMR_INITIAL_ORDER},
+            GOOD_SOLVE_OUTPUT,
+        )
+        with open(self.run_dir / "InitialData.yaml", "w") as open_input_file:
+            yaml.safe_dump_all(seeding_input_file(), open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def run_control(self, **kwargs):
+        with (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=mock_amr_generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_amr_measured_params,
+            ),
+            self.assertLogs(
+                "spectre.Pipelines.Bbh.ControlId", level="INFO"
+            ) as logs,
+        ):
+            last_run_dir = control_id(
+                id_input_file_path=self.run_dir / "InitialData.yaml",
+                control_params=SEEDING_CONTROL_PARAMS,
+                residual_tolerance=1.0e-8,
+                polynomial_order=AMR_INITIAL_ORDER,
+                numeric_initial_guess=True,
+                numeric_initial_guess_max_control_residual=1.0e-3,
+                **kwargs,
+            )
+        return Path(last_run_dir), mock_control_generate_id.calls, logs.output
+
+    def test_amr(self):
+        last_run_dir, calls, logs = self.run_control(
+            amr_max_polynomial_order=12
+        )
+        self.assertEqual(last_run_dir, calls[-1]["run_dir"])
+        # The level difference |F(P) - F(P - 1)| of the masses is
+        # 0.9 * 10^(1 - P), so the safety factor 3 and the tolerance 1e-8 stop
+        # the loop at P = 10
+        self.assertEqual(calls[-1]["P"], 10)
+        # The loop starts by raising the order with the initial free data:
+        # from P = 2 (control residual 0.29) to P = 3 (difference 9e-3)
+        self.assertEqual(calls[0]["P"], 3)
+        self.assertEqual(calls[0]["conformal_mass_a"], INITIAL_CONFORMAL_MASS)
+        self.assertNotEqual(
+            calls[1]["conformal_mass_a"], INITIAL_CONFORMAL_MASS
+        )
+        # A raise solves the same free data again from the previous solution
+        # (the seeding gate on the control residual doesn't apply); a step
+        # keeps the order
+        previous = {**self.initial_free_data, "P": AMR_INITIAL_ORDER}
+        num_raises = 0
+        for i, call in enumerate(calls):
+            same_free_data = all(
+                call[key] == previous[key] for key in self.initial_free_data
+            )
+            self.assertEqual(call["P"], previous["P"] + int(same_free_data))
+            if same_free_data:
+                num_raises += 1
+                self.assertEqual(
+                    call["glob"],
+                    str(self.id_dir / f"{i:04d}_InitialData" / "BbhVolume*.h5"),
+                )
+            previous = call
+        self.assertEqual(num_raises, 10 - AMR_INITIAL_ORDER)
+        # The differences of each raise are recorded
+        with spectre_h5.H5File(
+            str(self.id_dir / "ControlParams.h5"), "r"
+        ) as open_file:
+            differences = to_dataframe(
+                open_file.get_dat("AmrLevelDifferences.dat")
+            )
+        npt.assert_equal(
+            differences["PolynomialOrder"], np.arange(AMR_INITIAL_ORDER + 1, 11)
+        )
+        npt.assert_allclose(
+            differences["MassA"],
+            -0.9 * 10.0 ** (-np.arange(AMR_INITIAL_ORDER, 10)),
+            rtol=1.0e-6,
+        )
+        self.assertFalse(any("AMR: stopping at the maximum" in l for l in logs))
+
+    def test_amr_max_polynomial_order(self):
+        last_run_dir, calls, logs = self.run_control(
+            amr_max_polynomial_order=8, amr_safety_factor=1.0
+        )
+        self.assertEqual(calls[-1]["P"], 8)
+        self.assertTrue(
+            any("AMR: stopping at the maximum P=8" in line for line in logs)
+        )
+        # The loop still meets the residual tolerance (the truncation error of
+        # the mock shifts the measured masses, so the control compensates)
+        measured = mock_amr_measured_params(
+            last_run_dir, SEEDING_CONTROL_PARAMS
+        )
+        self.assertLess(abs(measured["MassA"] - 0.5), 1.0e-8)
+
+    def test_amr_off(self):
+        _, calls, _ = self.run_control()
+        self.assertTrue(all(call["P"] == AMR_INITIAL_ORDER for call in calls))
+        with self.assertRaisesRegex(AssertionError, "excludes convergence"):
+            self.run_control(
+                amr_max_polynomial_order=8, run_convergence_tests=True
+            )
+
+
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)
     unittest.main(verbosity=2)
