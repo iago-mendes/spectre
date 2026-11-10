@@ -20,11 +20,13 @@ import spectre.IO.H5 as spectre_h5
 from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import to_dataframe
 from spectre.Pipelines.Bbh.ControlId import (
+    BROYDEN_RESIDUAL_NOISE,
     MAX_EFFECTIVE_SPIN,
     UnconvergedSolveError,
     _convergence_errors,
     _convergence_test,
     _optimal_polynomial_order,
+    _read_dat,
     _seeded_solve_failure,
     _watch_seeded_solve,
     control_id,
@@ -1177,6 +1179,179 @@ CAPPED_ROWS = [(0, 0, 5.29922198)] + [
     )
     for row in [(iteration, 0, trial), (iteration, 1, accepted)]
 ]
+
+
+class TestBroydenUpdate(unittest.TestCase):
+    """The 'paper' and 'secant' updates of the Jacobian on the mocked control
+    loop of the conformal masses (see 'TestNumericInitialGuessInControl')."""
+
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdBroyden"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def run_control(self, name, mass=mock_mass, noise=0.0, **kwargs):
+        """Runs the control loop in its own directory, with the measured mass
+        'mass(conformal_mass)' plus normal noise of the given size. Returns
+        the tables of 'ControlParams.h5'."""
+        id_dir = self.test_dir / name / "ID"
+        run_dir = id_dir / "0000_InitialData"
+        write_seeding_segment(
+            run_dir,
+            {
+                "conformal_mass_a": INITIAL_CONFORMAL_MASS,
+                "conformal_mass_b": INITIAL_CONFORMAL_MASS,
+            },
+            GOOD_SOLVE_OUTPUT,
+        )
+        with open(run_dir / "InitialData.yaml", "w") as open_input_file:
+            yaml.safe_dump_all(seeding_input_file(), open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
+        rng = np.random.default_rng(42)
+
+        def measured_params(run_dir, control_params):
+            free_data = json.loads(
+                (Path(run_dir) / "free_data.json").read_text()
+            )
+            return {
+                "MassA": (
+                    mass(free_data["conformal_mass_a"])
+                    + noise * rng.standard_normal()
+                ),
+                "MassB": (
+                    mass(free_data["conformal_mass_b"])
+                    + noise * rng.standard_normal()
+                ),
+                "DimensionlessSpinA": np.zeros(3),
+                "DimensionlessSpinB": np.zeros(3),
+            }
+
+        try:
+            with (
+                patch(
+                    "spectre.Pipelines.Bbh.ControlId.generate_id",
+                    side_effect=mock_control_generate_id,
+                ),
+                patch(
+                    "spectre.Pipelines.Bbh.ControlId._measured_params",
+                    side_effect=measured_params,
+                ),
+            ):
+                control_id(
+                    id_input_file_path=run_dir / "InitialData.yaml",
+                    control_params=SEEDING_CONTROL_PARAMS,
+                    residual_tolerance=1.0e-8,
+                    **kwargs,
+                )
+        finally:
+            self.tables = {
+                table: _read_dat(id_dir / "ControlParams.h5", table)
+                for table in [
+                    "ControlScales",
+                    "FreeData",
+                    "Residuals",
+                    "Jacobian",
+                    "StepSizeConstraints",
+                ]
+            }
+        return self.tables
+
+    def secant_residuals(self, tables, jacobians):
+        """|J_k du_k - (F_k - F_{k-1})| of each update, in scaled variables"""
+        n = tables["FreeData"].shape[1]
+        u_scale, f_scale = np.split(tables["ControlScales"][0], [n])
+        u = tables["FreeData"] / u_scale
+        F = tables["Residuals"] / f_scale
+        return [
+            np.max(
+                np.abs(
+                    jacobians[k].reshape(n, n) @ (u[k] - u[k - 1])
+                    - (F[k] - F[k - 1])
+                )
+            )
+            for k in range(1, len(jacobians))
+        ]
+
+    def test_full_steps_reproduce_paper(self):
+        # Without step-size constraints that bind, every step is the full
+        # Newton step, and the two updates are the same to the last bit
+        paper = self.run_control("paper", broyden_update="paper")
+        secant = self.run_control("secant", broyden_update="secant")
+        self.assertTrue(np.all(paper["StepSizeConstraints"][:, 3] == 1.0))
+        self.assertGreater(len(paper["Jacobian"]), 3)
+        self.assertTrue(np.array_equal(paper["Jacobian"], secant["Jacobian"]))
+        self.assertTrue(np.array_equal(paper["FreeData"], secant["FreeData"]))
+
+    def test_shortened_steps_satisfy_secant_condition(self):
+        tables = self.run_control(
+            "secant", broyden_update="secant", step_size_constraints=["mass"]
+        )
+        alphas = tables["StepSizeConstraints"][:, 3]
+        self.assertLess(alphas[0], 0.5)
+        self.assertLess(np.max(np.abs(tables["Residuals"][-1])), 1.0e-8)
+        # J_k du_k = F_k - F_{k-1}, except in components that changed as
+        # predicted within the noise
+        for residual in self.secant_residuals(tables, tables["Jacobian"]):
+            self.assertLess(residual, BROYDEN_RESIDUAL_NOISE)
+        # The paper's update misses it after a shortened step
+        n = tables["FreeData"].shape[1]
+        u_scale, f_scale = np.split(tables["ControlScales"][0], [n])
+        du = (tables["FreeData"][1] - tables["FreeData"][0]) / u_scale
+        paper_J1 = tables["Jacobian"][0].reshape(n, n) + np.outer(
+            tables["Residuals"][1] / f_scale, du
+        ) / np.dot(du, du)
+        self.assertGreater(
+            self.secant_residuals(tables, [None, paper_J1])[0], 1.0e-2
+        )
+
+    def test_noise_guard(self):
+        # The measured mass is linear with the slope of the initial Jacobian,
+        # plus noise below BROYDEN_RESIDUAL_NOISE. Every shortened step then
+        # changes the residuals as predicted, within the noise, so the
+        # 'secant' update leaves the Jacobian alone. The 'paper' update
+        # doesn't.
+        linear = lambda conformal_mass: conformal_mass + 0.1
+        kwargs = dict(
+            mass=linear, noise=1.0e-10, step_size_constraints=["mass"]
+        )
+        secant = self.run_control("secant", broyden_update="secant", **kwargs)
+        paper = self.run_control("paper", broyden_update="paper", **kwargs)
+        self.assertLess(secant["StepSizeConstraints"][0, 3], 0.5)
+        self.assertGreater(len(secant["Jacobian"]), 3)
+        for J in secant["Jacobian"]:
+            self.assertTrue(np.array_equal(J, secant["Jacobian"][0]))
+        self.assertGreater(
+            np.max(np.abs(paper["Jacobian"][1] - paper["Jacobian"][0])), 0.1
+        )
+
+    def test_stop_on_unmeasurable_step(self):
+        # A step-size constraint that allows only steps of 1e-12: the 'secant'
+        # update stops before the solve. The 'paper' update divides the
+        # residual by the step and blows up the Jacobian.
+        with patch(
+            "spectre.Pipelines.Bbh.ControlId.MAX_RELATIVE_MASS_STEP", 1.0e-12
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cannot make progress"):
+                self.run_control(
+                    "secant",
+                    broyden_update="secant",
+                    step_size_constraints=["mass"],
+                )
+            self.assertEqual(mock_control_generate_id.calls, [])
+            self.assertEqual(len(self.tables["Jacobian"]), 1)
+            paper = self.run_control(
+                "paper",
+                broyden_update="paper",
+                step_size_constraints=["mass"],
+                max_iterations=1,
+            )
+        self.assertGreater(np.max(np.abs(paper["Jacobian"][1])), 1.0e10)
 
 
 class TestEllipticSolveConvergence(unittest.TestCase):

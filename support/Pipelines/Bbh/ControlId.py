@@ -54,6 +54,19 @@ MAX_EFFECTIVE_SPIN = 1.0 - 1.0e-4
 DEFAULT_CONVERGENCE_TEST_TOLERANCE = 1.0e-5
 CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER = 12
 
+# Broyden updates of the control's Jacobian (see 'control_id'):
+# - paper: J += F_k (x) du / (du . du), exact only for full Newton steps.
+# - secant: the general form of Numerical Recipes 3e, Eq. 9.7.17, with the
+#   noise guard and the stop of its routine 'broydn' (Sec. 9.7.3).
+BroydenUpdate = Literal["paper", "secant"]
+DEFAULT_BROYDEN_UPDATE: BroydenUpdate = "paper"
+# Noise floor of the scaled residuals F / f_scale for the 'secant' update.
+# Re-solves of the same free data agree to 1e-9 in every scaled residual
+# (largest: the small black hole's spin at mass ratio 1e6), so changes below
+# 1e-8 carry no information. Numerical Recipes uses the machine epsilon,
+# relative to |F|, because its F is exact to rounding.
+BROYDEN_RESIDUAL_NOISE = 1.0e-8
+
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
 # Note 2: conformal_mass_a/b and conformal_spin_a/b refer to the Kerr masses and
@@ -1184,6 +1197,7 @@ def _restart_control_options(
         "control_polynomial_order": "polynomial_order",
         "negative_expansion_bc": "negative_expansion_bc",
         "control_step_size_constraints": "step_size_constraints",
+        "control_broyden_update": "broyden_update",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
@@ -1516,6 +1530,7 @@ def control_id(
     step_size_constraints: Sequence[
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
+    broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
@@ -1628,6 +1643,19 @@ def control_id(
       step_size_constraints: Step-size constraints to enforce, any of 'mass',
         'com' and 'spin' (see above). All of them are computed and reported
         regardless. (Default: ['spin'])
+      broyden_update: How Broyden's method updates the Jacobian after a step
+        du = u_k - u_{k-1}, in scaled variables. 'paper':
+        J += F_k (x) du / (du . du), which assumes that the step was the full
+        Newton step, J du = -F_{k-1}. 'secant': the general form of Numerical
+        Recipes 3e (Eq. 9.7.17), J += w (x) du / (du . du), where
+        w = F_k - (F_{k-1} + J du) is the measured minus the predicted
+        residual, so that J du = F_k - F_{k-1} after the update for any step,
+        e.g., one shortened by the step-size constraints. Components of w
+        below the noise of the residuals, 'BROYDEN_RESIDUAL_NOISE', are set to
+        zero, as are those whose control is delayed. A step whose predicted
+        change J du of every residual is below that noise can't make progress,
+        so the control loop then stops with an error. The two coincide for full
+        Newton steps. (Default: 'paper')
       run_convergence_tests: Run resolution convergence tests. A test before
         the control loop selects the polynomial order for the control loop,
         and a test after the control loop checks that it was appropriate. The
@@ -2124,8 +2152,10 @@ def control_id(
         else:
             u = np.append(u, initial_free_data[key])
 
-    # Initial residual
+    # Initial residual. 'F' has the delayed components zeroed while their
+    # control is delayed, 'F_measured' doesn't.
     F = Residual(u)
+    F_measured = F.copy()
 
     # A restart takes the polynomial order that the previous loop selected
     # from its control runs (the first run after the first), if it has any
@@ -2511,6 +2541,25 @@ def control_id(
                 " free data (alpha = 0), so the control loop cannot make"
                 f" progress. Step-size constraints: {alphas}."
             )
+        scaled_Delta_u = Delta_u / u_scale
+        if broyden_update == "secant":
+            # Change of the scaled residual that the linear model predicts. A
+            # full Newton step solves J du = -F, so it is -F by construction.
+            predicted_change = (
+                -F / f_scale
+                if alpha == 1.0 and not delay_control
+                else np.dot(J, scaled_Delta_u)
+            )
+            max_change = np.max(np.abs(predicted_change))
+            if not delay_control and max_change < BROYDEN_RESIDUAL_NOISE:
+                raise RuntimeError(
+                    "The step of the free data (alpha ="
+                    f" {alpha:g}, binding: {binding}) changes no residual by"
+                    f" more than their noise {BROYDEN_RESIDUAL_NOISE:g} (the"
+                    f" largest predicted change is {max_change:e}), so the"
+                    " control loop cannot make progress."
+                )
+            predicted_F = F_measured / f_scale + predicted_change
 
         u += Delta_u
 
@@ -2518,13 +2567,25 @@ def control_id(
         F = Residual(u)
         if np.max(np.abs(F)) < residual_tolerance:
             break
+        F_measured = F.copy()
         if delay_control:
             F[delayed_indices] = 0.0
 
         # Update the Jacobian using Broyden's method, in scaled variables so
         # that no single control can dominate the update
-        scaled_Delta_u = Delta_u / u_scale
-        J += np.outer(F / f_scale, scaled_Delta_u) / np.dot(
+        if broyden_update == "secant":
+            w = F_measured / f_scale - predicted_F
+            if delay_control:
+                w[delayed_indices] = 0.0
+            w[np.abs(w) < BROYDEN_RESIDUAL_NOISE] = 0.0
+            logger.info(
+                "Broyden update (secant) of the rows"
+                f" {list(np.flatnonzero(w))}; the others changed as predicted,"
+                f" within the noise {BROYDEN_RESIDUAL_NOISE:g}."
+            )
+        else:
+            w = F / f_scale
+        J += np.outer(w, scaled_Delta_u) / np.dot(
             scaled_Delta_u, scaled_Delta_u
         )
         if replaying(iteration):

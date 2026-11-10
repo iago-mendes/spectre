@@ -271,6 +271,7 @@ def generate_id(
     numeric_initial_guess_max_control_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    control_broyden_update: str = "paper",
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -355,6 +356,9 @@ def generate_id(
         solve of the control loop that started from the previous solution
         from the background if it fails. See 'support.Pipelines.Bbh.ControlId'.
         (default: False)
+      control_broyden_update: How Broyden's method of the control loop
+        updates the Jacobian, 'paper' or 'secant'. See
+        'support.Pipelines.Bbh.ControlId'. (default: 'paper')
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -541,6 +545,7 @@ def generate_id(
             numeric_initial_guess_max_excision_move
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
+        control_broyden_update=control_broyden_update,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -779,6 +784,18 @@ def generate_id(
         " that started from the previous solution from the background if it"
         " fails (a full Newton step raises the residual more than tenfold, the"
         " Newton solver doesn't converge, or the solve fails)."
+    ),
+)
+@click.option(
+    "--control-broyden-update",
+    type=click.Choice(["paper", "secant"]),
+    default="paper",
+    show_default=True,
+    help=(
+        "How Broyden's method of the control loop updates the Jacobian:"
+        " 'paper' assumes full Newton steps, 'secant' is the general form of"
+        " Numerical Recipes (Eq. 9.7.17) with a noise guard and a stop on steps"
+        " that change no residual measurably."
     ),
 )
 @click.option(
