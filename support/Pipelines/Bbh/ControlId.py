@@ -1299,6 +1299,7 @@ def restart_control_id(
     time_limit: Optional[str] = None,
     extra_params: Optional[Dict] = None,
     submit: Optional[bool] = None,
+    jacobian_file: Optional[Union[str, Path]] = None,
     **overrides,
 ):
     """Restart a control loop from an iteration of a previous control loop.
@@ -1327,6 +1328,17 @@ def restart_control_id(
     step-size constraint that binds on a replayed step), and names it. The
     input files of the new runs record the changed options in their 'Next'
     section.
+
+    With a 'jacobian_file', the step from the restart iteration uses the
+    Jacobian in that file instead of the replayed one, and Broyden's updates
+    continue from it. The file ('.npy', or text readable by 'np.loadtxt')
+    holds the N x N matrix (or its N^2 entries in row-major order) in the
+    convention of the 'Jacobian' subfile of 'ControlParams.h5': the Jacobian
+    of the scaled residual F / f_scale with respect to the scaled free data
+    u / u_scale (scales in 'ControlScales'), rows in the order of the
+    residuals and columns in the order of the free data. So a row of the
+    'Jacobian' subfile, reshaped to N x N, is a valid file. The restart
+    replays and checks iterations up to the restart iteration as before.
 
     With 'dry_run', the restart replays and checks the previous loop, renders
     the input file of its first solve (and checks it with the executable's
@@ -1371,6 +1383,26 @@ def restart_control_id(
         logger.info(
             f"Restart changes '{key}' from {values['old']} to {values['new']}."
         )
+    restart_jacobian = None
+    if jacobian_file is not None:
+        jacobian_file = Path(jacobian_file).resolve()
+        restart_jacobian = (
+            np.load(jacobian_file)
+            if jacobian_file.suffix == ".npy"
+            else np.loadtxt(jacobian_file)
+        ).astype(float)
+        if restart_jacobian.ndim == 1:
+            size = int(round(np.sqrt(restart_jacobian.size)))
+            restart_jacobian = restart_jacobian.reshape(size, size)
+        assert (
+            restart_jacobian.ndim == 2
+            and restart_jacobian.shape[0] == restart_jacobian.shape[1]
+            and np.all(np.isfinite(restart_jacobian))
+        ), f"'{jacobian_file}' doesn't hold a finite square matrix."
+        logger.info(
+            f"The step from iteration {restart_iteration} uses the Jacobian in"
+            f" '{jacobian_file}'."
+        )
 
     if scheduler:
         # Check the restart before scheduling it
@@ -1379,6 +1411,7 @@ def restart_control_id(
             id_dir / RESTART_CHECK_DIR,
             restart_iteration=restart_iteration,
             dry_run=True,
+            jacobian_file=jacobian_file,
             **overrides,
         )
         restart_command = (
@@ -1397,6 +1430,11 @@ def restart_control_id(
                 ]
                 if option in overrides
             ]
+            + (
+                [f"--jacobian-file={jacobian_file}"]
+                if jacobian_file is not None
+                else []
+            )
             + ["--no-schedule"]
         )
         submit_script = _render_restart_submit_script(
@@ -1477,6 +1515,14 @@ def restart_control_id(
                 restart_iteration=restart_iteration,
                 restart_run=str(completed[restart_iteration].path.resolve()),
                 dry_run=dry_run,
+                jacobian_file=(
+                    str(jacobian_file) if jacobian_file is not None else None
+                ),
+                jacobian=(
+                    restart_jacobian.tolist()
+                    if restart_jacobian is not None
+                    else None
+                ),
                 changed_options=changed,
                 options=control_options,
             ),
@@ -1499,6 +1545,7 @@ def restart_control_id(
             restart_iteration=restart_iteration,
             restart_dry_run=dry_run,
             restart_input_file_template=id_input_file_template,
+            restart_jacobian=restart_jacobian,
             **control_options,
         )
     except _RestartDryRun as dry_run_end:
@@ -1534,6 +1581,7 @@ def control_id(
     restart_iteration: Optional[int] = None,
     restart_dry_run: bool = False,
     restart_input_file_template: Optional[Union[str, Path]] = None,
+    restart_jacobian: Optional[np.ndarray] = None,
 ):
     """Control BBH physical parameters.
 
@@ -1729,6 +1777,12 @@ def control_id(
         completed iteration)
       restart_dry_run: Stop a restart before its first solve, after
         rendering and checking its input file (see 'restart_control_id').
+      restart_jacobian: Jacobian that replaces the replayed one for the step
+        from the restart iteration (see 'restart_control_id'), in the
+        convention of the 'Jacobian' subfile: the N x N Jacobian of the scaled
+        residual with respect to the scaled free data, rows in the order of
+        the residuals, columns in the order of the free data. Broyden's
+        updates continue from it. (Default: None, i.e., the replayed one)
       restart_input_file_template: Input file template of the solves after
         the restart iteration (see 'restart_control_id'). (Default: the
         pipeline's)
@@ -2488,6 +2542,21 @@ def control_id(
                 " asymptotic parameters."
             )
 
+        # Optionally, the step from the restart iteration takes a given
+        # Jacobian instead of the replayed one
+        if restart_jacobian is not None and iteration == restart_iteration + 1:
+            restart_jacobian = np.asarray(restart_jacobian, dtype=float)
+            assert restart_jacobian.shape == J.shape, (
+                f"The restart Jacobian has shape {restart_jacobian.shape}, the"
+                f" control loop's Jacobian has shape {J.shape}."
+            )
+            logger.info(
+                "Replacing the replayed Jacobian of iteration"
+                f" {restart_iteration} by the given one (max deviation"
+                f" {np.max(np.abs(restart_jacobian - J)):e})."
+            )
+            J = restart_jacobian.copy()
+
         # Update the free parameters using a quasi-Newton-Raphson method
         Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
         if delay_control:
@@ -2550,10 +2619,11 @@ def control_id(
                     " earlier iteration, or with other constraints."
                 )
             check_replay("StepSizeConstraints", iteration - 1, step_size_row)
-        elif replaying(iteration - 1):
+        elif replaying(iteration - 1) and restart_jacobian is None:
             # The first new step: its alphas (of every constraint, enforced
             # or not) are computed from the replayed state, so they are the
-            # recorded ones. The applied alpha may differ.
+            # recorded ones. The applied alpha may differ. (Not with a given
+            # Jacobian, which changes the step.)
             check_replay(
                 "StepSizeConstraints",
                 iteration - 1,
@@ -2696,6 +2766,18 @@ def _restart_cli_scheduler_defaults():
     help=(
         "Polynomial order that the final convergence test climbs to, instead"
         " of the previous's."
+    ),
+)
+@click.option(
+    "--jacobian-file",
+    type=click.Path(
+        exists=True, file_okay=True, dir_okay=False, path_type=Path
+    ),
+    help=(
+        "Jacobian for the step from the restart iteration, instead of the"
+        " replayed one ('.npy' or text, N x N, in the convention of the"
+        " 'Jacobian' subfile of 'ControlParams.h5'). Broyden's updates continue"
+        " from it."
     ),
 )
 @click.option(
