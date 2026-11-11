@@ -49,6 +49,7 @@ def postprocess_id(
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     control_jacobian_scaling: bool = True,
+    control_initial_jacobian: str = "paper",
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
@@ -119,6 +120,9 @@ def postprocess_id(
       control_jacobian_scaling: Pose Broyden's method of the control loop in
         non-dimensional variables. See ControlId.py for details.
         (Default: True)
+      control_initial_jacobian: Horizon block of the control loop's initial
+        Jacobian, 'paper' or 'measured'. See ControlId.py for details.
+        (Default: 'paper')
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory of the simulation, in which the pipeline
@@ -239,6 +243,7 @@ def postprocess_id(
             negative_expansion_bc=negative_expansion_bc,
             step_size_constraints=control_step_size_constraints,
             jacobian_scaling=control_jacobian_scaling,
+            initial_jacobian=control_initial_jacobian,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
             final_convergence_test_tolerance=final_convergence_test_tolerance,

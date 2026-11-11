@@ -60,6 +60,9 @@ Next:
 {% if not control_jacobian_scaling | default(True) %}
     control_jacobian_scaling: False
 {% endif %}
+{% if control_initial_jacobian | default("paper") != "paper" %}
+    control_initial_jacobian: {{ control_initial_jacobian }}
+{% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}

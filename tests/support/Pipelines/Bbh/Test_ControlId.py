@@ -1251,6 +1251,127 @@ class TestJacobianScaling(unittest.TestCase):
         )
 
 
+# Hole A spins in the mocked first solve of 'TestInitialJacobian', and its
+# horizon rotation (the 'Rotation' of the input file, i.e. with the orbital
+# angular velocity 0.01 added to its z component)
+MEASURED_SPIN_A = np.array([0.1, 0.0, 0.8])
+ROTATION_A = [0.05, 0.0, -0.29]
+
+
+def mock_spinning_measured_params(run_dir, control_params):
+    measured = mock_control_measured_params(run_dir, control_params)
+    measured["DimensionlessSpinA"] = MEASURED_SPIN_A.copy()
+    return measured
+
+
+class TestInitialJacobian(unittest.TestCase):
+    # The control loop of 'TestNumericInitialGuessInControl', with a spinning
+    # hole A in the first solve, run for one iteration to record J0
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(), "support/Pipelines/Bbh/ControlIdInitialJ"
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        self.id_dir = self.test_dir / "ID"
+        run_dir = self.id_dir / "0000_InitialData"
+        write_seeding_segment(
+            run_dir,
+            {
+                "conformal_mass_a": INITIAL_CONFORMAL_MASS,
+                "conformal_mass_b": INITIAL_CONFORMAL_MASS,
+            },
+            GOOD_SOLVE_OUTPUT,
+        )
+        metadata, body = seeding_input_file()
+        metadata["TargetParams"]["DimensionlessSpinA"] = [0.0, 0.0, 0.8]
+        body["DomainCreator"]["BinaryCompactObject"]["ObjectA"] = {
+            "Interior": {
+                "ExciseWithBoundaryCondition": {
+                    "ApparentHorizon": {"Rotation": ROTATION_A}
+                }
+            }
+        }
+        self.input_file = run_dir / "InitialData.yaml"
+        with open(self.input_file, "w") as open_input_file:
+            yaml.safe_dump_all([metadata, body], open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def initial_jacobian(self, **kwargs):
+        """J0 in raw units"""
+        with (
+            patch(
+                "spectre.Pipelines.Bbh.ControlId.generate_id",
+                side_effect=mock_control_generate_id,
+            ),
+            patch(
+                "spectre.Pipelines.Bbh.ControlId._measured_params",
+                side_effect=mock_spinning_measured_params,
+            ),
+        ):
+            control_id(
+                id_input_file_path=self.input_file,
+                control_params=SEEDING_CONTROL_PARAMS,
+                residual_tolerance=1.0e-12,
+                max_iterations=1,
+                step_size_constraints=[],
+                **kwargs,
+            )
+        with h5py.File(self.id_dir / "ControlParams.h5", "r") as open_file:
+            scales = np.array(open_file["ControlScales.dat"])[0]
+            jacobian = np.array(open_file["Jacobian.dat"])[0]
+        n = len(scales) // 2
+        return jacobian.reshape(n, n) * scales[n:, None] / scales[None, :n]
+
+    def test_paper(self):
+        # The default: unit mass diagonal, the spin row of chi = -2 rbar Omega
+        J = self.initial_jacobian()
+        rbar = INITIAL_CONFORMAL_MASS * (1.0 + np.sqrt(1.0 - 0.8**2))
+        rotation = np.array(ROTATION_A) - np.array([0.0, 0.0, 0.01])
+        npt.assert_allclose(J[0, 0], 1.0)
+        npt.assert_allclose(
+            J[2:5, 0], -2.0 * rotation * rbar / INITIAL_CONFORMAL_MASS
+        )
+        npt.assert_allclose(J[2:5, 2:5], -2.0 * rbar * np.identity(3))
+
+    def test_measured(self):
+        J = self.initial_jacobian(initial_jacobian="measured")
+        mass = mock_mass(INITIAL_CONFORMAL_MASS)
+        # Both holes: the measured mass excess on the mass diagonal
+        npt.assert_allclose(J[0, 0], mass / INITIAL_CONFORMAL_MASS, rtol=1e-12)
+        npt.assert_allclose(J[1, 1], mass / INITIAL_CONFORMAL_MASS, rtol=1e-12)
+        # Hole A: Kerr at the measured mass and the spin along -Omega
+        rotation = np.array(ROTATION_A) - np.array([0.0, 0.0, 0.01])
+        norm = np.linalg.norm(rotation)
+        d = -rotation / norm
+        chi = MEASURED_SPIN_A @ d
+        s = np.sqrt(1.0 - chi**2)
+        K = chi / (1.0 + chi**2 / (s * (1.0 + s)))
+        npt.assert_allclose(
+            J[2:5, 0], K * d / INITIAL_CONFORMAL_MASS, rtol=1e-12
+        )
+        npt.assert_allclose(
+            J[2:5, 2:5],
+            -(K * np.outer(d, d) + chi * (np.identity(3) - np.outer(d, d)))
+            / norm,
+            rtol=1e-12,
+            atol=1e-14,
+        )
+        # Hole B does not spin and is not rotated: its spin block is the
+        # paper's
+        npt.assert_allclose(
+            J[5:8, 5:8], -4.0 * INITIAL_CONFORMAL_MASS * np.identity(3)
+        )
+
+    def test_unknown(self):
+        with self.assertRaises(ValueError):
+            self.initial_jacobian(initial_jacobian="other")
+
+
 # Residuals of a solve that converged in 5 iterations (jarrus, 'q1' P = 4,
 # solve 0, Newton 1e-10)
 CONVERGED_ROWS = [

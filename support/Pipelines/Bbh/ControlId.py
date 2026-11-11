@@ -1185,6 +1185,7 @@ def _restart_control_options(
         "negative_expansion_bc": "negative_expansion_bc",
         "control_step_size_constraints": "step_size_constraints",
         "control_jacobian_scaling": "jacobian_scaling",
+        "control_initial_jacobian": "initial_jacobian",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
@@ -1518,6 +1519,7 @@ def control_id(
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     jacobian_scaling: bool = True,
+    initial_jacobian: str = "paper",
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
@@ -1635,6 +1637,15 @@ def control_id(
         and the Broyden update are those of the raw free data and residuals.
         Only the Broyden update depends on this: the Newton step is invariant
         under the scaling. (Default: True)
+      initial_jacobian: The horizon block of the initial Jacobian. 'paper'
+        differentiates chi = -2 rbar Omega at fixed conformal mass and spin,
+        assuming that the measured mass equals the conformal mass. 'measured'
+        evaluates the Kerr relations at the horizons measured in the first
+        solve instead: each hole is a Kerr hole of the measured mass M and
+        spin chi whose ratio M / Mbar to the conformal mass stays fixed, and
+        whose horizon angular velocity follows Omega, i.e.
+        chi / (1 + sqrt(1 - chi^2)) = 2 M |Omega| (up to a constant factor).
+        (Default: 'paper')
       run_convergence_tests: Run resolution convergence tests. A test before
         the control loop selects the polynomial order for the control loop,
         and a test after the control loop checks that it was appropriate. The
@@ -2221,6 +2232,46 @@ def control_id(
             ] = (
                 -2.0 * conformal_mass * spin_term
             )
+    # Optionally, the horizon block from the horizons measured in the first
+    # solve (the initial residual F): each hole is a Kerr hole of the measured
+    # mass M and spin chi along d = -Omega / |Omega|, with M / Mbar held fixed
+    # and its horizon rotation set by Omega. Then chi depends on Mbar |Omega|
+    # only, with K = d|chi|/dln|Omega| = chi / (1 + chi^2 / (s (1 + s))),
+    # s = sqrt(1 - chi^2), and a rotation of Omega rotates chi rigidly.
+    if initial_jacobian == "measured":
+        for mass_param, spin_key, mass_key in zip(
+            ["MassA", "MassB"],
+            ["DimensionlessSpinA", "DimensionlessSpinB"],
+            ["conformal_mass_a", "conformal_mass_b"],
+        ):
+            if mass_param not in control_params:
+                continue
+            i_m = param_index_map[mass_key]
+            conformal_mass = u[i_m]
+            mass = target_params[mass_param] + F[param_index_map[mass_param]]
+            J[i_m, i_m] = mass / conformal_mass
+            if spin_key not in control_params:
+                continue
+            i_s = param_index_map[spin_key]
+            rotation = u[i_s : i_s + 3]
+            rotation_norm = np.linalg.norm(rotation)
+            if rotation_norm == 0.0:
+                continue
+            d = -rotation / rotation_norm
+            chi = np.dot(
+                np.asarray(target_params[spin_key]) + F[i_s : i_s + 3], d
+            )
+            if chi < 1.0e-3:
+                continue
+            s = np.sqrt(1.0 - chi**2)
+            K = chi / (1.0 + chi**2 / (s * (1.0 + s)))
+            J[i_s : i_s + 3, i_m] = K * d / conformal_mass
+            J[i_s : i_s + 3, i_s : i_s + 3] = (
+                -(K * np.outer(d, d) + chi * (np.identity(3) - np.outer(d, d)))
+                / rotation_norm
+            )
+    elif initial_jacobian != "paper":
+        raise ValueError(f"Unknown initial_jacobian '{initial_jacobian}'.")
     # The expression below is the reduced mass of the system, which shows up in
     # the Newtonian expressions further below.
     q = target_params["MassRatio"]
