@@ -549,6 +549,43 @@ void numerical_characteristics(
     const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
         equation_of_state);
 
+/*!
+ * \brief Compute numerical characteristic speeds (eigenvalues), characteristic
+ * projectors (left eigenvectors), and characteristic modes (right eigenvectors)
+ * of the GRMHD system with divergence cleaning in a given direction, from the
+ * primitive variables.
+ *
+ * This is the MHD counterpart of the hydro+$Y_e$ overload above: the
+ * characteristic matrix is `flux_jacobian_mhd` (9 x 9, for the variables
+ * $[\tilde S_i, \tilde B^i, \tilde D, \tilde\tau, \tilde\phi]$), and its
+ * eigensystem is found with `find_real_eigensystem`, with the same index
+ * conventions, ordering and normalization.
+ *
+ * \note With a 3D equation of state, `flux_jacobian_mhd` currently supports
+ * only one in equilibrium.
+ */
+template <size_t ThermodynamicDim>
+void numerical_characteristics(
+    gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,
+    gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,
+    gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors,
+
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& electron_fraction,
+
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state);
+
 /// @{
 /**
  * \brief Compute the conserved-variable GLM-Valencia (divergence-cleaning)

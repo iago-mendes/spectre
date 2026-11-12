@@ -926,77 +926,94 @@ void test_mhd_numerical_characteristics(const DataVector& used_for_size) {
   for (const auto& direction : Direction<3>::all_directions()) {
     const auto unit_normal = unit_basis_form(direction, inv_spatial_metric);
 
-    // Solve the numeric eigensystem.  MatrixSize 9 (deduced from the output
-    // containers) selects the MHD flux Jacobian flux_jacobian_mhd.
-    grmhd::ValenciaDivClean::numerical_characteristics_dgeev(
-        make_not_null(&eigenvalues), make_not_null(&right_eigenvectors),
-        make_not_null(&left_eigenvectors), spatial_velocity, magnetic_field,
-        rest_mass_density, specific_internal_energy, electron_fraction,
-        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
-        unit_normal, eos_2d);
+    // Solve the numeric eigensystem, with both solvers: the MHD overload of
+    // numerical_characteristics (find_real_eigensystem) and
+    // numerical_characteristics_dgeev (blaze::geev). MatrixSize 9 selects the
+    // MHD flux Jacobian flux_jacobian_mhd.
+    for (const bool use_find_real_eigensystem : {true, false}) {
+      CAPTURE(use_find_real_eigensystem);
+      if (use_find_real_eigensystem) {
+        grmhd::ValenciaDivClean::numerical_characteristics(
+            make_not_null(&eigenvalues), make_not_null(&right_eigenvectors),
+            make_not_null(&left_eigenvectors), spatial_velocity, magnetic_field,
+            rest_mass_density, specific_internal_energy, electron_fraction,
+            lorentz_factor, specific_enthalpy, spatial_metric,
+            inv_spatial_metric, unit_normal, eos_2d);
+      } else {
+        grmhd::ValenciaDivClean::numerical_characteristics_dgeev(
+            make_not_null(&eigenvalues), make_not_null(&right_eigenvectors),
+            make_not_null(&left_eigenvectors), spatial_velocity, magnetic_field,
+            rest_mass_density, specific_internal_energy, electron_fraction,
+            lorentz_factor, specific_enthalpy, spatial_metric,
+            inv_spatial_metric, unit_normal, eos_2d);
+      }
 
-    // Analytic speeds to check the numeric eigenvalues against.
-    tnsr::i<DataVector, 9> analytic_speeds{num_points, 0.0};
-    grmhd::ValenciaDivClean::characteristic_speeds_mhd(
-        make_not_null(&analytic_speeds), spatial_velocity, magnetic_field,
-        rest_mass_density, specific_internal_energy, lorentz_factor,
-        specific_enthalpy, spatial_metric, unit_normal, eos_2d);
+      // Analytic speeds to check the numeric eigenvalues against.
+      tnsr::i<DataVector, 9> analytic_speeds{num_points, 0.0};
+      grmhd::ValenciaDivClean::characteristic_speeds_mhd(
+          make_not_null(&analytic_speeds), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, lorentz_factor,
+          specific_enthalpy, spatial_metric, unit_normal, eos_2d);
 
-    // The characteristic matrix, to check the eigensystem relations.
-    tnsr::iJ<DataVector, 9> characteristic_matrix{num_points, 0.0};
-    grmhd::ValenciaDivClean::flux_jacobian_mhd(
-        make_not_null(&characteristic_matrix), spatial_velocity, magnetic_field,
-        rest_mass_density, specific_internal_energy, electron_fraction,
-        lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
-        unit_normal, eos_2d);
+      // The characteristic matrix, to check the eigensystem relations.
+      tnsr::iJ<DataVector, 9> characteristic_matrix{num_points, 0.0};
+      grmhd::ValenciaDivClean::flux_jacobian_mhd(
+          make_not_null(&characteristic_matrix), spatial_velocity,
+          magnetic_field, rest_mass_density, specific_internal_energy,
+          electron_fraction, lorentz_factor, specific_enthalpy, spatial_metric,
+          inv_spatial_metric, unit_normal, eos_2d);
 
-    constexpr double eigenvalue_tolerance = 1.0e-6;
-    constexpr double eigensystem_tolerance = 1.0e-8;
-    for (size_t point = 0; point < num_points; ++point) {
-      for (size_t i = 0; i < 9; ++i) {
-        const double y = eigenvalues.get(i)[point];
+      constexpr double eigenvalue_tolerance = 1.0e-6;
+      constexpr double eigensystem_tolerance = 1.0e-8;
+      for (size_t point = 0; point < num_points; ++point) {
+        for (size_t i = 0; i < 9; ++i) {
+          const double y = eigenvalues.get(i)[point];
 
-        // Each numeric eigenvalue must match one of the nine analytic speeds.
-        double min_speed_diff = std::numeric_limits<double>::max();
-        for (size_t s = 0; s < 9; ++s) {
-          min_speed_diff = std::min(
-              min_speed_diff, std::abs(y - analytic_speeds.get(s)[point]));
-        }
-        CAPTURE(get(lorentz_factor)[point]);
-        CAPTURE(min_speed_diff);
-        CHECK(min_speed_diff < eigenvalue_tolerance);
-
-        // The numeric eigenvectors must solve A.R = y R and L.A = y L.  Because
-        // geev returns the eigenvectors for its own eigenvalues, this residual
-        // reflects the solver accuracy and is independent of the analytic
-        // closed form (this is exactly why it stays small near degeneracies).
-        double right_resid = 0.0;
-        double left_resid = 0.0;
-        double rnorm = 0.0;
-        double lnorm = 0.0;
-        for (size_t m = 0; m < 9; ++m) {
-          double ar = 0.0;
-          double la = 0.0;
-          for (size_t n = 0; n < 9; ++n) {
-            ar += characteristic_matrix.get(m, n)[point] *
-                  right_eigenvectors.get(i, n)[point];
-            la += left_eigenvectors.get(i, n)[point] *
-                  characteristic_matrix.get(n, m)[point];
+          // Each numeric eigenvalue must match one of the nine analytic speeds.
+          double min_speed_diff = std::numeric_limits<double>::max();
+          for (size_t s = 0; s < 9; ++s) {
+            min_speed_diff = std::min(
+                min_speed_diff, std::abs(y - analytic_speeds.get(s)[point]));
           }
-          right_resid =
-              std::max(right_resid,
-                       std::abs(ar - y * right_eigenvectors.get(i, m)[point]));
-          left_resid =
-              std::max(left_resid,
-                       std::abs(la - y * left_eigenvectors.get(i, m)[point]));
-          rnorm =
-              std::max(rnorm, std::abs(right_eigenvectors.get(i, m)[point]));
-          lnorm = std::max(lnorm, std::abs(left_eigenvectors.get(i, m)[point]));
+          CAPTURE(get(lorentz_factor)[point]);
+          CAPTURE(min_speed_diff);
+          CHECK(min_speed_diff < eigenvalue_tolerance);
+
+          // The numeric eigenvectors must solve A.R = y R and L.A = y L.
+          // Because geev returns the eigenvectors for its own eigenvalues, this
+          // residual reflects the solver accuracy and is independent of the
+          // analytic closed form (this is exactly why it stays small near
+          // degeneracies).
+          double right_resid = 0.0;
+          double left_resid = 0.0;
+          double rnorm = 0.0;
+          double lnorm = 0.0;
+          for (size_t m = 0; m < 9; ++m) {
+            double ar = 0.0;
+            double la = 0.0;
+            for (size_t n = 0; n < 9; ++n) {
+              ar += characteristic_matrix.get(m, n)[point] *
+                    right_eigenvectors.get(i, n)[point];
+              la += left_eigenvectors.get(i, n)[point] *
+                    characteristic_matrix.get(n, m)[point];
+            }
+            right_resid = std::max(
+                right_resid,
+                std::abs(ar - y * right_eigenvectors.get(i, m)[point]));
+            left_resid =
+                std::max(left_resid,
+                         std::abs(la - y * left_eigenvectors.get(i, m)[point]));
+            rnorm =
+                std::max(rnorm, std::abs(right_eigenvectors.get(i, m)[point]));
+            lnorm =
+                std::max(lnorm, std::abs(left_eigenvectors.get(i, m)[point]));
+          }
+          CAPTURE(right_resid / std::max(rnorm, 1.0e-300));
+          CAPTURE(left_resid / std::max(lnorm, 1.0e-300));
+          CHECK(right_resid / std::max(rnorm, 1.0e-300) <
+                eigensystem_tolerance);
+          CHECK(left_resid / std::max(lnorm, 1.0e-300) < eigensystem_tolerance);
         }
-        CAPTURE(right_resid / std::max(rnorm, 1.0e-300));
-        CAPTURE(left_resid / std::max(lnorm, 1.0e-300));
-        CHECK(right_resid / std::max(rnorm, 1.0e-300) < eigensystem_tolerance);
-        CHECK(left_resid / std::max(lnorm, 1.0e-300) < eigensystem_tolerance);
       }
     }
   }

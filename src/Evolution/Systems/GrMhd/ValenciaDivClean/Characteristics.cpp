@@ -821,6 +821,42 @@ void numerical_characteristics(
                         characteristic_projectors, characteristic_matrix);
 }
 
+template <size_t ThermodynamicDim>
+void numerical_characteristics(
+    const gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,
+    const gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,
+    const gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors,
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& electron_fraction,
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state) {
+  // Build characteristic matrix.
+  Variables<tmpl::list<::Tags::TempiJ<0, 9>>> temp_tensors{
+      get<0, 0>(spatial_metric).size()};
+  tnsr::iJ<DataVector, 9>& characteristic_matrix =
+      get<::Tags::TempiJ<0, 9>>(temp_tensors);
+  flux_jacobian_mhd(make_not_null(&characteristic_matrix), spatial_velocity,
+                    magnetic_field, rest_mass_density, specific_internal_energy,
+                    electron_fraction,
+                    /* other helpful quantities */
+                    lorentz_factor, specific_enthalpy, spatial_metric,
+                    inv_spatial_metric, unit_normal, equation_of_state);
+
+  // Find the eigensystem of the characteristic matrix.
+  find_real_eigensystem(characteristic_speeds, characteristic_modes,
+                        characteristic_projectors, characteristic_matrix);
+}
+
 void magnetosonic_quartic_coefficients(
     gsl::not_null<tnsr::i<DataVector, 4>*> quartic_coefficients,
     const Scalar<DataVector>& sound_speed_squared,
@@ -3573,6 +3609,22 @@ GENERATE_INSTANTIATIONS(FUNCTION_INSTANTIATION, (1, 2, 3))
       const gsl::not_null<tnsr::ij<DataVector, 6>*> characteristic_modes,      \
       const gsl::not_null<tnsr::IJ<DataVector, 6>*> characteristic_projectors, \
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
+      const Scalar<DataVector>& rest_mass_density,                             \
+      const Scalar<DataVector>& specific_internal_energy,                      \
+      const Scalar<DataVector>& electron_fraction,                             \
+      const Scalar<DataVector>& lorentz_factor,                                \
+      const Scalar<DataVector>& specific_enthalpy,                             \
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,          \
+      const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,      \
+      const tnsr::i<DataVector, 3>& unit_normal,                               \
+      const EquationsOfState::EquationOfState<true, GET_DIM(data)>&            \
+          equation_of_state);                                                  \
+  template void numerical_characteristics<GET_DIM(data)>(                      \
+      const gsl::not_null<tnsr::i<DataVector, 9>*> characteristic_speeds,      \
+      const gsl::not_null<tnsr::ij<DataVector, 9>*> characteristic_modes,      \
+      const gsl::not_null<tnsr::IJ<DataVector, 9>*> characteristic_projectors, \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,         \
+      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,           \
       const Scalar<DataVector>& rest_mass_density,                             \
       const Scalar<DataVector>& specific_internal_energy,                      \
       const Scalar<DataVector>& electron_fraction,                             \
