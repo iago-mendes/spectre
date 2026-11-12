@@ -2489,7 +2489,11 @@ void test_hydro_mhd_comparison(const bool output) {
   const std::array<size_t, 5> hyd_fluid{{1, 2, 3, 0, 4}};
   // Speed of each hydro eigenvector (HydroVectorR order): R1..R4 at v_n
   // (NormalDotVelocity), Rplus at LambdaPlus, Rminus at LambdaMinus.
-  const std::array<size_t, 6> hyd_speed_idx{{0, 0, 0, 0, 1, 2}};
+  namespace HydroSpeed = grmhd::ValenciaDivClean::HydroSpeed;
+  const std::array<size_t, 6> hyd_speed_idx{
+      {HydroSpeed::NormalDotVelocity, HydroSpeed::NormalDotVelocity,
+       HydroSpeed::NormalDotVelocity, HydroSpeed::NormalDotVelocity,
+       HydroSpeed::LambdaPlus, HydroSpeed::LambdaMinus}};
 
   // Parameter grid: thermal pressure (cs^2) x field orientation bn_frac =
   // B_n/|B| (proximity to the field degeneracy at a given |B|).  W, phi, vn

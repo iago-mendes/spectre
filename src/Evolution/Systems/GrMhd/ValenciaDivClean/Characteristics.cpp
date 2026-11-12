@@ -2,6 +2,22 @@
 // See LICENSE.txt for details.
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <exception>
+#include <gsl/gsl_complex.h>
+#include <gsl/gsl_complex_math.h>
+#include <gsl/gsl_eigen.h>
+#include <gsl/gsl_math.h>
+#include <gsl/gsl_matrix.h>
+#include <gsl/gsl_vector.h>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Matrix.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
@@ -1405,12 +1421,14 @@ void characteristic_speeds_mhd(
       CAPTURE_FOR_ERROR(N_alfven_minus);
       CAPTURE_FOR_ERROR(N_alfven_minus_eps);
       CAPTURE_FOR_ERROR(N_vn);
-      slow_minus[point] = RootFinder::toms748(
-          [&evaluate_quartic, point](const double y) {
-            return evaluate_quartic(y, point);
-          },
-          alfven_minus_eps_i, vn_i, N_alfven_minus_eps, N_vn, 0.05 * tolerance,
-          0.05 * tolerance, /* max_iterations */ 100);
+      slow_minus[point] =
+          RootFinder::toms748(
+              [&evaluate_quartic, point](const double y) {
+                return evaluate_quartic(y, point);
+              },
+              alfven_minus_eps_i, vn_i, N_alfven_minus_eps, N_vn,
+              0.05 * tolerance, 0.05 * tolerance, /* max_iterations */ 100)
+              .value();
       slow_plus[point] =
           -c3[point] - slow_minus[point] - fast_minus[point] - fast_plus[point];
     }

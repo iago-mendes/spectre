@@ -16,7 +16,6 @@
 #include <string>
 #include <type_traits>
 
-#include "Characteristics.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
@@ -54,13 +53,7 @@
 #include "Utilities/Literals.hpp"
 #include "Utilities/TMPL.hpp"
 
-// Quad-precision reference implementation for MHD characteristic speeds
-
 namespace {
-
-namespace quad_ref = grmhd::ValenciaDivClean::TestHelpers::quad_precision;
-namespace asymptotic_speeds =
-    grmhd::ValenciaDivClean::TestHelpers::asymptotic_magnetosonic_speeds;
 
 // This namespace is meant to hold straightforward implementations of the
 // expressions used in the GRMHD characteristics that are not optimized for

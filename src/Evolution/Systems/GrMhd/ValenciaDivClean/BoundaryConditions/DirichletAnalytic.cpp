@@ -254,14 +254,13 @@ std::optional<std::string> DirichletAnalytic::dg_ghost(
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         spatial_velocity_one_form,
+    const gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
+        spatial_metric,
     const gsl::not_null<Scalar<DataVector>*> rest_mass_density,
     const gsl::not_null<Scalar<DataVector>*> electron_fraction,
     const gsl::not_null<Scalar<DataVector>*> temperature,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         spatial_velocity,
-    const gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
-    const gsl::not_null<Scalar<DataVector>*> pressure,
-    const gsl::not_null<Scalar<DataVector>*> lorentz_factor,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         inv_spatial_metric,
     const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
@@ -270,14 +269,18 @@ std::optional<std::string> DirichletAnalytic::dg_ghost(
     const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
     const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
     [[maybe_unused]] const double time) const {
-  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{};
+  // The correction does not use eps, p and W: compute them into scratch.
+  Scalar<DataVector> specific_internal_energy{};
+  Scalar<DataVector> pressure{};
+  Scalar<DataVector> lorentz_factor{};
   return dg_ghost(
       tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, tilde_d_flux,
       tilde_ye_flux, tilde_tau_flux, tilde_s_flux, tilde_b_flux, tilde_phi_flux,
-      lapse, shift, spatial_velocity_one_form, make_not_null(&spatial_metric),
+      lapse, shift, spatial_velocity_one_form, spatial_metric,
       rest_mass_density, electron_fraction, temperature, spatial_velocity,
-      specific_internal_energy, pressure, lorentz_factor, inv_spatial_metric,
-      face_mesh_velocity, normal_covector, normal_vector, coords, time);
+      make_not_null(&specific_internal_energy), make_not_null(&pressure),
+      make_not_null(&lorentz_factor), inv_spatial_metric, face_mesh_velocity,
+      normal_covector, normal_vector, coords, time);
 }
 
 void DirichletAnalytic::fd_ghost(

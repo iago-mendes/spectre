@@ -34,6 +34,7 @@
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 #include "Utilities/StdHelpers/RetrieveUniquePtr.hpp"
@@ -1126,7 +1127,8 @@ void test_auxiliary_boundary_correction_conservation(
          {::dg::Formulation::StrongInertial, ::dg::Formulation::WeakInertial}) {
       detail::test_boundary_correction_conservation_impl<System, true>(
           generator, correction, face_mesh, volume_data, ranges,
-          use_moving_mesh, dg_formulation, zero_on_smooth_solution, eps);
+          /*use_consistent_lorentz_factor*/ false, use_moving_mesh,
+          dg_formulation, zero_on_smooth_solution, eps);
     }
   }
 }

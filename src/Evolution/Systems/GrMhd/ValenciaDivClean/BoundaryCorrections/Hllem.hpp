@@ -321,7 +321,8 @@ class Hllem final : public evolution::BoundaryCorrection {
       hydro::Tags::SpecificInternalEnergy<DataVector>>;
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>,
+      gr::Tags::SpatialMetric<DataVector, 3>>;
   using dg_package_data_primitive_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
@@ -382,6 +383,7 @@ class Hllem final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& lapse,
       const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
       const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
       const Scalar<DataVector>& rest_mass_density,
       const Scalar<DataVector>& electron_fraction,

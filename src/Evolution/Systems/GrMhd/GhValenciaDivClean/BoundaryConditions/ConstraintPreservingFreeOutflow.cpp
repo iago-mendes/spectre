@@ -65,9 +65,6 @@ std::optional<std::string> ConstraintPreservingFreeOutflow::dg_ghost(
     const gsl::not_null<Scalar<DataVector>*> temperature,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         spatial_velocity,
-    const gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
-    const gsl::not_null<Scalar<DataVector>*> pressure,
-    const gsl::not_null<Scalar<DataVector>*> lorentz_factor,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         inv_spatial_metric,
 
@@ -110,17 +107,20 @@ std::optional<std::string> ConstraintPreservingFreeOutflow::dg_ghost(
     const tnsr::iaa<DataVector, 3, Frame::Inertial>& d_spacetime_metric,
     const tnsr::iaa<DataVector, 3, Frame::Inertial>& d_pi,
     const tnsr::ijaa<DataVector, 3, Frame::Inertial>& d_phi) {
-  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric{};
+  // The correction does not use eps, p and W: compute them into scratch.
+  Scalar<DataVector> specific_internal_energy{};
+  Scalar<DataVector> pressure{};
+  Scalar<DataVector> lorentz_factor{};
   return dg_ghost(
       spacetime_metric, pi, phi, tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b,
       tilde_phi, tilde_d_flux, tilde_ye_flux, tilde_tau_flux, tilde_s_flux,
       tilde_b_flux, tilde_phi_flux, gamma1, gamma2, lapse, shift,
-      spatial_velocity_one_form, make_not_null(&spatial_metric),
-      rest_mass_density, electron_fraction, temperature, spatial_velocity,
-      specific_internal_energy, pressure, lorentz_factor, inv_spatial_metric,
-      face_mesh_velocity, normal_covector, normal_vector,
-      interior_spacetime_metric, interior_pi, interior_phi,
-      interior_rest_mass_density, interior_electron_fraction,
+      spatial_velocity_one_form, spatial_metric, rest_mass_density,
+      electron_fraction, temperature, spatial_velocity,
+      make_not_null(&specific_internal_energy), make_not_null(&pressure),
+      make_not_null(&lorentz_factor), inv_spatial_metric, face_mesh_velocity,
+      normal_covector, normal_vector, interior_spacetime_metric, interior_pi,
+      interior_phi, interior_rest_mass_density, interior_electron_fraction,
       interior_specific_internal_energy, interior_spatial_velocity,
       interior_magnetic_field, interior_lorentz_factor, interior_pressure,
       interior_temperature, coords, interior_gamma1, interior_gamma2,

@@ -137,11 +137,12 @@ int fan_state_failure(const std::array<double, 8>& state) {
   if (not(d > 0.0)) {
     return 1;
   }
-  if (not(tau - 0.5 * b_squared >= -slack * (std::abs(tau) + 0.5 * b_squared))) {
+  if (not(tau - 0.5 * b_squared >=
+          -slack * (std::abs(tau) + 0.5 * b_squared))) {
     return 2;
   }
-  if (not(energy > 0.0 and square(energy) - square(d) - s_squared >=
-                                -slack * square(energy))) {
+  if (not(energy > 0.0 and
+          square(energy) - square(d) - s_squared >= -slack * square(energy))) {
     return 3;
   }
   return 0;
@@ -218,10 +219,9 @@ thread_local FanGuardStats fan_guard_stats{};
 
 size_t env_count(const char* const name) {
   const char* const value = std::getenv(name);
-  return value == nullptr
-             ? 0
-             : static_cast<size_t>(
-                   std::max(0L, std::strtol(value, nullptr, 10)));
+  return value == nullptr ? 0
+                          : static_cast<size_t>(
+                                std::max(0L, std::strtol(value, nullptr, 10)));
 }
 }  // namespace
 
@@ -283,8 +283,7 @@ double Hllem::dg_package_data(
         packaged_largest_outgoing_char_speed,
     const gsl::not_null<Scalar<DataVector>*>
         packaged_largest_ingoing_char_speed,
-    const gsl::not_null<Scalar<DataVector>*>
-        packaged_fast_outgoing_char_speed,
+    const gsl::not_null<Scalar<DataVector>*> packaged_fast_outgoing_char_speed,
     const gsl::not_null<Scalar<DataVector>*> packaged_fast_ingoing_char_speed,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         packaged_interface_unit_normal,
@@ -312,6 +311,7 @@ double Hllem::dg_package_data(
     const Scalar<DataVector>& lapse,
     const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
     const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& /*spatial_metric*/,
 
     const Scalar<DataVector>& rest_mass_density,
     const Scalar<DataVector>& electron_fraction,
@@ -649,9 +649,8 @@ void Hllem::dg_boundary_terms(
   Scalar<DataVector> rho_avg{
       0.5 * (get(rest_mass_density_int) + get(rest_mass_density_ext))};
   Scalar<DataVector> p_avg{0.5 * (get(pressure_int) + get(pressure_ext))};
-  const Scalar<DataVector> ye_avg{
-      0.5 * (get(tilde_ye_int) / get(tilde_d_int) +
-             get(tilde_ye_ext) / get(tilde_d_ext))};
+  const Scalar<DataVector> ye_avg{0.5 * (get(tilde_ye_int) / get(tilde_d_int) +
+                                         get(tilde_ye_ext) / get(tilde_d_ext))};
   Scalar<DataVector> eps_avg{0.5 * (get(specific_internal_energy_int) +
                                     get(specific_internal_energy_ext))};
   {
@@ -677,9 +676,9 @@ void Hllem::dg_boundary_terms(
       for (size_t pt = 0; pt < num_points; ++pt) {
         if (std::abs(denominator[pt]) > 1.0e-14) {
           temperature_new[pt] =
-              temperature_b[pt] -
-              residual_b[pt] * (temperature_b[pt] - temperature_a[pt]) /
-                  denominator[pt];
+              temperature_b[pt] - residual_b[pt] *
+                                      (temperature_b[pt] - temperature_a[pt]) /
+                                      denominator[pt];
         }
         // Temperatures must stay physical; fall back to the midpoint if the
         // secant step leaves the (non-negative) physical range.
@@ -693,9 +692,9 @@ void Hllem::dg_boundary_terms(
       temperature_b = temperature_new;
       residual_b = pressure_residual(temperature_b);
     }
-    eps_avg = equation_of_state
-                  .specific_internal_energy_from_density_and_temperature(
-                      rho_avg, Scalar<DataVector>{temperature_b}, ye_avg);
+    eps_avg =
+        equation_of_state.specific_internal_energy_from_density_and_temperature(
+            rho_avg, Scalar<DataVector>{temperature_b}, ye_avg);
     for (size_t pt = 0; pt < num_points; ++pt) {
       if (not std::isfinite(get(eps_avg)[pt]) or get(eps_avg)[pt] < 0.0) {
         get(eps_avg)[pt] = 0.5 * (get(specific_internal_energy_int)[pt] +
@@ -1059,9 +1058,8 @@ void Hllem::dg_boundary_terms(
         norm_r += square(modes.get(wave, n));
       }
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (ok[pt] > 0.0 and
-            not(sqrt(norm_l[pt] * norm_r[pt]) <=
-                *max_condition_number_ * std::abs(diag[pt]))) {
+        if (ok[pt] > 0.0 and not(sqrt(norm_l[pt] * norm_r[pt]) <=
+                                 *max_condition_number_ * std::abs(diag[pt]))) {
           ok[pt] = 0.0;
           drop[pt] = 1.0;
         }
@@ -1163,8 +1161,7 @@ void Hllem::dg_boundary_terms(
       const DataVector& diag = gsl::at(diagonal, k);
       for (size_t pt = 0; pt < num_points; ++pt) {
         if (gsl::at(in_cluster, k)[pt] > 0.0) {
-          delta_block[pt] =
-              std::min(delta_block[pt], gsl::at(delta, k)[pt]);
+          delta_block[pt] = std::min(delta_block[pt], gsl::at(delta, k)[pt]);
           continue;
         }
         if (not std::isfinite(diag[pt]) or std::abs(diag[pt]) < 1.0e-12) {
@@ -1182,9 +1179,8 @@ void Hllem::dg_boundary_terms(
     for (size_t n = 0; n < 9; ++n) {
       for (size_t pt = 0; pt < num_points; ++pt) {
         if (any_cluster[pt] > 0.0 and complement_ok[pt] > 0.0) {
-          gsl::at(antidiff, n)[pt] += coeff[pt] *
-                                      std::max(delta_block[pt], 0.0) *
-                                      gsl::at(cdu, n)[pt];
+          gsl::at(antidiff, n)[pt] +=
+              coeff[pt] * std::max(delta_block[pt], 0.0) * gsl::at(cdu, n)[pt];
         }
       }
     }
@@ -1279,13 +1275,14 @@ void Hllem::dg_boundary_terms(
         nf_bn_int += normal_dot_flux_tilde_b_int.get(k)[pt] * n_k;
         nf_bn_ext += normal_dot_flux_tilde_b_ext.get(k)[pt] * n_k;
       }
-      u_hll[6] = hll_state(get(tilde_d_int)[pt], get(normal_dot_flux_tilde_d_int)[pt],
-                           get(tilde_d_ext)[pt], get(normal_dot_flux_tilde_d_ext)[pt]);
-      u_hll[7] =
-          hll_state(get(tilde_tau_int)[pt], get(normal_dot_flux_tilde_tau_int)[pt],
-                    get(tilde_tau_ext)[pt], get(normal_dot_flux_tilde_tau_ext)[pt]);
-      const double bn_star = (lambda_max[pt] * bn_ext - lambda_min[pt] * bn_int +
-                              nf_bn_ext + nf_bn_int) *
+      u_hll[6] =
+          hll_state(get(tilde_d_int)[pt], get(normal_dot_flux_tilde_d_int)[pt],
+                    get(tilde_d_ext)[pt], get(normal_dot_flux_tilde_d_ext)[pt]);
+      u_hll[7] = hll_state(
+          get(tilde_tau_int)[pt], get(normal_dot_flux_tilde_tau_int)[pt],
+          get(tilde_tau_ext)[pt], get(normal_dot_flux_tilde_tau_ext)[pt]);
+      const double bn_star = (lambda_max[pt] * bn_ext -
+                              lambda_min[pt] * bn_int + nf_bn_ext + nf_bn_int) *
                              inv_dl[pt];
       for (size_t n = 0; n < 8; ++n) {
         gsl::at(a, n) = gsl::at(antidiff, n)[pt] / coeff[pt];
@@ -1327,8 +1324,8 @@ void Hllem::dg_boundary_terms(
                                  const tnsr::I<DataVector, 3>& v,
                                  const tnsr::I<DataVector, 3>& b) {
             return MakeString{} << std::scientific << std::setprecision(16)
-                                << "rho " << get(rho)[pt] << " p "
-                                << get(p)[pt] << " v (" << v.get(0)[pt] << ", "
+                                << "rho " << get(rho)[pt] << " p " << get(p)[pt]
+                                << " v (" << v.get(0)[pt] << ", "
                                 << v.get(1)[pt] << ", " << v.get(2)[pt]
                                 << ") B (" << b.get(0)[pt] << ", "
                                 << b.get(1)[pt] << ", " << b.get(2)[pt] << ")";
@@ -1409,10 +1406,9 @@ PUP::able::PUP_ID Hllem::my_PUP_ID = 0;
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections
 
 template <>
-grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves
-Options::create_from_yaml<
-    grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves>::
-    create<void>(const Options::Option& options) {
+grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves Options::
+    create_from_yaml<grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves>::
+        create<void>(const Options::Option& options) {
   namespace bc = grmhd::ValenciaDivClean::BoundaryCorrections;
   const auto type_read = options.parse_as<std::string>();
   if (type_read == "Contact") {

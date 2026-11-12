@@ -208,14 +208,13 @@ std::optional<std::string> DirichletAnalyticInNozzle::dg_ghost(
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> shift,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         spatial_velocity_one_form,
+    const gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
+        spatial_metric,
     const gsl::not_null<Scalar<DataVector>*> rest_mass_density,
     const gsl::not_null<Scalar<DataVector>*> electron_fraction,
     const gsl::not_null<Scalar<DataVector>*> temperature,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         spatial_velocity,
-    const gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
-    const gsl::not_null<Scalar<DataVector>*> pressure,
-    const gsl::not_null<Scalar<DataVector>*> lorentz_factor,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         inv_spatial_metric,
 
@@ -241,35 +240,23 @@ std::optional<std::string> DirichletAnalyticInNozzle::dg_ghost(
     const tnsr::I<DataVector, 3, Frame::Inertial>& coords,
 
     const double time) const {
-  std::optional<std::string> error = HydroFreeOutflow::dg_ghost(
+  // The correction does not use eps, p and W: compute them into scratch.
+  Scalar<DataVector> specific_internal_energy{};
+  Scalar<DataVector> pressure{};
+  Scalar<DataVector> lorentz_factor{};
+  return dg_ghost(
       tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, tilde_d_flux,
       tilde_ye_flux, tilde_tau_flux, tilde_s_flux, tilde_b_flux, tilde_phi_flux,
-      lapse, shift, spatial_velocity_one_form, rest_mass_density,
-      electron_fraction, temperature, spatial_velocity,
-      specific_internal_energy, pressure, lorentz_factor, inv_spatial_metric,
-      face_mesh_velocity, outward_directed_normal_covector,
-      outward_directed_normal_vector, interior_rest_mass_density,
-      interior_electron_fraction, interior_specific_internal_energy,
-      interior_spatial_velocity, interior_magnetic_field,
-      interior_lorentz_factor, interior_pressure, interior_temperature,
-      interior_shift, interior_lapse, interior_inv_spatial_metric);
-  const std::vector<size_t> points = points_in_nozzle(coords, nozzle_radius_);
-  if (points.empty()) {
-    return error;
-  }
-  std::optional<std::string> dirichlet_error = overwrite_points(
-      points,
-      [&](const auto... outputs) {
-        return dirichlet_analytic_.dg_ghost(
-            outputs..., face_mesh_velocity, outward_directed_normal_covector,
-            outward_directed_normal_vector, coords, time);
-      },
-      tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, tilde_d_flux,
-      tilde_ye_flux, tilde_tau_flux, tilde_s_flux, tilde_b_flux, tilde_phi_flux,
-      lapse, shift, spatial_velocity_one_form, rest_mass_density,
-      electron_fraction, temperature, spatial_velocity,
-      specific_internal_energy, pressure, lorentz_factor, inv_spatial_metric);
-  return error.has_value() ? error : dirichlet_error;
+      lapse, shift, spatial_velocity_one_form, spatial_metric,
+      rest_mass_density, electron_fraction, temperature, spatial_velocity,
+      make_not_null(&specific_internal_energy), make_not_null(&pressure),
+      make_not_null(&lorentz_factor), inv_spatial_metric, face_mesh_velocity,
+      outward_directed_normal_covector, outward_directed_normal_vector,
+      interior_rest_mass_density, interior_electron_fraction,
+      interior_specific_internal_energy, interior_spatial_velocity,
+      interior_magnetic_field, interior_lorentz_factor, interior_pressure,
+      interior_temperature, interior_shift, interior_lapse,
+      interior_inv_spatial_metric, coords, time);
 }
 
 void DirichletAnalyticInNozzle::fd_ghost(

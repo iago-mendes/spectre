@@ -408,6 +408,10 @@ void test_interface_bounds_are_two_sided(
     const tnsr::Ij<DataVector, 3, Frame::Inertial> flux_tilde_s{1_st, 0.0};
     const tnsr::IJ<DataVector, 3, Frame::Inertial> flux_tilde_b{1_st, 0.0};
 
+    tnsr::ii<DataVector, 3, Frame::Inertial> identity_metric{1_st, 0.0};
+    for (size_t d = 0; d < 3; ++d) {
+      identity_metric.get(d, d) = 1.0;
+    }
     solver.dg_package_data(
         make_not_null(&out.tilde_d), make_not_null(&out.tilde_ye),
         make_not_null(&out.tilde_tau), make_not_null(&out.tilde_s),
@@ -422,8 +426,8 @@ void test_interface_bounds_are_two_sided(
         make_not_null(&out.pressure), make_not_null(&out.lorentz_factor),
         make_not_null(&out.eps), tilde_d, tilde_ye, tilde_tau, tilde_s,
         magnetic_field, tilde_phi, zero_flux, flux_tilde_ye, zero_flux,
-        flux_tilde_s, flux_tilde_b, zero_flux, lapse, shift,
-        velocity_one_form, rest_mass_density, electron_fraction, temperature,
+        flux_tilde_s, flux_tilde_b, zero_flux, lapse, shift, velocity_one_form,
+        identity_metric, rest_mass_density, electron_fraction, temperature,
         spatial_velocity, specific_internal_energy, pressure_scalar,
         lorentz_factor, normal_covector, normal_vector, std::nullopt,
         std::nullopt, *eos);

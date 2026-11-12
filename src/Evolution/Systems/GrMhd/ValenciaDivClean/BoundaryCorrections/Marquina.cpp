@@ -62,7 +62,8 @@ std::ostream& operator<<(std::ostream& os,
 
 Marquina::Marquina(const MarquinaCharacteristicsSystem characteristics_system,
                    const MarquinaCharacteristicsMethod characteristics_method,
-                   const double degeneracy_tolerance, const bool use_modified_formula)
+                   const double degeneracy_tolerance,
+                   const bool use_modified_formula)
     : characteristics_system_(characteristics_system),
       characteristics_method_(characteristics_method),
       degeneracy_tolerance_(degeneracy_tolerance),
@@ -146,29 +147,32 @@ double Marquina::dg_package_data(
   // Supported:
   //  - AlwaysAnalytic (both systems): closed-form eigenvectors.
   //  - AnalyticWithComplementaryProjection (MHD): handle the degenerate wave
-  //    subspace by the complement of the well-conditioned waves (Fedkiw-Merriman-
-  //    Osher 1997), avoiding the ill-defined degenerate eigenvectors.
+  //    subspace by the complement of the well-conditioned waves
+  //    (Fedkiw-Merriman- Osher 1997), avoiding the ill-defined degenerate
+  //    eigenvectors.
   //  - AlwaysNumeric (MHD): build the decomposition from the per-point numeric
-  //    eigensolver (blaze::geev via numerical_characteristics) instead of the
-  //    closed-form eigenvectors.  For distinct eigenvalues geev's left/right
-  //    eigenvectors are biorthogonal to round-off, so a per-wave rescale
-  //    L_i <- L_i/(L_i.R_i) gives L.R = I with no inversion.  This is a PURELY
-  //    numeric method: it does NOT fall back to the complementary projection.
-  //    At an exact (or double-underflowed) degeneracy geev returns an arbitrary,
-  //    non-biorthonormal basis for the repeated eigenspace and L.R != I; in that
-  //    case the numeric decomposition is unusable and we ERROR (use
-  //    AnalyticWithComplementaryProjection for a degeneracy-robust method).
+  //    eigensolver (blaze::geev via numerical_characteristics_dgeev) instead
+  //    of the closed-form eigenvectors.  For distinct eigenvalues geev's
+  //    left/right eigenvectors are biorthogonal to round-off, so a per-wave
+  //    rescale L_i <- L_i/(L_i.R_i) gives L.R = I with no inversion.  This is a
+  //    PURELY numeric method: it does NOT fall back to the complementary
+  //    projection. At an exact (or double-underflowed) degeneracy geev returns
+  //    an arbitrary, non-biorthonormal basis for the repeated eigenspace and
+  //    L.R != I; in that case the numeric decomposition is unusable and we
+  //    ERROR (use AnalyticWithComplementaryProjection for a degeneracy-robust
+  //    method).
   const bool use_numeric =
       characteristics_method_ == MarquinaCharacteristicsMethod::AlwaysNumeric;
-  // AlwaysComplementaryProjection unconditionally complements the collapse-prone
-  // fluid subspace (non-adaptive); AnalyticWithComplementaryProjection only
-  // complements waves the speed-gap detector flags as degenerate.
+  // AlwaysComplementaryProjection unconditionally complements the
+  // collapse-prone fluid subspace (non-adaptive);
+  // AnalyticWithComplementaryProjection only complements waves the speed-gap
+  // detector flags as degenerate.
   const bool always_complementary_projection =
       characteristics_method_ ==
       MarquinaCharacteristicsMethod::AlwaysComplementaryProjection;
   // Complementary projection (either variant) is used ONLY when its method is
-  // explicitly requested; AlwaysAnalytic and AlwaysNumeric never invoke it (they
-  // ERROR if their decomposition is unusable at a degeneracy).
+  // explicitly requested; AlwaysAnalytic and AlwaysNumeric never invoke it
+  // (they ERROR if their decomposition is unusable at a degeneracy).
   const bool complementary_projection =
       characteristics_method_ ==
           MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection or
@@ -180,7 +184,8 @@ double Marquina::dg_package_data(
     ERROR(
         "Marquina supports CharacteristicsMethod: AlwaysAnalytic and "
         "AnalyticWithComplementaryProjection (both systems), and AlwaysNumeric "
-        "(MHD system).  AnalyticWithNumericFallback and numeric HydroYe are not "
+        "(MHD system).  AnalyticWithNumericFallback and numeric HydroYe are "
+        "not "
         "yet implemented.  Requested "
         << characteristics_method_ << " with system " << characteristics_system_
         << ".");
@@ -192,7 +197,8 @@ double Marquina::dg_package_data(
   Scalar<DataVector> specific_enthalpy{num_points};
   get(specific_enthalpy) = 1.0 + get(specific_internal_energy) +
                            get(consistent_pressure) / get(rest_mass_density);
-  const auto det_and_inv_spatial_metric = determinant_and_inverse(spatial_metric);
+  const auto det_and_inv_spatial_metric =
+      determinant_and_inverse(spatial_metric);
   const auto& det_spatial_metric = det_and_inv_spatial_metric.first;
   const auto& inv_spatial_metric = det_and_inv_spatial_metric.second;
   const auto normal_covector_mag =
@@ -219,11 +225,11 @@ double Marquina::dg_package_data(
     tnsr::i<DataVector, 3> hydro_speeds{num_points, 0.0};
     tnsr::ij<DataVector, 6> hydro_modes{num_points, 0.0};
     tnsr::IJ<DataVector, 6> hydro_projectors{num_points, 0.0};
-    characteristic_speeds_hydro(
-        make_not_null(&hydro_speeds), spatial_velocity, rest_mass_density,
-        specific_internal_energy, electron_fraction, lorentz_factor,
-        specific_enthalpy, spatial_metric, unit_normal_covector,
-        equation_of_state);
+    characteristic_speeds_hydro(make_not_null(&hydro_speeds), spatial_velocity,
+                                rest_mass_density, specific_internal_energy,
+                                electron_fraction, lorentz_factor,
+                                specific_enthalpy, spatial_metric,
+                                unit_normal_covector, equation_of_state);
     characteristic_eigenvectors_hydro(
         make_not_null(&hydro_modes), make_not_null(&hydro_projectors),
         spatial_velocity, rest_mass_density, specific_internal_energy,
@@ -249,11 +255,11 @@ double Marquina::dg_package_data(
       magnetic_field.get(i) = tilde_b.get(i) / sqrt_det_spatial_metric;
     }
     tnsr::i<DataVector, 9> mhd_speeds{num_points, 0.0};
-    characteristic_speeds_mhd(
-        make_not_null(&mhd_speeds), spatial_velocity, magnetic_field,
-        rest_mass_density, specific_internal_energy, lorentz_factor,
-        specific_enthalpy, spatial_metric, unit_normal_covector,
-        equation_of_state);
+    characteristic_speeds_mhd(make_not_null(&mhd_speeds), spatial_velocity,
+                              magnetic_field, rest_mass_density,
+                              specific_internal_energy, lorentz_factor,
+                              specific_enthalpy, spatial_metric,
+                              unit_normal_covector, equation_of_state);
     tnsr::ij<DataVector, 9> mhd_modes{num_points, 0.0};
     tnsr::IJ<DataVector, 9> mhd_projectors{num_points, 0.0};
     // The analytic eigenvector formulas divide by zero at exact degeneracy
@@ -283,7 +289,7 @@ double Marquina::dg_package_data(
       tnsr::i<DataVector, 9> numeric_speeds{num_points, 0.0};
       tnsr::ij<DataVector, 9> numeric_modes{num_points, 0.0};
       tnsr::IJ<DataVector, 9> numeric_projectors{num_points, 0.0};
-      numerical_characteristics<9>(
+      numerical_characteristics_dgeev<9>(
           make_not_null(&numeric_speeds), make_not_null(&numeric_modes),
           make_not_null(&numeric_projectors), spatial_velocity, magnetic_field,
           rest_mass_density, specific_internal_energy, electron_fraction,
@@ -335,14 +341,15 @@ double Marquina::dg_package_data(
     // group's speed, never touching the bad eigenvectors.  Away from
     // degeneracy nothing is zeroed and this reduces to AlwaysAnalytic.
     // Degeneracy detector = SPEED GAP (the DegeneracyTolerance option is now a
-    // speed-gap tolerance, on the c_h = 1 speed scale): a wave is degenerate when
-    // its characteristic speed lies within this tolerance of another wave's speed,
-    // i.e. the speeds collapse.  The speed gap tracks the degeneracy directly,
-    // unlike the biorthogonality cosine |L_i.R_i|/(|L_i||R_i|), which stays O(1)
-    // even where the speeds are numerically identical and the eigenvectors are
-    // garbage.  Kept (well-separated) waves are
-    // still renormalized by 1/(L_i.R_i) and treated per-wave; the degenerate
-    // cluster is reconstructed by the complement in dg_boundary_terms.
+    // speed-gap tolerance, on the c_h = 1 speed scale): a wave is degenerate
+    // when its characteristic speed lies within this tolerance of another
+    // wave's speed, i.e. the speeds collapse.  The speed gap tracks the
+    // degeneracy directly, unlike the biorthogonality cosine
+    // |L_i.R_i|/(|L_i||R_i|), which stays O(1) even where the speeds are
+    // numerically identical and the eigenvectors are garbage.  Kept
+    // (well-separated) waves are still renormalized by 1/(L_i.R_i) and treated
+    // per-wave; the degenerate cluster is reconstructed by the complement in
+    // dg_boundary_terms.
     const double gap_tolerance = degeneracy_tolerance_;
     for (size_t i = 0; i < 9; ++i) {
       DataVector diagonal(num_points, 0.0);
@@ -356,10 +363,10 @@ double Marquina::dg_package_data(
       packaged_characteristic_speeds->get(i) = mhd_speeds.get(i);
       if (complementary_projection) {
         // A wave is degenerate where its eigenvectors came out non-finite (the
-        // analytic formulas divided by zero) or where its biorthogonality cosine
-        // |L_i.R_i| / (|L_i| |R_i|) underflows.  Zero BOTH rows there so the
-        // complement projection in dg_boundary_terms excludes the wave cleanly
-        // (0, not 0*nan); elsewhere normalize so L_i.R_i = 1.
+        // analytic formulas divided by zero) or where its biorthogonality
+        // cosine |L_i.R_i| / (|L_i| |R_i|) underflows.  Zero BOTH rows there so
+        // the complement projection in dg_boundary_terms excludes the wave
+        // cleanly (0, not 0*nan); elsewhere normalize so L_i.R_i = 1.
         for (size_t pt = 0; pt < num_points; ++pt) {
           const double scale = sqrt(norm_left[pt] * norm_right[pt]);
           // Minimum gap of wave i's speed to any other wave's speed.
@@ -377,11 +384,11 @@ double Marquina::dg_package_data(
           // the fast (1,7) and GLM-scalar (0,8) waves stay analytic.  Otherwise
           // (adaptive CPM) flag by the speed gap / non-finiteness.
           const bool in_fluid_subspace = (i >= 2 and i <= 6);
-          const bool degenerate =
-              always_complementary_projection
-                  ? in_fluid_subspace
-                  : (not std::isfinite(diagonal[pt]) or
-                     not std::isfinite(scale) or min_speed_gap <= gap_tolerance);
+          const bool degenerate = always_complementary_projection
+                                      ? in_fluid_subspace
+                                      : (not std::isfinite(diagonal[pt]) or
+                                         not std::isfinite(scale) or
+                                         min_speed_gap <= gap_tolerance);
           for (size_t j = 0; j < 9; ++j) {
             if (degenerate) {
               packaged_left_eigenvectors->get(i, j)[pt] = 0.0;
@@ -406,12 +413,12 @@ double Marquina::dg_package_data(
     if (use_numeric) {
       // AlwaysNumeric is a purely numeric method (no complement fallback).
       // Verify that the rescaled numeric decomposition reproduces the identity,
-      // sum_i R_i (x) L_i = I.  For distinct eigenvalues geev's eigenvectors are
-      // biorthogonal, so this holds to round-off; at an exact / double-
+      // sum_i R_i (x) L_i = I.  For distinct eigenvalues geev's eigenvectors
+      // are biorthogonal, so this holds to round-off; at an exact / double-
       // underflowed degeneracy geev returns a non-biorthonormal block basis and
-      // this fails -- there the fully numeric characteristics are unusable, so we
-      // ERROR (the user should choose AnalyticWithComplementaryProjection for a
-      // degeneracy-robust method).
+      // this fails -- there the fully numeric characteristics are unusable, so
+      // we ERROR (the user should choose AnalyticWithComplementaryProjection
+      // for a degeneracy-robust method).
       double max_identity_error = 0.0;
       for (size_t pt = 0; pt < num_points; ++pt) {
         for (size_t m = 0; m < 9; ++m) {
@@ -428,7 +435,8 @@ double Marquina::dg_package_data(
       }
       if (not(max_identity_error < 1.0e-6)) {
         ERROR(
-            "Marquina AlwaysNumeric: the numeric characteristic decomposition is "
+            "Marquina AlwaysNumeric: the numeric characteristic decomposition "
+            "is "
             "not biorthonormal (max |sum_i R_i x L_i - I| = "
             << max_identity_error
             << "), which happens at an exact / underflowed degeneracy where "
@@ -556,13 +564,13 @@ void Marquina::dg_boundary_terms(
     auto left_int = left_characteristic_fields_int;
     auto right_int = right_characteristic_fields_int;
     const bool complementary_projection =
-        characteristics_method_ ==
-            MarquinaCharacteristicsMethod::AnalyticWithComplementaryProjection or
+        characteristics_method_ == MarquinaCharacteristicsMethod::
+                                       AnalyticWithComplementaryProjection or
         characteristics_method_ ==
             MarquinaCharacteristicsMethod::AlwaysComplementaryProjection;
     if (complementary_projection) {
-      // A wave is handled per-wave only if it is well conditioned (non-zeroed by
-      // dg_package_data) on BOTH sides of the face; otherwise it joins the
+      // A wave is handled per-wave only if it is well conditioned (non-zeroed
+      // by dg_package_data) on BOTH sides of the face; otherwise it joins the
       // complement block.  This keeps the per-wave reconstruction and the
       // complement projector consistent from either element, so the numerical
       // flux stays single-valued.  Zero such waves' interior and aligned-
@@ -620,7 +628,8 @@ void Marquina::dg_boundary_terms(
          &get<0>(*boundary_correction_tilde_b),
          &get<1>(*boundary_correction_tilde_b),
          &get<2>(*boundary_correction_tilde_b),
-         &get(*boundary_correction_tilde_d), &get(*boundary_correction_tilde_tau),
+         &get(*boundary_correction_tilde_d),
+         &get(*boundary_correction_tilde_tau),
          &get(*boundary_correction_tilde_phi)}};
 
     for (size_t n = 0; n < 9; ++n) {
@@ -628,8 +637,8 @@ void Marquina::dg_boundary_terms(
     }
     // Electron fraction: passive scalar, conservative central fallback flux.
     get(*boundary_correction_tilde_ye) =
-        0.5 * (get(normal_dot_flux_tilde_ye_int) -
-               get(normal_dot_flux_tilde_ye_ext));
+        0.5 *
+        (get(normal_dot_flux_tilde_ye_int) - get(normal_dot_flux_tilde_ye_ext));
 
     Scalar<DataVector> omega_int{num_points};
     Scalar<DataVector> omega_ext{num_points};
@@ -653,8 +662,7 @@ void Marquina::dg_boundary_terms(
     // |B|x2 stationary contact and then diverges to rho ~ 130 by t = 1.
     if (use_modified_formula_) {
       for (size_t n = 0; n < 9; ++n) {
-        *gsl::at(b_out, n) =
-            0.5 * (*gsl::at(f_int, n) - *gsl::at(f_ext, n));
+        *gsl::at(b_out, n) = 0.5 * (*gsl::at(f_int, n) - *gsl::at(f_ext, n));
       }
       Scalar<DataVector> projected_jump_int{num_points};
       Scalar<DataVector> projected_jump_ext{num_points};
@@ -693,21 +701,21 @@ void Marquina::dg_boundary_terms(
               0.25 * alpha * (contribution_int + contribution_ext);
         }
       }
-      // The degenerate rows were ZEROED in dg_package_data, so neither one-sided
-      // basis is complete: sum_p r_p l_p != I, and the per-wave dissipation
-      // above misses the degenerate subspace entirely. Dissipate what is left
-      // over, (I - sum_p r_p l_p) du -- the same role the complementary
-      // projection plays for the sided formula. Without it Balsara-1 -- whose
-      // tangential field REVERSES through zero, so B_t -> 0 is degenerate right
-      // at the flip -- is under-dissipated exactly where it needs damping, and
-      // dies in con2prim.
+      // The degenerate rows were ZEROED in dg_package_data, so neither
+      // one-sided basis is complete: sum_p r_p l_p != I, and the per-wave
+      // dissipation above misses the degenerate subspace entirely. Dissipate
+      // what is left over, (I - sum_p r_p l_p) du -- the same role the
+      // complementary projection plays for the sided formula. Without it
+      // Balsara-1 -- whose tangential field REVERSES through zero, so B_t -> 0
+      // is degenerate right at the flip -- is under-dissipated exactly where it
+      // needs damping, and dies in con2prim.
       //
-      // Use the speed of the DEGENERATE waves themselves, not the global maximum
-      // over all nine. The complement spans exactly the zeroed (degenerate)
-      // subspace, so its signal speed is theirs; damping it at the fast speed
-      // instead put a resolution-independent floor under the error and stalled
-      // convergence (order 0.07 between ref4 and ref5 on Balsara-1, versus 0.43
-      // for the original formula).
+      // Use the speed of the DEGENERATE waves themselves, not the global
+      // maximum over all nine. The complement spans exactly the zeroed
+      // (degenerate) subspace, so its signal speed is theirs; damping it at the
+      // fast speed instead put a resolution-independent floor under the error
+      // and stalled convergence (order 0.07 between ref4 and ref5 on Balsara-1,
+      // versus 0.43 for the original formula).
       DataVector complement_speed{num_points, 0.0};
       for (size_t point = 0; point < num_points; ++point) {
         bool any_degenerate = false;
@@ -728,7 +736,8 @@ void Marquina::dg_boundary_terms(
           }
         }
         // No zeroed rows -> the bases are complete, the complement is zero and
-        // this term is inert; keep the speed at zero rather than the fast speed.
+        // this term is inert; keep the speed at zero rather than the fast
+        // speed.
         if (not any_degenerate) {
           complement_speed[point] = 0.0;
         }
@@ -795,15 +804,16 @@ void Marquina::dg_boundary_terms(
     }
 
     // Complementary projection (Fedkiw-Merriman-Osher 1997): the waves whose
-    // eigenvectors dg_package_data zeroed (degenerate; left row == 0) contributed
-    // nothing to the per-wave sum above.  Reconstruct them here as ONE block via
-    // the complement of the well-conditioned projector, P_block = I - sum_{well}
-    // R_i L_i, carried by the degenerate group's (shared) speed.  This never uses
-    // the ill-defined degenerate eigenvectors.  NOTE: a single complement only
-    // resolves ONE degenerate group (it assumes the zeroed waves share an upwind
-    // direction, true for the B_normal=0 group at v_normal); multiple distinct
-    // degenerate groups fall back to a dissipative average-speed treatment.
-    // Away from degeneracy nothing is zeroed, so P_block = 0 and this is a no-op.
+    // eigenvectors dg_package_data zeroed (degenerate; left row == 0)
+    // contributed nothing to the per-wave sum above.  Reconstruct them here as
+    // ONE block via the complement of the well-conditioned projector, P_block =
+    // I - sum_{well} R_i L_i, carried by the degenerate group's (shared) speed.
+    // This never uses the ill-defined degenerate eigenvectors.  NOTE: a single
+    // complement only resolves ONE degenerate group (it assumes the zeroed
+    // waves share an upwind direction, true for the B_normal=0 group at
+    // v_normal); multiple distinct degenerate groups fall back to a dissipative
+    // average-speed treatment. Away from degeneracy nothing is zeroed, so
+    // P_block = 0 and this is a no-op.
     if (complementary_projection) {
       std::array<DataVector, 9> proj_u_int;
       std::array<DataVector, 9> proj_f_int;
@@ -839,13 +849,14 @@ void Marquina::dg_boundary_terms(
         // Reconstruct the whole complementary (degenerate) subspace following
         // Fedkiw-Merriman-Osher: since these waves nearly share a speed (they
         // collapse toward the material speed v_n at the degeneracy), the
-        // complement has a common upwind direction whenever their speeds share a
-        // sign (paper Remark 6).  Upwind the complement VECTOR by that sign
+        // complement has a common upwind direction whenever their speeds share
+        // a sign (paper Remark 6).  Upwind the complement VECTOR by that sign
         // (single-valued: sign-based upwinding gives the same flux from either
         // element); fall back to the symmetric local Lax-Friedrichs flux only
-        // where the degenerate speeds change sign (a transonic degeneracy).  The
-        // degenerate set is symmetric across the face (left_int is masked to zero
-        // a wave degenerate on either side), so the complement is single-valued.
+        // where the degenerate speeds change sign (a transonic degeneracy). The
+        // degenerate set is symmetric across the face (left_int is masked to
+        // zero a wave degenerate on either side), so the complement is
+        // single-valued.
         double alpha = 0.0;
         bool any_degenerate = false;
         double min_deg_speed = std::numeric_limits<double>::infinity();
@@ -884,8 +895,9 @@ void Marquina::dg_boundary_terms(
           } else if (all_neg) {
             contrib = f_bar_ext;  // FMO componentwise upwind from exterior
           } else {
-            contrib = 0.5 * (f_bar_int + f_bar_ext) -
-                      0.5 * alpha * (u_bar_ext - u_bar_int);  // LF at sign change
+            contrib =
+                0.5 * (f_bar_int + f_bar_ext) -
+                0.5 * alpha * (u_bar_ext - u_bar_int);  // LF at sign change
           }
           (*gsl::at(b_out, n))[point] += contrib;
         }
@@ -902,11 +914,11 @@ void Marquina::dg_boundary_terms(
     //
     // So detect an untrustworthy decomposition from what we already have --
     // non-finite entries, or a biorthonormality diagonal l_i.r_i that has
-    // collapsed for a wave whose left row is not identically zero (rows that ARE
-    // zero were deliberately dropped as degenerate above) -- and fall back to a
-    // plain local Lax-Friedrichs flux at that point, which needs no eigenbasis.
-    // This is a per-point switch: cells where the decomposition is fine are
-    // untouched, so it costs nothing where the physics lives.
+    // collapsed for a wave whose left row is not identically zero (rows that
+    // ARE zero were deliberately dropped as degenerate above) -- and fall back
+    // to a plain local Lax-Friedrichs flux at that point, which needs no
+    // eigenbasis. This is a per-point switch: cells where the decomposition is
+    // fine are untouched, so it costs nothing where the physics lives.
     for (size_t point = 0; point < num_points; ++point) {
       bool trustworthy = true;
       for (size_t i = 0; i < 9 and trustworthy; ++i) {
@@ -1049,8 +1061,8 @@ void Marquina::dg_boundary_terms(
   // Loop over characteristic fields
   for (size_t i = 0; i < 6; ++i) {
     // With complementary projection the four contact-subspace waves (i < Rplus)
-    // are handled together by the complement block after this loop; here we only
-    // decompose the two acoustic waves.
+    // are handled together by the complement block after this loop; here we
+    // only decompose the two acoustic waves.
     if (complementary_projection and
         i < grmhd::ValenciaDivClean::HydroVectorR::Rplus) {
       continue;
@@ -1163,11 +1175,12 @@ void Marquina::dg_boundary_terms(
   if (complementary_projection) {
     // Contact subspace (all waves at v_n) via the FMO complement, upwinded
     // componentwise in the single v_n direction.  f_bar = (I - P_acoustic) F
-    // and u_bar = (I - P_acoustic) U, with P_acoustic = sum over Rplus,Rminus of
-    // R_a (L_a . *).  The same Marquina split used per-wave above is applied to
-    // the complement VECTOR keyed on v_n (LF term only at a sign change).  This
-    // equals the sum over the four contact waves of their per-wave contribution
-    // (they share the speed v_n), to round-off, without their eigenvectors.
+    // and u_bar = (I - P_acoustic) U, with P_acoustic = sum over Rplus,Rminus
+    // of R_a (L_a . *).  The same Marquina split used per-wave above is applied
+    // to the complement VECTOR keyed on v_n (LF term only at a sign change).
+    // This equals the sum over the four contact waves of their per-wave
+    // contribution (they share the speed v_n), to round-off, without their
+    // eigenvectors.
     using RV = grmhd::ValenciaDivClean::HydroVectorR;
     const size_t vn_index =
         grmhd::ValenciaDivClean::HydroSpeed::NormalDotVelocity;

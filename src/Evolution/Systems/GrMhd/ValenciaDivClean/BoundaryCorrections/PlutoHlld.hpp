@@ -84,25 +84,31 @@ class PlutoHlld final : public evolution::BoundaryCorrection {
   struct InterfaceUnitNormal : db::SimpleTag {
     using type = tnsr::i<DataVector, 3, Frame::Inertial>;
   };
-  // Departure of the metric from flat space, |lapse-1| + |shift| + |sqrt(det)-1|.
-  // The five-wave fan is reconstructed assuming flat space (the regime of the
-  // relativistic M&M tests); where the metric is curved we fall back to HLL.
+  // Departure of the metric from flat space, |lapse-1| + |shift| +
+  // |sqrt(det)-1|. The five-wave fan is reconstructed assuming flat space (the
+  // regime of the relativistic M&M tests); where the metric is curved we fall
+  // back to HLL.
   struct MetricFlatness : db::SimpleTag {
     using type = Scalar<DataVector>;
   };
 
   struct MagneticFieldMagnitudeForHydro {
     static constexpr Options::String help = {
-      "The HLLD Riemann solver of Mignone, Ugliano & Bodo (2009), evaluated by "
-      "PLUTO v4.4's own compiled implementation rather than a port of it.\n\n"
-      "The five-wave fan is computed by PLUTO's HLLD_Solver through a thin C "
-      "shim (see pluto/README.md). PLUTO carries no divergence-cleaning field, "
-      "so the GLM scalar and the normal magnetic field are handled here by the "
-      "same scalar/MHD split Hllem uses, and only the eight MHD fluxes come "
-      "from PLUTO.\n\n"
-      "Restrictions inherited from PLUTO's configuration: ideal-gas EoS only, "
-      "and flat (special-relativistic) space -- curved-metric points fall back "
-      "to HLL, as in Hlld."};
+        "The HLLD Riemann solver of Mignone, Ugliano & Bodo (2009), evaluated "
+        "by "
+        "PLUTO v4.4's own compiled implementation rather than a port of it.\n\n"
+        "The five-wave fan is computed by PLUTO's HLLD_Solver through a thin C "
+        "shim (see pluto/README.md). PLUTO carries no divergence-cleaning "
+        "field, "
+        "so the GLM scalar and the normal magnetic field are handled here by "
+        "the "
+        "same scalar/MHD split Hllem uses, and only the eight MHD fluxes come "
+        "from PLUTO.\n\n"
+        "Restrictions inherited from PLUTO's configuration: ideal-gas EoS "
+        "only, "
+        "and flat (special-relativistic) space -- curved-metric points fall "
+        "back "
+        "to HLL, as in Hlld."};
     using type = double;
   };
   struct LightSpeedDensityCutoff {
@@ -124,7 +130,7 @@ class PlutoHlld final : public evolution::BoundaryCorrection {
   ~PlutoHlld() override = default;
 
   PlutoHlld(double magnetic_field_magnitude_for_hydro,
-       double light_speed_density_cutoff);
+            double light_speed_density_cutoff);
 
   /// \cond
   explicit PlutoHlld(CkMigrateMessage* /*unused*/);
@@ -155,7 +161,8 @@ class PlutoHlld final : public evolution::BoundaryCorrection {
       hydro::Tags::SpecificInternalEnergy<DataVector>>;
   using dg_package_data_temporary_tags = tmpl::list<
       gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>>;
+      hydro::Tags::SpatialVelocityOneForm<DataVector, 3, Frame::Inertial>,
+      gr::Tags::SpatialMetric<DataVector, 3>>;
   using dg_package_data_primitive_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
@@ -215,6 +222,7 @@ class PlutoHlld final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& lapse,
       const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
       const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
       const Scalar<DataVector>& rest_mass_density,
       const Scalar<DataVector>& electron_fraction,

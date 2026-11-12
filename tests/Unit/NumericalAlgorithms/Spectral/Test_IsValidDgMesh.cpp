@@ -134,7 +134,7 @@ void test_2d(const gsl::not_null<std::mt19937*> generator) {
   REQUIRE(bases.size() == 100);
 
   std::vector<std::array<Quadrature, 2>> quadratures;
-  quadratures.reserve(81);
+  quadratures.reserve(100);
   for (const auto xi_quadrature : all_quadratures()) {
     if (xi_quadrature == Quadrature::Uninitialized) {
       continue;
@@ -146,7 +146,7 @@ void test_2d(const gsl::not_null<std::mt19937*> generator) {
       quadratures.emplace_back(std::array{xi_quadrature, eta_quadrature});
     }
   }
-  REQUIRE(quadratures.size() == 81);
+  REQUIRE(quadratures.size() == 100);
 
   for (const auto basis : bases) {
     CAPTURE(basis);
@@ -275,6 +275,16 @@ void test_3d(const gsl::not_null<std::mt19937*> generator) {
   }
 
   REQUIRE(valid_basis_and_quadratures.size() == 164);
+  // A translational Cartoon direction is valid wherever an axial one is.
+  const size_t number_of_valid_axial = valid_basis_and_quadratures.size();
+  for (size_t i = 0; i < number_of_valid_axial; ++i) {
+    const auto [basis, quadrature] = valid_basis_and_quadratures[i];
+    if (quadrature[2] == Quadrature::AxialSymmetry) {
+      valid_basis_and_quadratures.emplace_back(
+          basis, std::array{quadrature[0], quadrature[1],
+                            Quadrature::TranslationalSymmetry});
+    }
+  }
 
   std::vector<std::array<Basis, 3>> bases;
   bases.reserve(729);
@@ -297,7 +307,7 @@ void test_3d(const gsl::not_null<std::mt19937*> generator) {
   REQUIRE(bases.size() == 1000);
 
   std::vector<std::array<Quadrature, 3>> quadratures;
-  quadratures.reserve(729);
+  quadratures.reserve(1000);
   for (const auto xi_quadrature : all_quadratures()) {
     if (xi_quadrature == Quadrature::Uninitialized) {
       continue;
@@ -315,7 +325,7 @@ void test_3d(const gsl::not_null<std::mt19937*> generator) {
       }
     }
   }
-  REQUIRE(quadratures.size() == 729);
+  REQUIRE(quadratures.size() == 1000);
 
   for (const auto basis : bases) {
     CAPTURE(basis);
