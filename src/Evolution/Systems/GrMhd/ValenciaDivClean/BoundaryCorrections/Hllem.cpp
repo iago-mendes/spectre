@@ -980,8 +980,16 @@ void Hllem::dg_boundary_terms(
   for (const size_t wave : restored_waves) {
     const DataVector ok =
         gsl::at(wave_ok, wave) * (1.0 - gsl::at(in_cluster, wave));
-    const DataVector inv_diagonal =
-        ok / (gsl::at(diagonal, wave) + (1.0 - ok));  // 1/diag where ok, else 0
+    // 1/diag where ok, else 0. Selected per point: ok / (diag + (1 - ok))
+    // divides 0 by 0 (FE_INVALID) at a dropped wave whose diag is exactly -1,
+    // e.g. unit eigenvectors with l = -r. The same value wherever that
+    // expression is finite.
+    DataVector inv_diagonal{num_points, 0.0};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      if (ok[pt] > 0.0) {
+        inv_diagonal[pt] = 1.0 / gsl::at(diagonal, wave)[pt];
+      }
+    }
     DataVector ldu{num_points, 0.0};
     for (size_t n = 0; n < 9; ++n) {
       ldu += projectors.get(wave, n) * gsl::at(du, n);
