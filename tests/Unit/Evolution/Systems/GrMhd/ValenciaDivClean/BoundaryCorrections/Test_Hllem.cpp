@@ -17,6 +17,7 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/TaggedTuple.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/BoundaryCorrection.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
@@ -153,7 +154,9 @@ struct Packaged {
   tnsr::i<DataVector, 3> nf_tilde_s{};
   tnsr::I<DataVector, 3> nf_tilde_b{};
   Scalar<DataVector> largest_outgoing{}, largest_ingoing{}, fast_outgoing{},
-      fast_ingoing{}, metric_flatness{};
+      fast_ingoing{}, lapse{};
+  tnsr::I<DataVector, 3> shift{};
+  tnsr::ii<DataVector, 3> spatial_metric{};
   tnsr::i<DataVector, 3> interface_unit_normal{};
   tnsr::I<DataVector, 3> interface_unit_normal_vector{};
   Scalar<DataVector> rest_mass_density{}, pressure{}, lorentz_factor{},
@@ -166,7 +169,8 @@ Packaged package_interface_state(
     const tnsr::i<DataVector, 3>& normal_covector,
     const tnsr::I<DataVector, 3>& normal_vector,
     const Scalar<DataVector>& lapse, const tnsr::I<DataVector, 3>& shift,
-    const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::optional<tnsr::ii<DataVector, 3>>& spatial_metric = {}) {
   Packaged packaged{};
   solver.dg_package_data(
       make_not_null(&packaged.tilde_d), make_not_null(&packaged.tilde_ye),
@@ -181,7 +185,9 @@ Packaged package_interface_state(
       make_not_null(&packaged.fast_outgoing),
       make_not_null(&packaged.fast_ingoing),
       make_not_null(&packaged.interface_unit_normal),
-      make_not_null(&packaged.metric_flatness),
+      make_not_null(&packaged.interface_unit_normal_vector),
+      make_not_null(&packaged.lapse), make_not_null(&packaged.shift),
+      make_not_null(&packaged.spatial_metric),
       make_not_null(&packaged.rest_mass_density),
       make_not_null(&packaged.spatial_velocity),
       make_not_null(&packaged.pressure),
@@ -191,10 +197,11 @@ Packaged package_interface_state(
       state.tilde_phi, state.flux_tilde_d, state.flux_tilde_ye,
       state.flux_tilde_tau, state.flux_tilde_s, state.flux_tilde_b,
       state.flux_tilde_phi, lapse, shift, state.spatial_velocity_one_form,
-      flat_spatial_metric(get(lapse).size()), state.rest_mass_density,
-      state.electron_fraction, state.temperature, state.spatial_velocity,
-      state.specific_internal_energy, state.pressure, state.lorentz_factor,
-      normal_covector, normal_vector, {}, {}, equation_of_state);
+      spatial_metric.value_or(flat_spatial_metric(get(lapse).size())),
+      state.rest_mass_density, state.electron_fraction, state.temperature,
+      state.spatial_velocity, state.specific_internal_energy, state.pressure,
+      state.lorentz_factor, normal_covector, normal_vector, {}, {},
+      equation_of_state);
   return packaged;
 }
 
@@ -207,12 +214,11 @@ Packaged package_interface_state_hll(
     const tnsr::i<DataVector, 3>& normal_covector,
     const tnsr::I<DataVector, 3>& normal_vector,
     const Scalar<DataVector>& lapse, const tnsr::I<DataVector, 3>& shift,
-    const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::optional<tnsr::ii<DataVector, 3>>& spatial_metric_in = {}) {
   Packaged packaged{};
-  tnsr::ii<DataVector, 3> spatial_metric{get(lapse).size(), 0.0};
-  for (size_t d = 0; d < 3; ++d) {
-    spatial_metric.get(d, d) = 1.0;
-  }
+  const tnsr::ii<DataVector, 3> spatial_metric =
+      spatial_metric_in.value_or(flat_spatial_metric(get(lapse).size()));
   solver.dg_package_data(
       make_not_null(&packaged.tilde_d), make_not_null(&packaged.tilde_ye),
       make_not_null(&packaged.tilde_tau), make_not_null(&packaged.tilde_s),
@@ -367,7 +373,9 @@ void test_strong_blast_states_stay_finite() {
               interior.nf_tilde_s, interior.nf_tilde_b, interior.nf_tilde_phi,
               interior.largest_outgoing, interior.largest_ingoing,
               interior.fast_outgoing, interior.fast_ingoing,
-              interior.interface_unit_normal, interior.metric_flatness,
+              interior.interface_unit_normal,
+              interior.interface_unit_normal_vector, interior.lapse,
+              interior.shift, interior.spatial_metric,
               interior.rest_mass_density, interior.spatial_velocity,
               interior.pressure, interior.lorentz_factor,
               interior.specific_internal_energy, exterior.tilde_d,
@@ -377,7 +385,9 @@ void test_strong_blast_states_stay_finite() {
               exterior.nf_tilde_b, exterior.nf_tilde_phi,
               exterior.largest_outgoing, exterior.largest_ingoing,
               exterior.fast_outgoing, exterior.fast_ingoing,
-              exterior.interface_unit_normal, exterior.metric_flatness,
+              exterior.interface_unit_normal,
+              exterior.interface_unit_normal_vector, exterior.lapse,
+              exterior.shift, exterior.spatial_metric,
               exterior.rest_mass_density, exterior.spatial_velocity,
               exterior.pressure, exterior.lorentz_factor,
               exterior.specific_internal_energy,
@@ -470,7 +480,8 @@ void report_when_denominator_floors_bind() {
         interior.nf_tilde_s, interior.nf_tilde_b, interior.nf_tilde_phi,
         interior.largest_outgoing, interior.largest_ingoing,
         interior.fast_outgoing, interior.fast_ingoing,
-        interior.interface_unit_normal, interior.metric_flatness,
+        interior.interface_unit_normal, interior.interface_unit_normal_vector,
+        interior.lapse, interior.shift, interior.spatial_metric,
         interior.rest_mass_density, interior.spatial_velocity,
         interior.pressure, interior.lorentz_factor,
         interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
@@ -479,7 +490,8 @@ void report_when_denominator_floors_bind() {
         exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
         exterior.nf_tilde_phi, exterior.largest_outgoing,
         exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
-        exterior.interface_unit_normal, exterior.metric_flatness,
+        exterior.interface_unit_normal, exterior.interface_unit_normal_vector,
+        exterior.lapse, exterior.shift, exterior.spatial_metric,
         exterior.rest_mass_density, exterior.spatial_velocity,
         exterior.pressure, exterior.lorentz_factor,
         exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
@@ -557,7 +569,8 @@ void test_vanishing_tangential_field_stays_finite() {
           interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
           interior.largest_ingoing, interior.fast_outgoing,
           interior.fast_ingoing, interior.interface_unit_normal,
-          interior.metric_flatness, interior.rest_mass_density,
+          interior.interface_unit_normal_vector, interior.lapse, interior.shift,
+          interior.spatial_metric, interior.rest_mass_density,
           interior.spatial_velocity, interior.pressure, interior.lorentz_factor,
           interior.specific_internal_energy, exterior.tilde_d,
           exterior.tilde_ye, exterior.tilde_tau, exterior.tilde_s,
@@ -566,7 +579,8 @@ void test_vanishing_tangential_field_stays_finite() {
           exterior.nf_tilde_b, exterior.nf_tilde_phi, exterior.largest_outgoing,
           exterior.largest_ingoing, exterior.fast_outgoing,
           exterior.fast_ingoing, exterior.interface_unit_normal,
-          exterior.metric_flatness, exterior.rest_mass_density,
+          exterior.interface_unit_normal_vector, exterior.lapse, exterior.shift,
+          exterior.spatial_metric, exterior.rest_mass_density,
           exterior.spatial_velocity, exterior.pressure, exterior.lorentz_factor,
           exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
           *equation_of_state);
@@ -653,7 +667,8 @@ void test_single_wave_pairs(
         interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
         interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
         interior.largest_ingoing, interior.fast_outgoing, interior.fast_ingoing,
-        interior.interface_unit_normal, interior.metric_flatness,
+        interior.interface_unit_normal, interior.interface_unit_normal_vector,
+        interior.lapse, interior.shift, interior.spatial_metric,
         interior.rest_mass_density, interior.spatial_velocity,
         interior.pressure, interior.lorentz_factor,
         interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
@@ -662,7 +677,8 @@ void test_single_wave_pairs(
         exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
         exterior.nf_tilde_phi, exterior.largest_outgoing,
         exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
-        exterior.interface_unit_normal, exterior.metric_flatness,
+        exterior.interface_unit_normal, exterior.interface_unit_normal_vector,
+        exterior.lapse, exterior.shift, exterior.spatial_metric,
         exterior.rest_mass_density, exterior.spatial_velocity,
         exterior.pressure, exterior.lorentz_factor,
         exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
@@ -792,42 +808,6 @@ void test_stationary_contact_is_exact(const double density_ratio,
   auto normal_vector_ext = tnsr::I<DataVector, 3>{num_points, 0.0};
   get<0>(normal_vector_ext) = DataVector{num_points, -1.0};
 
-  const auto package = [&](const bc::Hllem& solver, const InterfaceState& state,
-                           const tnsr::i<DataVector, 3>& normal_covector,
-                           const tnsr::I<DataVector, 3>& normal_vector) {
-    Packaged packaged{};
-    solver.dg_package_data(
-        make_not_null(&packaged.tilde_d), make_not_null(&packaged.tilde_ye),
-        make_not_null(&packaged.tilde_tau), make_not_null(&packaged.tilde_s),
-        make_not_null(&packaged.tilde_b), make_not_null(&packaged.tilde_phi),
-        make_not_null(&packaged.nf_tilde_d),
-        make_not_null(&packaged.nf_tilde_ye),
-        make_not_null(&packaged.nf_tilde_tau),
-        make_not_null(&packaged.nf_tilde_s),
-        make_not_null(&packaged.nf_tilde_b),
-        make_not_null(&packaged.nf_tilde_phi),
-        make_not_null(&packaged.largest_outgoing),
-        make_not_null(&packaged.largest_ingoing),
-        make_not_null(&packaged.fast_outgoing),
-        make_not_null(&packaged.fast_ingoing),
-        make_not_null(&packaged.interface_unit_normal),
-        make_not_null(&packaged.metric_flatness),
-        make_not_null(&packaged.rest_mass_density),
-        make_not_null(&packaged.spatial_velocity),
-        make_not_null(&packaged.pressure),
-        make_not_null(&packaged.lorentz_factor),
-        make_not_null(&packaged.specific_internal_energy), state.tilde_d,
-        state.tilde_ye, state.tilde_tau, state.tilde_s, state.tilde_b,
-        state.tilde_phi, state.flux_tilde_d, state.flux_tilde_ye,
-        state.flux_tilde_tau, state.flux_tilde_s, state.flux_tilde_b,
-        state.flux_tilde_phi, lapse, shift, state.spatial_velocity_one_form,
-        flat_spatial_metric(num_points), state.rest_mass_density,
-        state.electron_fraction, state.temperature, state.spatial_velocity,
-        state.specific_internal_energy, state.pressure, state.lorentz_factor,
-        normal_covector, normal_vector, {}, {}, *equation_of_state);
-    return packaged;
-  };
-
   // Restoring the contact must give the exact flux; restoring only the Alfven
   // waves must NOT (the contact jump is then left to the HLL diffusion). That
   // contrast is the point of the test: it shows the cancellation comes from the
@@ -860,7 +840,8 @@ void test_stationary_contact_is_exact(const double density_ratio,
         interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
         interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
         interior.largest_ingoing, interior.fast_outgoing, interior.fast_ingoing,
-        interior.interface_unit_normal, interior.metric_flatness,
+        interior.interface_unit_normal, interior.interface_unit_normal_vector,
+        interior.lapse, interior.shift, interior.spatial_metric,
         interior.rest_mass_density, interior.spatial_velocity,
         interior.pressure, interior.lorentz_factor,
         interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
@@ -869,7 +850,8 @@ void test_stationary_contact_is_exact(const double density_ratio,
         exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
         exterior.nf_tilde_phi, exterior.largest_outgoing,
         exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
-        exterior.interface_unit_normal, exterior.metric_flatness,
+        exterior.interface_unit_normal, exterior.interface_unit_normal_vector,
+        exterior.lapse, exterior.shift, exterior.spatial_metric,
         exterior.rest_mass_density, exterior.spatial_velocity,
         exterior.pressure, exterior.lorentz_factor,
         exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
@@ -1068,11 +1050,6 @@ void test_no_restored_waves_reduces_to_hll(
   CHECK(get(hllem_ext.fast_outgoing)[0] ==
         approx(get(hll_ext.fast_outgoing)[0]));
   CHECK(get(hllem_ext.fast_ingoing)[0] == approx(get(hll_ext.fast_ingoing)[0]));
-  // Premise 2: the background really is flat, so `Hllem` takes its anti-
-  // diffusion path rather than the curved-space HLL fallback -- otherwise the
-  // agreement below would be the fallback's, and would say nothing.
-  CHECK(get(hllem_int.metric_flatness)[0] < 1.0e-12);
-  CHECK(get(hllem_ext.metric_flatness)[0] < 1.0e-12);
 
   // The solvers' own bounds, rebuilt here.
   // Narrow (what `Hll` uses): the two sides' own fast speeds.
@@ -1203,8 +1180,11 @@ void test_no_restored_waves_reduces_to_hll(
   };
   const std::array<double, 10> predicted_hll =
       reference_correction(fast_max_narrow, fast_min_narrow);
+  // `Hllem` takes `Hll`'s bounds, so `None` is predicted by the same narrow
+  // fan (the wide envelope above is what it used before; kept to show the
+  // difference it made).
   const std::array<double, 10> predicted_none =
-      reference_correction(fast_max_wide, fast_min_wide);
+      reference_correction(fast_max_narrow, fast_min_narrow);
 
   // Run the two solvers on the same packaged data.
   const auto run_hll = [&]() {
@@ -1247,7 +1227,8 @@ void test_no_restored_waves_reduces_to_hll(
         hllem_int.nf_tilde_s, hllem_int.nf_tilde_b, hllem_int.nf_tilde_phi,
         hllem_int.largest_outgoing, hllem_int.largest_ingoing,
         hllem_int.fast_outgoing, hllem_int.fast_ingoing,
-        hllem_int.interface_unit_normal, hllem_int.metric_flatness,
+        hllem_int.interface_unit_normal, hllem_int.interface_unit_normal_vector,
+        hllem_int.lapse, hllem_int.shift, hllem_int.spatial_metric,
         hllem_int.rest_mass_density, hllem_int.spatial_velocity,
         hllem_int.pressure, hllem_int.lorentz_factor,
         hllem_int.specific_internal_energy, hllem_ext.tilde_d,
@@ -1257,7 +1238,8 @@ void test_no_restored_waves_reduces_to_hll(
         hllem_ext.nf_tilde_b, hllem_ext.nf_tilde_phi,
         hllem_ext.largest_outgoing, hllem_ext.largest_ingoing,
         hllem_ext.fast_outgoing, hllem_ext.fast_ingoing,
-        hllem_ext.interface_unit_normal, hllem_ext.metric_flatness,
+        hllem_ext.interface_unit_normal, hllem_ext.interface_unit_normal_vector,
+        hllem_ext.lapse, hllem_ext.shift, hllem_ext.spatial_metric,
         hllem_ext.rest_mass_density, hllem_ext.spatial_velocity,
         hllem_ext.pressure, hllem_ext.lorentz_factor,
         hllem_ext.specific_internal_energy, ::dg::Formulation::StrongInertial,
@@ -1285,7 +1267,7 @@ void test_no_restored_waves_reduces_to_hll(
     CHECK(gsl::at(hll_correction, n) ==
           local_approx(gsl::at(predicted_hll, n)));
   }
-  // And `Hllem`-`None` is that same HLL flux with the three-sided bounds -- no
+  // And `Hllem`-`None` is that same HLL flux, with the same bounds -- no
   // anti-diffusion anywhere in it.
   double none_deviation = 0.0;
   double envelope_difference = 0.0;
@@ -1392,7 +1374,8 @@ std::array<double, 10> hllem_correction(
       interior.nf_tilde_ye, interior.nf_tilde_tau, interior.nf_tilde_s,
       interior.nf_tilde_b, interior.nf_tilde_phi, interior.largest_outgoing,
       interior.largest_ingoing, interior.fast_outgoing, interior.fast_ingoing,
-      interior.interface_unit_normal, interior.metric_flatness,
+      interior.interface_unit_normal, interior.interface_unit_normal_vector,
+      interior.lapse, interior.shift, interior.spatial_metric,
       interior.rest_mass_density, interior.spatial_velocity, interior.pressure,
       interior.lorentz_factor, interior.specific_internal_energy,
       exterior.tilde_d, exterior.tilde_ye, exterior.tilde_tau, exterior.tilde_s,
@@ -1400,7 +1383,8 @@ std::array<double, 10> hllem_correction(
       exterior.nf_tilde_ye, exterior.nf_tilde_tau, exterior.nf_tilde_s,
       exterior.nf_tilde_b, exterior.nf_tilde_phi, exterior.largest_outgoing,
       exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
-      exterior.interface_unit_normal, exterior.metric_flatness,
+      exterior.interface_unit_normal, exterior.interface_unit_normal_vector,
+      exterior.lapse, exterior.shift, exterior.spatial_metric,
       exterior.rest_mass_density, exterior.spatial_velocity, exterior.pressure,
       exterior.lorentz_factor, exterior.specific_internal_energy,
       ::dg::Formulation::StrongInertial, equation_of_state);
@@ -1686,6 +1670,286 @@ void test_fan_admissibility_guard() {
   CHECK(engaged_somewhere);
 }
 
+// `Hllem`'s HLL part is `Hll`'s flux on every face, so with no restored waves
+// it equals `Hll` on curved faces too, built from each side's own lapse, shift
+// and spatial metric. The oracle is `Hll` itself, packaging the same inputs.
+// Two faces: one curved through the lapse and shift, one only through the
+// spatial metric.
+void test_curved_face_is_hll() {
+  const double adiabatic_index = 5.0 / 3.0;
+  const auto equation_of_state =
+      EquationsOfState::IdealFluid<true>{adiabatic_index}.promote_to_3d_eos();
+  const size_t num_points = 1;
+  const auto state_int = make_state(1.0, 1.0, {{0.3, -0.1, 0.05}},
+                                    {{0.6, 0.4, -0.2}}, adiabatic_index, 1);
+  const auto state_ext = make_state(0.4, 0.3, {{-0.2, 0.15, 0.0}},
+                                    {{0.6, -0.3, 0.25}}, adiabatic_index, 1);
+  auto normal_covector_int = tnsr::i<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_covector_int) = DataVector{num_points, 1.0};
+  auto normal_vector_int = tnsr::I<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_vector_int) = DataVector{num_points, 1.0};
+  auto normal_covector_ext = tnsr::i<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_covector_ext) = DataVector{num_points, -1.0};
+  auto normal_vector_ext = tnsr::I<DataVector, 3>{num_points, 0.0};
+  get<0>(normal_vector_ext) = DataVector{num_points, -1.0};
+
+  struct Background {
+    Scalar<DataVector> lapse;
+    tnsr::I<DataVector, 3> shift;
+    tnsr::ii<DataVector, 3> spatial_metric;
+  };
+  std::vector<Background> backgrounds{};
+  {
+    Background lapse_and_shift{Scalar<DataVector>{num_points, 1.3},
+                               tnsr::I<DataVector, 3>{num_points, 0.0},
+                               flat_spatial_metric(num_points)};
+    get<0>(lapse_and_shift.shift) = 0.1;
+    get<1>(lapse_and_shift.shift) = -0.05;
+    get<2>(lapse_and_shift.shift) = 0.02;
+    backgrounds.push_back(std::move(lapse_and_shift));
+    Background metric_only{Scalar<DataVector>{num_points, 1.0},
+                           tnsr::I<DataVector, 3>{num_points, 0.0},
+                           flat_spatial_metric(num_points)};
+    get<0, 0>(metric_only.spatial_metric) = 1.2;
+    get<0, 1>(metric_only.spatial_metric) = 0.1;
+    backgrounds.push_back(std::move(metric_only));
+  }
+
+  const bc::Hll hll_solver{1.0e-30, 1.0e-8};
+  for (const auto& background : backgrounds) {
+    const auto hll_int = package_interface_state_hll(
+        hll_solver, state_int, normal_covector_int, normal_vector_int,
+        background.lapse, background.shift, *equation_of_state,
+        background.spatial_metric);
+    const auto hll_ext = package_interface_state_hll(
+        hll_solver, state_ext, normal_covector_ext, normal_vector_ext,
+        background.lapse, background.shift, *equation_of_state,
+        background.spatial_metric);
+    Scalar<DataVector> c_d{num_points, 0.0}, c_ye{num_points, 0.0},
+        c_tau{num_points, 0.0}, c_phi{num_points, 0.0};
+    tnsr::i<DataVector, 3> c_s{num_points, 0.0};
+    tnsr::I<DataVector, 3> c_b{num_points, 0.0};
+    bc::Hll::dg_boundary_terms(
+        make_not_null(&c_d), make_not_null(&c_ye), make_not_null(&c_tau),
+        make_not_null(&c_s), make_not_null(&c_b), make_not_null(&c_phi),
+        hll_int.tilde_d, hll_int.tilde_ye, hll_int.tilde_tau, hll_int.tilde_s,
+        hll_int.tilde_b, hll_int.tilde_phi, hll_int.nf_tilde_d,
+        hll_int.nf_tilde_ye, hll_int.nf_tilde_tau, hll_int.nf_tilde_s,
+        hll_int.nf_tilde_b, hll_int.nf_tilde_phi, hll_int.largest_outgoing,
+        hll_int.largest_ingoing, hll_int.fast_outgoing, hll_int.fast_ingoing,
+        hll_int.interface_unit_normal, hll_int.interface_unit_normal_vector,
+        hll_ext.tilde_d, hll_ext.tilde_ye, hll_ext.tilde_tau, hll_ext.tilde_s,
+        hll_ext.tilde_b, hll_ext.tilde_phi, hll_ext.nf_tilde_d,
+        hll_ext.nf_tilde_ye, hll_ext.nf_tilde_tau, hll_ext.nf_tilde_s,
+        hll_ext.nf_tilde_b, hll_ext.nf_tilde_phi, hll_ext.largest_outgoing,
+        hll_ext.largest_ingoing, hll_ext.fast_outgoing, hll_ext.fast_ingoing,
+        hll_ext.interface_unit_normal, hll_ext.interface_unit_normal_vector,
+        ::dg::Formulation::StrongInertial);
+    const auto hll_correction =
+        flatten_correction(c_d, c_ye, c_tau, c_phi, c_s, c_b);
+    double scale = 0.0;
+    for (size_t n = 0; n < 10; ++n) {
+      scale = std::max(scale, std::abs(gsl::at(hll_correction, n)));
+    }
+    CHECK(scale > 1.0e-3);
+    Approx approx = Approx::custom().epsilon(1.0e-14).scale(scale);
+
+    for (const auto waves : {bc::HllemWaves::None}) {
+      for (const bool projection : {false, true}) {
+        CAPTURE(waves);
+        CAPTURE(projection);
+        const bc::Hllem solver{waves,   projection, 1.0e-10,
+                               1.0e-30, 1.0e-8,     1.0e3};
+        const auto hllem_int = package_interface_state(
+            solver, state_int, normal_covector_int, normal_vector_int,
+            background.lapse, background.shift, *equation_of_state,
+            background.spatial_metric);
+        const auto hllem_ext = package_interface_state(
+            solver, state_ext, normal_covector_ext, normal_vector_ext,
+            background.lapse, background.shift, *equation_of_state,
+            background.spatial_metric);
+        Scalar<DataVector> e_d{num_points, 0.0}, e_ye{num_points, 0.0},
+            e_tau{num_points, 0.0}, e_phi{num_points, 0.0};
+        tnsr::i<DataVector, 3> e_s{num_points, 0.0};
+        tnsr::I<DataVector, 3> e_b{num_points, 0.0};
+        solver.dg_boundary_terms(
+            make_not_null(&e_d), make_not_null(&e_ye), make_not_null(&e_tau),
+            make_not_null(&e_s), make_not_null(&e_b), make_not_null(&e_phi),
+            hllem_int.tilde_d, hllem_int.tilde_ye, hllem_int.tilde_tau,
+            hllem_int.tilde_s, hllem_int.tilde_b, hllem_int.tilde_phi,
+            hllem_int.nf_tilde_d, hllem_int.nf_tilde_ye, hllem_int.nf_tilde_tau,
+            hllem_int.nf_tilde_s, hllem_int.nf_tilde_b, hllem_int.nf_tilde_phi,
+            hllem_int.largest_outgoing, hllem_int.largest_ingoing,
+            hllem_int.fast_outgoing, hllem_int.fast_ingoing,
+            hllem_int.interface_unit_normal,
+            hllem_int.interface_unit_normal_vector, hllem_int.lapse,
+            hllem_int.shift, hllem_int.spatial_metric,
+            hllem_int.rest_mass_density, hllem_int.spatial_velocity,
+            hllem_int.pressure, hllem_int.lorentz_factor,
+            hllem_int.specific_internal_energy, hllem_ext.tilde_d,
+            hllem_ext.tilde_ye, hllem_ext.tilde_tau, hllem_ext.tilde_s,
+            hllem_ext.tilde_b, hllem_ext.tilde_phi, hllem_ext.nf_tilde_d,
+            hllem_ext.nf_tilde_ye, hllem_ext.nf_tilde_tau, hllem_ext.nf_tilde_s,
+            hllem_ext.nf_tilde_b, hllem_ext.nf_tilde_phi,
+            hllem_ext.largest_outgoing, hllem_ext.largest_ingoing,
+            hllem_ext.fast_outgoing, hllem_ext.fast_ingoing,
+            hllem_ext.interface_unit_normal,
+            hllem_ext.interface_unit_normal_vector, hllem_ext.lapse,
+            hllem_ext.shift, hllem_ext.spatial_metric,
+            hllem_ext.rest_mass_density, hllem_ext.spatial_velocity,
+            hllem_ext.pressure, hllem_ext.lorentz_factor,
+            hllem_ext.specific_internal_energy,
+            ::dg::Formulation::StrongInertial, *equation_of_state);
+        const auto hllem_correction =
+            flatten_correction(e_d, e_ye, e_tau, e_phi, e_s, e_b);
+        for (size_t n = 0; n < 10; ++n) {
+          CAPTURE(n);
+          CHECK(gsl::at(hllem_correction, n) ==
+                approx(gsl::at(hll_correction, n)));
+        }
+      }
+    }
+  }
+}
+
+// The stationary contact on a CURVED face: a state at rest (v = 0, zero shift)
+// with uniform pressure and magnetic field and a density jump, on a background
+// with lapse 1.3 and a non-diagonal spatial metric. The two sides' physical
+// fluxes are equal, so the exact flux has no diffusion; restoring the contact
+// must cancel `Hll`'s diffusion of the density jump to round-off, as it does
+// in flat space (test_stationary_contact_is_exact). This needs the averaged
+// state and its eigensystem built with the face's metric.
+void test_curved_stationary_contact_is_exact() {
+  const double adiabatic_index = 5.0 / 3.0;
+  const auto equation_of_state =
+      EquationsOfState::IdealFluid<true>{adiabatic_index}.promote_to_3d_eos();
+  const size_t num_points = 1;
+  const Scalar<DataVector> lapse{num_points, 1.3};
+  const tnsr::I<DataVector, 3> shift{num_points, 0.0};
+  tnsr::ii<DataVector, 3> spatial_metric = flat_spatial_metric(num_points);
+  get<0, 0>(spatial_metric) = 1.2;
+  get<0, 1>(spatial_metric) = 0.1;
+  get<1, 2>(spatial_metric) = -0.05;
+  const auto [det_spatial_metric, inv_spatial_metric] =
+      determinant_and_inverse(spatial_metric);
+  const Scalar<DataVector> sqrt_det_spatial_metric{
+      sqrt(get(det_spatial_metric))};
+
+  const auto make_curved_state_at_rest = [&](const double rest_mass_density) {
+    const double pressure = 1.0;
+    InterfaceState state{};
+    state.rest_mass_density = Scalar<DataVector>{num_points, rest_mass_density};
+    state.electron_fraction = Scalar<DataVector>{num_points, 0.5};
+    state.pressure = Scalar<DataVector>{num_points, pressure};
+    const double specific_internal_energy =
+        pressure / ((adiabatic_index - 1.0) * rest_mass_density);
+    state.specific_internal_energy =
+        Scalar<DataVector>{num_points, specific_internal_energy};
+    state.temperature = Scalar<DataVector>{
+        num_points, (adiabatic_index - 1.0) * specific_internal_energy};
+    state.lorentz_factor = Scalar<DataVector>{num_points, 1.0};
+    state.spatial_velocity = tnsr::I<DataVector, 3>{num_points, 0.0};
+    state.spatial_velocity_one_form = tnsr::i<DataVector, 3>{num_points, 0.0};
+    state.magnetic_field = tnsr::I<DataVector, 3>{num_points, 0.0};
+    get<0>(state.magnetic_field) = 0.5;
+    get<1>(state.magnetic_field) = 0.3;
+    get<2>(state.magnetic_field) = 0.2;
+    const Scalar<DataVector> divergence_cleaning_field{num_points, 0.0};
+    grmhd::ValenciaDivClean::ConservativeFromPrimitive::apply(
+        make_not_null(&state.tilde_d), make_not_null(&state.tilde_ye),
+        make_not_null(&state.tilde_tau), make_not_null(&state.tilde_s),
+        make_not_null(&state.tilde_b), make_not_null(&state.tilde_phi),
+        state.rest_mass_density, state.electron_fraction,
+        state.specific_internal_energy, state.pressure, state.spatial_velocity,
+        state.lorentz_factor, state.magnetic_field, sqrt_det_spatial_metric,
+        spatial_metric, divergence_cleaning_field);
+    grmhd::ValenciaDivClean::ComputeFluxes::apply(
+        make_not_null(&state.flux_tilde_d), make_not_null(&state.flux_tilde_ye),
+        make_not_null(&state.flux_tilde_tau),
+        make_not_null(&state.flux_tilde_s), make_not_null(&state.flux_tilde_b),
+        make_not_null(&state.flux_tilde_phi), state.tilde_d, state.tilde_ye,
+        state.tilde_tau, state.tilde_s, state.tilde_b, state.tilde_phi, lapse,
+        shift, sqrt_det_spatial_metric, spatial_metric, inv_spatial_metric,
+        state.pressure, state.spatial_velocity, state.lorentz_factor,
+        state.magnetic_field);
+    return state;
+  };
+  const auto state_int = make_curved_state_at_rest(1.0);
+  const auto state_ext = make_curved_state_at_rest(10.0);
+
+  // The unit normal along x: n_i = (1, 0, 0) / sqrt(gamma^xx), n^i = gamma^ij
+  // n_j.
+  tnsr::i<DataVector, 3> normal_covector_int{num_points, 0.0};
+  get<0>(normal_covector_int) = 1.0 / sqrt(get<0, 0>(inv_spatial_metric));
+  tnsr::I<DataVector, 3> normal_vector_int{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    normal_vector_int.get(i) =
+        inv_spatial_metric.get(i, 0) * get<0>(normal_covector_int);
+  }
+  tnsr::i<DataVector, 3> normal_covector_ext{num_points, 0.0};
+  tnsr::I<DataVector, 3> normal_vector_ext{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    normal_covector_ext.get(i) = -normal_covector_int.get(i);
+    normal_vector_ext.get(i) = -normal_vector_int.get(i);
+  }
+
+  for (const auto waves :
+       {bc::HllemWaves::Contact, bc::HllemWaves::ContactSlow,
+        bc::HllemWaves::ContactAlfven, bc::HllemWaves::All}) {
+    CAPTURE(waves);
+    const bc::Hllem solver{waves, false, 1.0e-10, 1.0e-30, 1.0e-8};
+    const auto interior = package_interface_state(
+        solver, state_int, normal_covector_int, normal_vector_int, lapse, shift,
+        *equation_of_state, spatial_metric);
+    const auto exterior = package_interface_state(
+        solver, state_ext, normal_covector_ext, normal_vector_ext, lapse, shift,
+        *equation_of_state, spatial_metric);
+    Scalar<DataVector> c_d{num_points, 0.0}, c_ye{num_points, 0.0},
+        c_tau{num_points, 0.0}, c_phi{num_points, 0.0};
+    tnsr::i<DataVector, 3> c_s{num_points, 0.0};
+    tnsr::I<DataVector, 3> c_b{num_points, 0.0};
+    solver.dg_boundary_terms(
+        make_not_null(&c_d), make_not_null(&c_ye), make_not_null(&c_tau),
+        make_not_null(&c_s), make_not_null(&c_b), make_not_null(&c_phi),
+        interior.tilde_d, interior.tilde_ye, interior.tilde_tau,
+        interior.tilde_s, interior.tilde_b, interior.tilde_phi,
+        interior.nf_tilde_d, interior.nf_tilde_ye, interior.nf_tilde_tau,
+        interior.nf_tilde_s, interior.nf_tilde_b, interior.nf_tilde_phi,
+        interior.largest_outgoing, interior.largest_ingoing,
+        interior.fast_outgoing, interior.fast_ingoing,
+        interior.interface_unit_normal, interior.interface_unit_normal_vector,
+        interior.lapse, interior.shift, interior.spatial_metric,
+        interior.rest_mass_density, interior.spatial_velocity,
+        interior.pressure, interior.lorentz_factor,
+        interior.specific_internal_energy, exterior.tilde_d, exterior.tilde_ye,
+        exterior.tilde_tau, exterior.tilde_s, exterior.tilde_b,
+        exterior.tilde_phi, exterior.nf_tilde_d, exterior.nf_tilde_ye,
+        exterior.nf_tilde_tau, exterior.nf_tilde_s, exterior.nf_tilde_b,
+        exterior.nf_tilde_phi, exterior.largest_outgoing,
+        exterior.largest_ingoing, exterior.fast_outgoing, exterior.fast_ingoing,
+        exterior.interface_unit_normal, exterior.interface_unit_normal_vector,
+        exterior.lapse, exterior.shift, exterior.spatial_metric,
+        exterior.rest_mass_density, exterior.spatial_velocity,
+        exterior.pressure, exterior.lorentz_factor,
+        exterior.specific_internal_energy, ::dg::Formulation::StrongInertial,
+        *equation_of_state);
+    // `Hll`'s diffusion of the density jump, with its fast bounds.
+    const double fast_max = std::max(
+        {0.0, get(interior.fast_outgoing)[0], -get(exterior.fast_ingoing)[0]});
+    const double fast_min = std::min(
+        {0.0, get(interior.fast_ingoing)[0], -get(exterior.fast_outgoing)[0]});
+    const double scale =
+        std::abs(fast_max * fast_min / (fast_max - fast_min) *
+                 (get(exterior.tilde_d)[0] - get(interior.tilde_d)[0]));
+    CAPTURE(scale);
+    CHECK(scale > 0.1);
+    CAPTURE(get(c_d)[0]);
+    CAPTURE(get(c_tau)[0]);
+    CHECK(std::abs(get(c_d)[0]) < 1.0e-10 * scale);
+    CHECK(std::abs(get(c_tau)[0]) < 1.0e-10 * scale);
+  }
+}
+
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                   "[Unit][GrMhd]") {
   PUPable_reg(bc::Hllem);
@@ -1693,10 +1957,22 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
 
   using system = grmhd::ValenciaDivClean::System;
 
+  // Physical states: HLLEM builds its eigensystem on every face, curved or not,
+  // so the random states must be ones it accepts (positive density, energy,
+  // pressure and temperature; subluminal velocity with a consistent Lorentz
+  // factor), as in Test_Marquina.
   const tuples::TaggedTuple<
+      helpers::Tags::Range<hydro::Tags::RestMassDensity<DataVector>>,
+      helpers::Tags::Range<hydro::Tags::SpecificInternalEnergy<DataVector>>,
+      helpers::Tags::Range<hydro::Tags::Pressure<DataVector>>,
+      helpers::Tags::Range<hydro::Tags::Temperature<DataVector>>,
+      helpers::Tags::Range<
+          hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>,
       helpers::Tags::Range<gr::Tags::Lapse<DataVector>>,
       helpers::Tags::Range<gr::Tags::Shift<DataVector, 3>>>
-      ranges{std::array{0.3, 1.0}, std::array{0.01, 0.02}};
+      ranges{std::array{0.1, 1.0},  std::array{0.1, 1.0}, std::array{0.1, 1.0},
+             std::array{0.1, 1.0},  std::array{0.0, 0.3}, std::array{0.3, 1.0},
+             std::array{0.01, 0.02}};
   const tuples::TaggedTuple<hydro::Tags::GrmhdEquationOfState> volume_data{
       EquationsOfState::IdealFluid<true>{4.0 / 3.0}.promote_to_3d_eos()};
 
@@ -1707,7 +1983,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
     TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
         make_not_null(&gen), bc::Hllem{waves, true, 1.0e-10, 1.0e-30, 1.0e-8},
         Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-        volume_data, ranges);
+        volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
   }
 
   const auto hllem =
@@ -1723,7 +1999,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen), dynamic_cast<const bc::Hllem&>(*hllem),
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-      volume_data, ranges);
+      volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
 
   // `None` is reachable from an input file, and it really is a distinct
   // option value (not silently aliased onto another wave set).
@@ -1854,13 +2130,13 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
       make_not_null(&gen),
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-3, 1.0e-30, 1.0e-8},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-      volume_data, ranges);
+      volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
   // ... and so is the conditioning guard
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen),
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
-      volume_data, ranges);
+      volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
 
   // HLLEM must preserve a stationary contact exactly at ANY jump strength, not
   // just in the linear limit -- that is the property that puts it on the same
@@ -1904,5 +2180,7 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   test_vanishing_tangential_field_stays_finite();
   test_strong_blast_states_stay_finite();
   test_fan_admissibility_guard();
+  test_curved_face_is_hll();
+  test_curved_stationary_contact_is_exact();
 }
 }  // namespace

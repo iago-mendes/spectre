@@ -172,9 +172,14 @@ std::ostream& operator<<(std::ostream& os, HllemWaves waves);
  * (`UseComplementaryProjection`) that would instead restore the collapsed
  * subspace as a block is disabled by default because it removes the dissipation
  * that stabilizes those transverse modes at sharp shears (see its help string).
- * The fan is reconstructed assuming flat space (the regime of the relativistic
- * M&M tests) with an HLL fallback for curved backgrounds and non-finite
- * results.
+ * The HLL part is `Hll`'s flux, with its bounds: each side's own
+ * fast-magnetosonic speed (lapse, shift and spatial metric included) for the
+ * MHD variables, and the light speed for the divergence-cleaning subsystem.
+ * HLLEM keeps HLL's intermediate state, the integral average of the fan, and
+ * adds the anti-diffusion of the restored waves, whose eigensystem is built at
+ * an averaged state with the face's spatial metric; their speeds are
+ * \f$\alpha \lambda_k - \beta_n\f$. Where the eigensystem is not finite
+ * the flux is `Hll`'s.
  */
 class Hllem final : public evolution::BoundaryCorrection {
  public:
@@ -199,8 +204,19 @@ class Hllem final : public evolution::BoundaryCorrection {
   struct InterfaceUnitNormal : db::SimpleTag {
     using type = tnsr::i<DataVector, 3, Frame::Inertial>;
   };
-  struct MetricFlatness : db::SimpleTag {
+  struct InterfaceUnitNormalVector : db::SimpleTag {
+    using type = tnsr::I<DataVector, 3, Frame::Inertial>;
+  };
+  /// The face's lapse, shift and spatial metric, for the eigensystem of the
+  /// averaged state and its speeds.
+  struct InterfaceLapse : db::SimpleTag {
     using type = Scalar<DataVector>;
+  };
+  struct InterfaceShift : db::SimpleTag {
+    using type = tnsr::I<DataVector, 3, Frame::Inertial>;
+  };
+  struct InterfaceSpatialMetric : db::SimpleTag {
+    using type = tnsr::ii<DataVector, 3, Frame::Inertial>;
   };
 
   struct WavesToRestore {
@@ -314,7 +330,8 @@ class Hllem final : public evolution::BoundaryCorrection {
       ::Tags::NormalDotFlux<Tags::TildeB<Frame::Inertial>>,
       ::Tags::NormalDotFlux<Tags::TildePhi>, LargestOutgoingCharSpeed,
       LargestIngoingCharSpeed, FastOutgoingCharSpeed, FastIngoingCharSpeed,
-      InterfaceUnitNormal, MetricFlatness,
+      InterfaceUnitNormal, InterfaceUnitNormalVector, InterfaceLapse,
+      InterfaceShift, InterfaceSpatialMetric,
       hydro::Tags::RestMassDensity<DataVector>,
       hydro::Tags::SpatialVelocity<DataVector, 3>,
       hydro::Tags::Pressure<DataVector>, hydro::Tags::LorentzFactor<DataVector>,
@@ -359,7 +376,12 @@ class Hllem final : public evolution::BoundaryCorrection {
       gsl::not_null<Scalar<DataVector>*> packaged_fast_ingoing_char_speed,
       gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
           packaged_interface_unit_normal,
-      gsl::not_null<Scalar<DataVector>*> packaged_metric_flatness,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+          packaged_interface_unit_normal_vector,
+      gsl::not_null<Scalar<DataVector>*> packaged_lapse,
+      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> packaged_shift,
+      gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
+          packaged_spatial_metric,
       gsl::not_null<Scalar<DataVector>*> packaged_rest_mass_density,
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
           packaged_spatial_velocity,
@@ -396,7 +418,7 @@ class Hllem final : public evolution::BoundaryCorrection {
       const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
       const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
       const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
-      /*mesh_velocity*/,
+          mesh_velocity,
       const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state)
       const;
@@ -429,7 +451,11 @@ class Hllem final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& fast_outgoing_char_speed_int,
       const Scalar<DataVector>& fast_ingoing_char_speed_int,
       const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_int,
-      const Scalar<DataVector>& metric_flatness_int,
+      const tnsr::I<DataVector, 3, Frame::Inertial>&
+          interface_unit_normal_vector_int,
+      const Scalar<DataVector>& lapse_int,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& shift_int,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric_int,
       const Scalar<DataVector>& rest_mass_density_int,
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_int,
       const Scalar<DataVector>& pressure_int,
@@ -454,7 +480,11 @@ class Hllem final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& fast_outgoing_char_speed_ext,
       const Scalar<DataVector>& fast_ingoing_char_speed_ext,
       const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_ext,
-      const Scalar<DataVector>& metric_flatness_ext,
+      const tnsr::I<DataVector, 3, Frame::Inertial>&
+          interface_unit_normal_vector_ext,
+      const Scalar<DataVector>& lapse_ext,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& shift_ext,
+      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric_ext,
       const Scalar<DataVector>& rest_mass_density_ext,
       const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_ext,
       const Scalar<DataVector>& pressure_ext,
@@ -490,8 +520,7 @@ struct Options::create_from_yaml<
   }
 };
 template <>
-grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves
-Options::create_from_yaml<
-    grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves>::
-    create<void>(const Options::Option& options);
+grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves Options::
+    create_from_yaml<grmhd::ValenciaDivClean::BoundaryCorrections::HllemWaves>::
+        create<void>(const Options::Option& options);
 /// \endcond

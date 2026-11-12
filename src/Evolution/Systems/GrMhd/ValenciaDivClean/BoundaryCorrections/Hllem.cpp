@@ -20,9 +20,12 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/Tensor/EagerMath/Determinant.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Characteristics.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/NormalDotFlux.hpp"
@@ -114,8 +117,26 @@ bool fan_guard_enabled() {
   return value == nullptr or std::strtol(value, nullptr, 10) != 0;
 }
 
-// Three necessary conditions on a flat-space RMHD state in the eigenvector
-// ordering [S_x, S_y, S_z, B_x, B_y, B_z, D, Tau]:
+// The face geometry at one point: the spatial metric gamma_ij, its inverse
+// and sqrt(gamma), in the order (xx, xy, xz, yy, yz, zz).
+struct FanGeometry {
+  std::array<double, 6> metric{};
+  std::array<double, 6> inverse_metric{};
+  double sqrt_det = 1.0;
+};
+
+// gamma_ij x^i x^j (or gamma^ij x_i x_j) for a symmetric 3x3 matrix stored as
+// (xx, xy, xz, yy, yz, zz).
+double contract(const std::array<double, 6>& m, const double x, const double y,
+                const double z) {
+  return m[0] * x * x + m[3] * y * y + m[5] * z * z +
+         2.0 * (m[1] * x * y + m[2] * x * z + m[4] * y * z);
+}
+
+// Three necessary conditions on an RMHD state in the eigenvector ordering
+// [S_x, S_y, S_z, B_x, B_y, B_z, D, Tau] of the densitized conserved variables
+// (each divided by sqrt(gamma) first, so that these are the Eulerian
+// observer's densities, and contracted with the spatial metric):
 //   1. D > 0;
 //   2. Tau >= B^2/2: the energy holds at least the field's own energy;
 //   3. E = Tau + D >= sqrt(D^2 + S^2).
@@ -125,14 +146,18 @@ bool fan_guard_enabled() {
 // The slack absorbs round-off, which puts cold static magnetized states
 // (Tau = B^2/2 exactly) and W >> 1 states (E - |S| ~ E/(2 W^2)) at the edge.
 // Returns 0 if the state passes, else the number of the first failed test.
-int fan_state_failure(const std::array<double, 8>& state) {
+int fan_state_failure(const std::array<double, 8>& state,
+                      const FanGeometry& geometry) {
   constexpr double slack = 1.0e-12;
-  const double d = state[6];
-  const double tau = state[7];
+  const double inv_sqrt_det = 1.0 / geometry.sqrt_det;
+  const double d = state[6] * inv_sqrt_det;
+  const double tau = state[7] * inv_sqrt_det;
   const double s_squared =
-      square(state[0]) + square(state[1]) + square(state[2]);
+      contract(geometry.inverse_metric, state[0], state[1], state[2]) *
+      square(inv_sqrt_det);
   const double b_squared =
-      square(state[3]) + square(state[4]) + square(state[5]);
+      contract(geometry.metric, state[3], state[4], state[5]) *
+      square(inv_sqrt_det);
   const double energy = tau + d;
   if (not(d > 0.0)) {
     return 1;
@@ -175,13 +200,13 @@ std::array<std::array<double, 8>, 2> fan_half_averages(
 // it to round-off and the flux stays conservative.
 double fan_guard_theta(const std::array<double, 8>& u_hll,
                        const std::array<double, 8>& a, const double weight_int,
-                       const double weight_ext) {
-  const auto halves_pass = [&u_hll, &a, weight_int,
-                            weight_ext](const double theta) {
+                       const double weight_ext, const FanGeometry& geometry) {
+  const auto halves_pass = [&u_hll, &a, weight_int, weight_ext,
+                            &geometry](const double theta) {
     const auto halves =
         fan_half_averages(u_hll, a, weight_int, weight_ext, theta);
-    return fan_state_failure(halves[0]) == 0 and
-           fan_state_failure(halves[1]) == 0;
+    return fan_state_failure(halves[0], geometry) == 0 and
+           fan_state_failure(halves[1], geometry) == 0;
   };
   if (halves_pass(1.0)) {
     return 1.0;
@@ -287,7 +312,13 @@ double Hllem::dg_package_data(
     const gsl::not_null<Scalar<DataVector>*> packaged_fast_ingoing_char_speed,
     const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
         packaged_interface_unit_normal,
-    const gsl::not_null<Scalar<DataVector>*> packaged_metric_flatness,
+    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+        packaged_interface_unit_normal_vector,
+    const gsl::not_null<Scalar<DataVector>*> packaged_lapse,
+    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
+        packaged_shift,
+    const gsl::not_null<tnsr::ii<DataVector, 3, Frame::Inertial>*>
+        packaged_spatial_metric,
     const gsl::not_null<Scalar<DataVector>*> packaged_rest_mass_density,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         packaged_spatial_velocity,
@@ -311,7 +342,7 @@ double Hllem::dg_package_data(
     const Scalar<DataVector>& lapse,
     const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
     const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& /*spatial_metric*/,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
 
     const Scalar<DataVector>& rest_mass_density,
     const Scalar<DataVector>& electron_fraction,
@@ -322,149 +353,38 @@ double Hllem::dg_package_data(
     const Scalar<DataVector>& lorentz_factor,
 
     const tnsr::i<DataVector, 3, Frame::Inertial>& normal_covector,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& /*normal_vector*/,
-    const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>&
-    /*mesh_velocity*/,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& normal_vector,
+    const std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>& mesh_velocity,
     const std::optional<Scalar<DataVector>>& normal_dot_mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) const {
-  Scalar<DataVector> shift_dot_normal = tilde_d;
-  dot_product(make_not_null(&shift_dot_normal), shift, normal_covector);
-  get(*packaged_largest_outgoing_char_speed) =
-      get(lapse) - get(shift_dot_normal);
-  get(*packaged_largest_ingoing_char_speed) =
-      -get(lapse) - get(shift_dot_normal);
+  // Everything `Hll` packages -- the conserved variables, their normal fluxes,
+  // the light-speed and fast-magnetosonic signal speeds of each side, and the
+  // interface normal and its raised form -- is packaged exactly as `Hll` does
+  // it. On a curved face `dg_boundary_terms` then returns `Hll`'s flux, and on
+  // a flat one the HLLEM anti-diffusion is built on the same speeds. The fast
+  // speeds are each side's own (lapse, shift and spatial metric included).
+  const Hll hll{magnetic_field_magnitude_for_hydro_,
+                light_speed_density_cutoff_};
+  const double max_speed = hll.dg_package_data(
+      packaged_tilde_d, packaged_tilde_ye, packaged_tilde_tau, packaged_tilde_s,
+      packaged_tilde_b, packaged_tilde_phi, packaged_normal_dot_flux_tilde_d,
+      packaged_normal_dot_flux_tilde_ye, packaged_normal_dot_flux_tilde_tau,
+      packaged_normal_dot_flux_tilde_s, packaged_normal_dot_flux_tilde_b,
+      packaged_normal_dot_flux_tilde_phi, packaged_largest_outgoing_char_speed,
+      packaged_largest_ingoing_char_speed, packaged_fast_outgoing_char_speed,
+      packaged_fast_ingoing_char_speed, packaged_interface_unit_normal,
+      packaged_interface_unit_normal_vector, tilde_d, tilde_ye, tilde_tau,
+      tilde_s, tilde_b, tilde_phi, flux_tilde_d, flux_tilde_ye, flux_tilde_tau,
+      flux_tilde_s, flux_tilde_b, flux_tilde_phi, lapse, shift,
+      spatial_velocity_one_form, spatial_metric, rest_mass_density,
+      electron_fraction, temperature, spatial_velocity, normal_covector,
+      normal_vector, mesh_velocity, normal_dot_mesh_velocity,
+      equation_of_state);
 
-  if (const bool has_b_field =
-          max(get(magnitude(tilde_b))) > magnetic_field_magnitude_for_hydro_;
-      not has_b_field and
-      (max(get(rest_mass_density)) > light_speed_density_cutoff_)) {
-    const size_t num_points = get(rest_mass_density).size();
-    Variables<tmpl::list<::Tags::TempScalar<0>, ::Tags::TempScalar<1>,
-                         ::Tags::TempScalar<2>, ::Tags::TempScalar<3>,
-                         ::Tags::TempScalar<4>, ::Tags::TempScalar<5>,
-                         ::Tags::TempScalar<6>>>
-        temp_buffer{num_points};
-    auto& v_dot_normal = get<::Tags::TempScalar<0>>(temp_buffer);
-    auto& v_squared = get<::Tags::TempScalar<1>>(temp_buffer);
-    auto& discriminant = get(get<::Tags::TempScalar<2>>(temp_buffer));
-    auto& one_minus_v2_cs2 = get<::Tags::TempScalar<3>>(temp_buffer);
-    auto& one_minus_cs2 = get<::Tags::TempScalar<4>>(temp_buffer);
-    auto& lapse_over_one_minus_v2_cs2 = get<::Tags::TempScalar<5>>(temp_buffer);
-    auto& v_dot_normal_times_one_minus_cs2 =
-        get<::Tags::TempScalar<6>>(temp_buffer);
-    const Scalar<DataVector> sound_speed_squared{clamp(
-        get(equation_of_state.sound_speed_squared_from_density_and_temperature(
-            rest_mass_density, temperature,
-            Scalar<DataVector>{get(rest_mass_density).size(), 0.0})),
-        0.0, 1.0)};
-    dot_product(make_not_null(&v_dot_normal), spatial_velocity,
-                normal_covector);
-    dot_product(make_not_null(&v_squared), spatial_velocity,
-                spatial_velocity_one_form);
-    get(v_squared) = clamp(get(v_squared), 0.0, 1.0 - 1.0e-8);
-    get(one_minus_v2_cs2) = 1.0 - get(v_squared) * get(sound_speed_squared);
-    get(one_minus_cs2) = 1.0 - get(sound_speed_squared);
-    discriminant = get(sound_speed_squared) * (1.0 - get(v_squared)) *
-                   (get(one_minus_v2_cs2) -
-                    get(v_dot_normal) * get(v_dot_normal) * get(one_minus_cs2));
-    discriminant = max(discriminant, 0.0);
-    discriminant = sqrt(discriminant);
-    get(lapse_over_one_minus_v2_cs2) = get(lapse) / get(one_minus_v2_cs2);
-    get(v_dot_normal_times_one_minus_cs2) =
-        get(v_dot_normal) * get(one_minus_cs2);
-    for (size_t i = 0; i < num_points; ++i) {
-      if (get(rest_mass_density)[i] > light_speed_density_cutoff_) {
-        get(*packaged_largest_outgoing_char_speed)[i] =
-            get(lapse_over_one_minus_v2_cs2)[i] *
-                (get(v_dot_normal_times_one_minus_cs2)[i] + discriminant[i]) -
-            get(shift_dot_normal)[i];
-        get(*packaged_largest_ingoing_char_speed)[i] =
-            get(lapse_over_one_minus_v2_cs2)[i] *
-                (get(v_dot_normal_times_one_minus_cs2)[i] - discriminant[i]) -
-            get(shift_dot_normal)[i];
-      }
-    }
-  }
-  if (normal_dot_mesh_velocity.has_value()) {
-    get(*packaged_largest_outgoing_char_speed) -=
-        get(*normal_dot_mesh_velocity);
-    get(*packaged_largest_ingoing_char_speed) -= get(*normal_dot_mesh_velocity);
-  }
-
-  *packaged_tilde_d = tilde_d;
-  *packaged_tilde_ye = tilde_ye;
-  *packaged_tilde_tau = tilde_tau;
-  *packaged_tilde_s = tilde_s;
-  *packaged_tilde_b = tilde_b;
-  *packaged_tilde_phi = tilde_phi;
-  *packaged_interface_unit_normal = normal_covector;
-  get(*packaged_metric_flatness) = abs(get(lapse) - 1.0) + abs(get<0>(shift)) +
-                                   abs(get<1>(shift)) + abs(get<2>(shift));
-
-  // --- Fast-magnetosonic signal speeds for the MHD part, PER SIDE -----------
-  //
-  // The MHD variables travel at the fast-magnetosonic speed, not at the light
-  // speed of the divergence-cleaning subsystem, so `dg_boundary_terms` needs a
-  // fast bound for them. Until now this class packaged NO per-side fast speed
-  // at all, and that bound was built from `characteristic_speeds_mhd`
-  // evaluated once on the arithmetic-averaged interface state -- the only
-  // state available at the interface. An average is an interior point of the
-  // two states, so nothing stops it falling INSIDE the true signal range,
-  // which is the one thing the HLL construction requires its bounds not to do.
-  // That has been measured: lambda_R > lambda_exact > lambda*_R.
-  //
-  // `Hll` and `PlutoHlld` in this directory already package these two speeds;
-  // this is the same computation, called the same way, so that the tags mean
-  // the same thing in all three solvers. The speed is the direction-
-  // independent estimate a^2 = c_s^2 + v_A^2 (1 - c_s^2) pushed through the
-  // relativistic dispersion relation: dropping the B.n dependence makes it an
-  // UPPER bound on the true fast speed, i.e. a safe (slightly dissipative) HLL
-  // bound, which is what AthenaK (Mignone & Bodo Eq. 55) and PLUTO's DAVIS
-  // estimate (`hll_speed.c:44-58`) also use.
-  *packaged_fast_outgoing_char_speed = *packaged_largest_outgoing_char_speed;
-  *packaged_fast_ingoing_char_speed = *packaged_largest_ingoing_char_speed;
-  // The flat-space decomposition (and the identity metric used below) only
-  // holds where the background is flat; elsewhere the fast bounds stay at the
-  // light speed, and `dg_boundary_terms` returns the plain HLL flux there
-  // anyway. A face is either all-flat or all-curved for the uniform
-  // backgrounds this is used on, so test the whole face at once.
-  if (max(get(*packaged_metric_flatness)) <= 1.0e-12) {
-    const ScopedFpeState fpe(false);
-    const size_t num_points = get(rest_mass_density).size();
-    const Scalar<DataVector> specific_enthalpy =
-        hydro::relativistic_specific_enthalpy(
-            rest_mass_density, specific_internal_energy, pressure);
-    tnsr::ii<DataVector, 3, Frame::Inertial> flat_metric{num_points, 0.0};
-    for (size_t i = 0; i < 3; ++i) {
-      flat_metric.get(i, i) = 1.0;
-    }
-    // In flat space TildeB = sqrt(gamma) B^i = B^i.
-    std::array<DataVector, 9> fast_speeds{};
-    characteristic_speeds_approximate_mhd(
-        make_not_null(&fast_speeds), rest_mass_density, electron_fraction,
-        specific_internal_energy, specific_enthalpy, spatial_velocity,
-        lorentz_factor, tilde_b, lapse, shift, flat_metric, normal_covector,
-        equation_of_state);
-    // Indices 1 and 7 are the ingoing and outgoing fast-magnetosonic speeds.
-    get(*packaged_fast_outgoing_char_speed) = fast_speeds[7];
-    get(*packaged_fast_ingoing_char_speed) = fast_speeds[1];
-    if (normal_dot_mesh_velocity.has_value()) {
-      get(*packaged_fast_outgoing_char_speed) -= get(*normal_dot_mesh_velocity);
-      get(*packaged_fast_ingoing_char_speed) -= get(*normal_dot_mesh_velocity);
-    }
-    // In the atmosphere keep the light speed, exactly as the Largest speeds do
-    // (they already carry the mesh-velocity correction) and exactly as `Hll`
-    // does. This is not merely a convention: as rho -> 0 at fixed B the
-    // Alfven speed -> c, so the fast speed there really is ~c.
-    for (size_t pt = 0; pt < num_points; ++pt) {
-      if (get(rest_mass_density)[pt] <= light_speed_density_cutoff_) {
-        get(*packaged_fast_outgoing_char_speed)[pt] =
-            get(*packaged_largest_outgoing_char_speed)[pt];
-        get(*packaged_fast_ingoing_char_speed)[pt] =
-            get(*packaged_largest_ingoing_char_speed)[pt];
-      }
-    }
-  }
+  // The face geometry, for the averaged state's eigensystem and its speeds.
+  *packaged_lapse = lapse;
+  *packaged_shift = shift;
+  *packaged_spatial_metric = spatial_metric;
 
   *packaged_rest_mass_density = rest_mass_density;
   *packaged_spatial_velocity = spatial_velocity;
@@ -472,22 +392,7 @@ double Hllem::dg_package_data(
   *packaged_lorentz_factor = lorentz_factor;
   *packaged_specific_internal_energy = specific_internal_energy;
 
-  normal_dot_flux(packaged_normal_dot_flux_tilde_d, normal_covector,
-                  flux_tilde_d);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_ye, normal_covector,
-                  flux_tilde_ye);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_tau, normal_covector,
-                  flux_tilde_tau);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_s, normal_covector,
-                  flux_tilde_s);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_b, normal_covector,
-                  flux_tilde_b);
-  normal_dot_flux(packaged_normal_dot_flux_tilde_phi, normal_covector,
-                  flux_tilde_phi);
-
-  using std::max;
-  return max(max(abs(get(*packaged_largest_outgoing_char_speed))),
-             max(abs(get(*packaged_largest_ingoing_char_speed))));
+  return max_speed;
 }
 
 void Hllem::dg_boundary_terms(
@@ -516,7 +421,11 @@ void Hllem::dg_boundary_terms(
     const Scalar<DataVector>& fast_outgoing_char_speed_int,
     const Scalar<DataVector>& fast_ingoing_char_speed_int,
     const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_int,
-    const Scalar<DataVector>& metric_flatness_int,
+    const tnsr::I<DataVector, 3, Frame::Inertial>&
+        interface_unit_normal_vector_int,
+    const Scalar<DataVector>& lapse_int,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& shift_int,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric_int,
     const Scalar<DataVector>& rest_mass_density_int,
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_int,
     const Scalar<DataVector>& pressure_int,
@@ -538,8 +447,12 @@ void Hllem::dg_boundary_terms(
     const Scalar<DataVector>& largest_ingoing_char_speed_ext,
     const Scalar<DataVector>& fast_outgoing_char_speed_ext,
     const Scalar<DataVector>& fast_ingoing_char_speed_ext,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& /*iface_normal_ext*/,
-    const Scalar<DataVector>& metric_flatness_ext,
+    const tnsr::i<DataVector, 3, Frame::Inertial>& interface_unit_normal_ext,
+    const tnsr::I<DataVector, 3, Frame::Inertial>&
+        interface_unit_normal_vector_ext,
+    const Scalar<DataVector>& lapse_ext,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& shift_ext,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric_ext,
     const Scalar<DataVector>& rest_mass_density_ext,
     const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity_ext,
     const Scalar<DataVector>& pressure_ext,
@@ -547,79 +460,111 @@ void Hllem::dg_boundary_terms(
     const Scalar<DataVector>& specific_internal_energy_ext,
     const dg::Formulation dg_formulation,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state) const {
-  const size_t num_points = get(tilde_d_int).size();
-  const bool weak = dg_formulation == dg::Formulation::WeakInertial;
+  // The HLL part is `Hll`'s flux, on every face: its fast-magnetosonic bounds
+  // (each side's own speed, with its lapse, shift and spatial metric) for the
+  // MHD variables and the light-speed bounds for the divergence-cleaning
+  // subsystem. HLLEM therefore has HLL's intermediate state, the integral
+  // average of the fan, and with no restored waves it IS `Hll`.
+  Hll::dg_boundary_terms(
+      boundary_correction_tilde_d, boundary_correction_tilde_ye,
+      boundary_correction_tilde_tau, boundary_correction_tilde_s,
+      boundary_correction_tilde_b, boundary_correction_tilde_phi, tilde_d_int,
+      tilde_ye_int, tilde_tau_int, tilde_s_int, tilde_b_int, tilde_phi_int,
+      normal_dot_flux_tilde_d_int, normal_dot_flux_tilde_ye_int,
+      normal_dot_flux_tilde_tau_int, normal_dot_flux_tilde_s_int,
+      normal_dot_flux_tilde_b_int, normal_dot_flux_tilde_phi_int,
+      largest_outgoing_char_speed_int, largest_ingoing_char_speed_int,
+      fast_outgoing_char_speed_int, fast_ingoing_char_speed_int,
+      interface_unit_normal_int, interface_unit_normal_vector_int, tilde_d_ext,
+      tilde_ye_ext, tilde_tau_ext, tilde_s_ext, tilde_b_ext, tilde_phi_ext,
+      normal_dot_flux_tilde_d_ext, normal_dot_flux_tilde_ye_ext,
+      normal_dot_flux_tilde_tau_ext, normal_dot_flux_tilde_s_ext,
+      normal_dot_flux_tilde_b_ext, normal_dot_flux_tilde_phi_ext,
+      largest_outgoing_char_speed_ext, largest_ingoing_char_speed_ext,
+      fast_outgoing_char_speed_ext, fast_ingoing_char_speed_ext,
+      interface_unit_normal_ext, interface_unit_normal_vector_ext,
+      dg_formulation);
 
-  // --- HLL baseline for all variables ---
+  // WavesToRestore: None -- every Einfeldt coefficient is zero, which is
+  // identically the HLL flux, so the flux is finished.
+  const std::vector<size_t> restored_waves =
+      restored_wave_indices(waves_to_restore_);
+  if (restored_waves.empty()) {
+    return;
+  }
+  const size_t num_points = get(tilde_d_int).size();
+
+  // The two fans, exactly as `Hll` forms them: the light-speed fan of the
+  // divergence-cleaning subsystem (used by the fan guard below) and the
+  // fast-magnetosonic fan of the MHD variables, whose bounds lambda_L and
+  // lambda_R are the ones every HLLEM coefficient below refers to.
   const DataVector lambda_max = max(0.0, get(largest_outgoing_char_speed_int),
                                     -get(largest_ingoing_char_speed_ext));
   const DataVector lambda_min = min(0.0, get(largest_ingoing_char_speed_int),
                                     -get(largest_outgoing_char_speed_ext));
-  const DataVector inv_dl = 1.0 / (lambda_max - lambda_min);
-  const DataVector lprod = lambda_max * lambda_min;
-  auto hll = [&](const Scalar<DataVector>& u_int,
-                 const Scalar<DataVector>& nf_i,
-                 const Scalar<DataVector>& u_ext,
-                 const Scalar<DataVector>& nf_e) -> DataVector {
-    if (weak) {
-      return DataVector{(lambda_max * get(nf_i) + lambda_min * get(nf_e) +
-                         lprod * (get(u_ext) - get(u_int))) *
-                        inv_dl};
-    }
-    return DataVector{(lambda_min * (get(nf_i) + get(nf_e)) +
-                       lprod * (get(u_ext) - get(u_int))) *
-                      inv_dl};
-  };
-  get(*boundary_correction_tilde_d) =
-      hll(tilde_d_int, normal_dot_flux_tilde_d_int, tilde_d_ext,
-          normal_dot_flux_tilde_d_ext);
-  get(*boundary_correction_tilde_ye) =
-      hll(tilde_ye_int, normal_dot_flux_tilde_ye_int, tilde_ye_ext,
-          normal_dot_flux_tilde_ye_ext);
-  get(*boundary_correction_tilde_tau) =
-      hll(tilde_tau_int, normal_dot_flux_tilde_tau_int, tilde_tau_ext,
-          normal_dot_flux_tilde_tau_ext);
-  get(*boundary_correction_tilde_phi) =
-      hll(tilde_phi_int, normal_dot_flux_tilde_phi_int, tilde_phi_ext,
-          normal_dot_flux_tilde_phi_ext);
-  for (size_t k = 0; k < 3; ++k) {
-    if (weak) {
-      boundary_correction_tilde_s->get(k) =
-          (lambda_max * normal_dot_flux_tilde_s_int.get(k) +
-           lambda_min * normal_dot_flux_tilde_s_ext.get(k) +
-           lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
-          inv_dl;
-      boundary_correction_tilde_b->get(k) =
-          (lambda_max * normal_dot_flux_tilde_b_int.get(k) +
-           lambda_min * normal_dot_flux_tilde_b_ext.get(k) +
-           lprod * (tilde_b_ext.get(k) - tilde_b_int.get(k))) *
-          inv_dl;
-    } else {
-      boundary_correction_tilde_s->get(k) =
-          (lambda_min * (normal_dot_flux_tilde_s_int.get(k) +
-                         normal_dot_flux_tilde_s_ext.get(k)) +
-           lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
-          inv_dl;
-      boundary_correction_tilde_b->get(k) =
-          (lambda_min * (normal_dot_flux_tilde_b_int.get(k) +
-                         normal_dot_flux_tilde_b_ext.get(k)) +
-           lprod * (tilde_b_ext.get(k) - tilde_b_int.get(k))) *
-          inv_dl;
-    }
-  }
+  const DataVector inv_dl = 1.0 / max(lambda_max - lambda_min, 1.0e-30);
+  const DataVector fast_lambda_max = max(0.0, get(fast_outgoing_char_speed_int),
+                                         -get(fast_ingoing_char_speed_ext));
+  const DataVector fast_lambda_min = min(0.0, get(fast_ingoing_char_speed_int),
+                                         -get(fast_outgoing_char_speed_ext));
+  const DataVector fast_inv_dl =
+      1.0 / max(fast_lambda_max - fast_lambda_min, 1.0e-30);
+  const DataVector fast_lprod = fast_lambda_max * fast_lambda_min;
 
-  // --- HLLEM anti-diffusion (flat space; eigensystem at the average state) ---
-  // The five-wave eigensystem is built assuming Minkowski (the regime of the
-  // relativistic M&M tests). If the background is curved anywhere on the face
-  // we keep the (conservative) HLL flux and skip the eigensystem entirely --
-  // both because the anti-diffusion would be masked out anyway and because
-  // building the flat-space eigensystem from curved-metric primitives would
-  // feed superluminal velocities into characteristic_speeds_mhd. (M&M
-  // backgrounds are uniform, so a face is either all-flat or all-curved.)
-  if (max(get(metric_flatness_int)) > 1.0e-12 or
-      max(get(metric_flatness_ext)) > 1.0e-12) {
-    return;
+  // The face geometry: the mean of the two sides' lapse, shift and spatial
+  // metric (on a DG face of a smooth background they are equal), the unit
+  // normal n_i and its raised form n^i.
+  const Scalar<DataVector> lapse_avg{0.5 * (get(lapse_int) + get(lapse_ext))};
+  tnsr::I<DataVector, 3, Frame::Inertial> shift_avg{num_points};
+  tnsr::ii<DataVector, 3, Frame::Inertial> spatial_metric_avg{num_points};
+  for (size_t i = 0; i < 3; ++i) {
+    shift_avg.get(i) = 0.5 * (shift_int.get(i) + shift_ext.get(i));
+    for (size_t j = i; j < 3; ++j) {
+      spatial_metric_avg.get(i, j) =
+          0.5 * (spatial_metric_int.get(i, j) + spatial_metric_ext.get(i, j));
+    }
   }
+  const auto [det_spatial_metric_avg, inv_spatial_metric_avg] =
+      determinant_and_inverse(spatial_metric_avg);
+  const DataVector sqrt_det_spatial_metric_int =
+      sqrt(get(determinant(spatial_metric_int)));
+  const DataVector sqrt_det_spatial_metric_ext =
+      sqrt(get(determinant(spatial_metric_ext)));
+  const DataVector sqrt_det_spatial_metric_avg =
+      sqrt(get(det_spatial_metric_avg));
+  // The face normal: the mean of the two sides' (opposite) normals, unit with
+  // respect to the averaged metric, and raised with it. Built symmetrically,
+  // as `Hll` builds its normal split, so that the int<->ext swap flips it
+  // exactly and the correction stays conservative.
+  tnsr::i<DataVector, 3, Frame::Inertial> unit_normal{num_points};
+  for (size_t i = 0; i < 3; ++i) {
+    unit_normal.get(i) = 0.5 * (interface_unit_normal_int.get(i) -
+                                interface_unit_normal_ext.get(i));
+  }
+  {
+    DataVector normal_squared{num_points, 0.0};
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = 0; j < 3; ++j) {
+        normal_squared += inv_spatial_metric_avg.get(i, j) *
+                          unit_normal.get(i) * unit_normal.get(j);
+      }
+    }
+    const DataVector one_over_norm = 1.0 / sqrt(normal_squared);
+    for (size_t i = 0; i < 3; ++i) {
+      unit_normal.get(i) *= one_over_norm;
+    }
+  }
+  tnsr::I<DataVector, 3, Frame::Inertial> unit_normal_vector{num_points, 0.0};
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      unit_normal_vector.get(i) +=
+          inv_spatial_metric_avg.get(i, j) * unit_normal.get(j);
+    }
+  }
+  Scalar<DataVector> shift_dot_normal{num_points};
+  dot_product(make_not_null(&shift_dot_normal), shift_avg, unit_normal);
+
+  // --- HLLEM anti-diffusion (eigensystem at the averaged state) ---
   // FP exceptions stay ENABLED here. They used to be suppressed because the
   // analytic eigenvectors diverge at degeneracies, with the resulting inf/NaN
   // masked to "fall back to HLL at this point". That hid a real division by
@@ -707,13 +652,16 @@ void Hllem::dg_boundary_terms(
   for (size_t i = 0; i < 3; ++i) {
     v_avg.get(i) =
         0.5 * (spatial_velocity_int.get(i) + spatial_velocity_ext.get(i));
-    // B = TildeB in flat space
-    b_avg.get(i) = 0.5 * (tilde_b_int.get(i) + tilde_b_ext.get(i));
+    // B^i = TildeB^i / sqrt(gamma) on each side
+    b_avg.get(i) = 0.5 * (tilde_b_int.get(i) / sqrt_det_spatial_metric_int +
+                          tilde_b_ext.get(i) / sqrt_det_spatial_metric_ext);
   }
-  // Lorentz factor and enthalpy consistent with the averaged velocity (flat).
+  // Lorentz factor and enthalpy consistent with the averaged velocity.
   DataVector v_sq_avg{num_points, 0.0};
   for (size_t i = 0; i < 3; ++i) {
-    v_sq_avg += v_avg.get(i) * v_avg.get(i);
+    for (size_t j = 0; j < 3; ++j) {
+      v_sq_avg += spatial_metric_avg.get(i, j) * v_avg.get(i) * v_avg.get(j);
+    }
   }
   v_sq_avg = clamp(v_sq_avg, 0.0, 1.0 - 1.0e-10);
   Scalar<DataVector> w_avg{1.0 / sqrt(1.0 - v_sq_avg)};
@@ -765,178 +713,10 @@ void Hllem::dg_boundary_terms(
   const Scalar<DataVector> enthalpy_avg =
       hydro::relativistic_specific_enthalpy(rho_avg, eps_avg, p_at_avg_state);
 
-  // flat-space geometry
-  tnsr::ii<DataVector, 3, Frame::Inertial> flat_metric{num_points, 0.0};
-  for (size_t i = 0; i < 3; ++i) {
-    flat_metric.get(i, i) = 1.0;
-  }
-  tnsr::i<DataVector, 3> unit_normal{num_points};
-  for (size_t i = 0; i < 3; ++i) {
-    unit_normal.get(i) = interface_unit_normal_int.get(i);
-  }
-
   tnsr::i<DataVector, 9> mhd_speeds{num_points, 0.0};
   characteristic_speeds_mhd(make_not_null(&mhd_speeds), v_avg, b_avg, rho_avg,
-                            eps_avg, w_avg, enthalpy_avg, flat_metric,
+                            eps_avg, w_avg, enthalpy_avg, spatial_metric_avg,
                             unit_normal, equation_of_state);
-
-  // --- Scalar (divergence-cleaning) / MHD flux split -------------------------
-  // In flat space the GLM subsystem (Phi and the NORMAL magnetic field)
-  // decouples from the MHD system and propagates at the light speed; it keeps
-  // the +/-c HLL flux computed in the baseline above (for the linear (Phi,B_n)
-  // system HLL at
-  // +/-c is identically LLF at c). The MHD variables (D, Ye, Tau, S and the
-  // TANGENTIAL magnetic field) instead use the (much slower) fast-magnetosonic
-  // HLL bounds from the characteristic speeds. This makes the flux far less
-  // dissipative and -- crucially -- puts the fast waves AT the fan edge, so the
-  // anti-diffusion restores them as a no-op (delta_fast -> 0) instead of the
-  // over-restoration that blew up with the +/-c bounds. (Cf. PLUTO
-  // Src/MHD/GLM/glm.c GLM_Solve.) Everything here stays
-  // inside the boundary correction; the evolution system is unchanged.
-  //
-  // The outer MHD bounds are TWO-SIDED: the envelope of each side's own fast
-  // speed and the averaged state's, which is the three-sided envelope
-  //   S_min = MIN(0, MINVAL(Lambda(Q_bar)), MINVAL(Lambda(Q_L)), ...)
-  // of Dumbser & Balsara's own HLLEM reference implementation (Appendix C).
-  // Taking the averaged state ALONE bounds
-  // nothing: an average is an interior point of the two states, so it can sit
-  // inside the true signal range (measured:
-  // lambda_R > lambda_exact > lambda*_R), and a symbolic derivation
-  // shows no state function admits an unmargined average-state estimate at all
-  // (297 of 300 random RMHD pairs violate it, largest deficit 0.5028).
-  //
-  // Keeping Lambda(Q_bar) IN the envelope is not decoration: the anti-diffusion
-  // below reads its wave speeds from the averaged eigensystem and drops any
-  // wave that leaves the fan, so dropping Q_bar from the bound would push the
-  // averaged fast waves outside their own fan. The envelope only ever widens
-  // the fan relative to the old bound, so the scheme is more dissipative, never
-  // less -- and the per-side speeds are the same quantity `Hll` and
-  // `PlutoHlld` already package.
-  const DataVector fast_lambda_max =
-      max(0.0, mhd_speeds.get(7), get(fast_outgoing_char_speed_int),
-          -get(fast_ingoing_char_speed_ext));  // v_n + c_fast
-  const DataVector fast_lambda_min =
-      min(0.0, mhd_speeds.get(1), get(fast_ingoing_char_speed_int),
-          -get(fast_outgoing_char_speed_ext));  // v_n - c_fast
-  DataVector fast_dl = fast_lambda_max - fast_lambda_min;
-  for (size_t pt = 0; pt < num_points; ++pt) {
-    if (fast_dl[pt] < 1.0e-30) {
-      fast_dl[pt] = 1.0e-30;
-    }
-  }
-  const DataVector fast_inv_dl = 1.0 / fast_dl;
-  const DataVector fast_lprod = fast_lambda_max * fast_lambda_min;
-  const auto fast_hll = [&](const Scalar<DataVector>& u_int,
-                            const Scalar<DataVector>& nf_i,
-                            const Scalar<DataVector>& u_ext,
-                            const Scalar<DataVector>& nf_e) -> DataVector {
-    if (weak) {
-      return DataVector{(fast_lambda_max * get(nf_i) +
-                         fast_lambda_min * get(nf_e) +
-                         fast_lprod * (get(u_ext) - get(u_int))) *
-                        fast_inv_dl};
-    }
-    return DataVector{(fast_lambda_min * (get(nf_i) + get(nf_e)) +
-                       fast_lprod * (get(u_ext) - get(u_int))) *
-                      fast_inv_dl};
-  };
-  // fluid scalars: pure MHD -> fast bounds
-  get(*boundary_correction_tilde_d) =
-      fast_hll(tilde_d_int, normal_dot_flux_tilde_d_int, tilde_d_ext,
-               normal_dot_flux_tilde_d_ext);
-  get(*boundary_correction_tilde_ye) =
-      fast_hll(tilde_ye_int, normal_dot_flux_tilde_ye_int, tilde_ye_ext,
-               normal_dot_flux_tilde_ye_ext);
-  get(*boundary_correction_tilde_tau) =
-      fast_hll(tilde_tau_int, normal_dot_flux_tilde_tau_int, tilde_tau_ext,
-               normal_dot_flux_tilde_tau_ext);
-  // TildePhi keeps the +/-c HLL (divergence cleaning) from the baseline above.
-  // momentum: pure MHD (no GLM coupling) -> fast bounds, all components
-  for (size_t k = 0; k < 3; ++k) {
-    if (weak) {
-      boundary_correction_tilde_s->get(k) =
-          (fast_lambda_max * normal_dot_flux_tilde_s_int.get(k) +
-           fast_lambda_min * normal_dot_flux_tilde_s_ext.get(k) +
-           fast_lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
-          fast_inv_dl;
-    } else {
-      boundary_correction_tilde_s->get(k) =
-          (fast_lambda_min * (normal_dot_flux_tilde_s_int.get(k) +
-                              normal_dot_flux_tilde_s_ext.get(k)) +
-           fast_lprod * (tilde_s_ext.get(k) - tilde_s_int.get(k))) *
-          fast_inv_dl;
-    }
-  }
-  // Magnetic field: normal component belongs to the GLM subsystem (keep the
-  // +/-c baseline), tangential component is MHD (fast bounds). Split, recompute
-  // the tangential part with fast bounds, then recombine G(B^i) = G(B_n) n^i +
-  // G(B_t).
-  {
-    DataVector bn_correction{num_points,
-                             0.0};  // n_i G(B^i) from the +/-c baseline
-    DataVector bn_int{num_points, 0.0};
-    DataVector bn_ext{num_points, 0.0};
-    DataVector nfbn_int{num_points, 0.0};
-    DataVector nfbn_ext{num_points, 0.0};
-    for (size_t k = 0; k < 3; ++k) {
-      bn_correction += boundary_correction_tilde_b->get(k) * unit_normal.get(k);
-      bn_int += tilde_b_int.get(k) * unit_normal.get(k);
-      bn_ext += tilde_b_ext.get(k) * unit_normal.get(k);
-      nfbn_int += normal_dot_flux_tilde_b_int.get(k) * unit_normal.get(k);
-      nfbn_ext += normal_dot_flux_tilde_b_ext.get(k) * unit_normal.get(k);
-    }
-    for (size_t k = 0; k < 3; ++k) {
-      const DataVector bt_int =
-          tilde_b_int.get(k) - bn_int * unit_normal.get(k);
-      const DataVector bt_ext =
-          tilde_b_ext.get(k) - bn_ext * unit_normal.get(k);
-      const DataVector nfbt_int =
-          normal_dot_flux_tilde_b_int.get(k) - nfbn_int * unit_normal.get(k);
-      const DataVector nfbt_ext =
-          normal_dot_flux_tilde_b_ext.get(k) - nfbn_ext * unit_normal.get(k);
-      DataVector g_bt{num_points, 0.0};
-      if (weak) {
-        g_bt = (fast_lambda_max * nfbt_int + fast_lambda_min * nfbt_ext +
-                fast_lprod * (bt_ext - bt_int)) *
-               fast_inv_dl;
-      } else {
-        g_bt = (fast_lambda_min * (nfbt_int + nfbt_ext) +
-                fast_lprod * (bt_ext - bt_int)) *
-               fast_inv_dl;
-      }
-      boundary_correction_tilde_b->get(k) =
-          bn_correction * unit_normal.get(k) + g_bt;
-    }
-  }
-
-  // WavesToRestore: None -- HLLEM with every Einfeldt coefficient delta_k set
-  // to zero, which is identically the HLL flux (a nine-component algebraic
-  // identity, independent of the state, the eigensystem and the equation of
-  // state). Everything above this point IS the HLL baseline, so the flux is
-  // already finished and nothing below can do anything but add zero: the
-  // per-wave loop iterates over an empty list, and the complementary
-  // projection -- which composes with WavesToRestore everywhere else -- only
-  // fires at points where a RESTORED wave was dropped, so with no restored
-  // waves it never flags a point either. None is plain HLL with the projection
-  // on or off, which is why returning here rather than falling through is
-  // exact, not an approximation; it also skips building an eigensystem that
-  // would only be multiplied by zero.
-  //
-  // The reduction is to `Hll` CLOSELY BUT NOT BITWISE. `Hll` takes its outer
-  // MHD bounds two-sidedly, from the two sides' own fast speeds; the envelope
-  // above additionally carries the averaged state's fast speed, which can only
-  // widen the fan. HLLEM-None is therefore slightly MORE dissipative than
-  // `Hll` and never less, and that bound construction is the ONLY difference
-  // between the two (the scalar/MHD split and the flux formula are shared).
-  // A deviation of the opposite sign, or one bigger than the envelope
-  // difference accounts for, is an implementation bug in the anti-diffusion,
-  // not a tolerance to be relaxed. Pinned down by
-  // Test_Hllem.cpp:test_no_restored_waves_reduces_to_hll.
-  const std::vector<size_t> restored_waves =
-      restored_wave_indices(waves_to_restore_);
-  if (restored_waves.empty()) {
-    return;
-  }
 
   tnsr::ij<DataVector, 9> modes{num_points, 0.0};
   tnsr::IJ<DataVector, 9> projectors{num_points, 0.0};
@@ -947,8 +727,18 @@ void Hllem::dg_boundary_terms(
   // those eigenvectors genuinely collapse (below).
   characteristic_eigenvectors_mhd(
       make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
-      b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, flat_metric, unit_normal,
-      equation_of_state, false);
+      b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, spatial_metric_avg,
+      unit_normal, equation_of_state, false);
+
+  // The eigenvectors do not depend on the lapse and shift: the physical
+  // flux Jacobian is alpha A - beta_n I, with A the one at unit lapse and zero
+  // shift, so its eigenvalues are alpha lambda_k - beta_n. These are the speeds
+  // that enter the Einfeldt coefficients and the fan and degeneracy tests.
+  tnsr::i<DataVector, 9> phys_speeds{num_points};
+  for (size_t k = 0; k < 9; ++k) {
+    phys_speeds.get(k) =
+        get(lapse_avg) * mhd_speeds.get(k) - get(shift_dot_normal);
+  }
 
   // conserved-variable jump in the eigenvector ordering
   // [S_x,S_y,S_z, B_x,B_y,B_z, D, Tau, Phi]
@@ -994,7 +784,7 @@ void Hllem::dg_boundary_terms(
   std::array<DataVector, 9> dropped{};
   std::array<DataVector, 9> wave_ok{};
   for (size_t k = 0; k < 9; ++k) {
-    const DataVector& lam = mhd_speeds.get(k);
+    const DataVector& lam = phys_speeds.get(k);
     const DataVector lambdap = max(lam, 0.0);
     const DataVector lambdam = min(lam, 0.0);
     gsl::at(delta, k) = 1.0 - lambdam / (fast_lambda_min - 1.0e-14) -
@@ -1007,7 +797,7 @@ void Hllem::dg_boundary_terms(
     gsl::at(wave_ok, k) = DataVector{num_points, 0.0};
   }
   for (const size_t wave : restored_waves) {
-    const DataVector& lam = mhd_speeds.get(wave);
+    const DataVector& lam = phys_speeds.get(wave);
     DataVector& ok = gsl::at(wave_ok, wave);
     DataVector& drop = gsl::at(dropped, wave);
     ok = 1.0;
@@ -1021,7 +811,8 @@ void Hllem::dg_boundary_terms(
         continue;
       }
       for (size_t pt = 0; pt < num_points; ++pt) {
-        if (std::abs(lam[pt] - mhd_speeds.get(j)[pt]) < degeneracy_tolerance_) {
+        if (std::abs(lam[pt] - phys_speeds.get(j)[pt]) <
+            degeneracy_tolerance_) {
           ok[pt] = 0.0;
           drop[pt] = 1.0;
         }
@@ -1084,7 +875,7 @@ void Hllem::dg_boundary_terms(
         }
         for (size_t pt = 0; pt < num_points; ++pt) {
           if (drop[pt] > 0.0 and
-              std::abs(mhd_speeds.get(k)[pt] - mhd_speeds.get(j)[pt]) <
+              std::abs(phys_speeds.get(k)[pt] - phys_speeds.get(j)[pt]) <
                   degeneracy_tolerance_) {
             gsl::at(in_cluster, j)[pt] = 1.0;
           }
@@ -1186,12 +977,11 @@ void Hllem::dg_boundary_terms(
     }
   }
 
-  // mask: apply the anti-diffusion only where the metric is flat and the
-  // eigensystem is finite; elsewhere keep the (conservative) HLL flux.
+  // mask: apply the anti-diffusion only where the eigensystem is finite;
+  // elsewhere keep the (conservative) HLL flux.
   DataVector mask{num_points, 1.0};
   for (size_t i = 0; i < num_points; ++i) {
-    bool ok = get(metric_flatness_int)[i] <= 1.0e-12 and
-              get(metric_flatness_ext)[i] <= 1.0e-12;
+    bool ok = true;
     for (size_t n = 0; ok and n < 9; ++n) {
       ok = ok and std::isfinite(gsl::at(antidiff, n)[i]);
     }
@@ -1294,12 +1084,23 @@ void Hllem::dg_boundary_terms(
         a_bn += gsl::at(a, 3 + k) * unit_normal.get(k)[pt];
       }
       for (size_t k = 0; k < 3; ++k) {
-        gsl::at(u_hll, 3 + k) += (bn_star - bn_fast) * unit_normal.get(k)[pt];
-        gsl::at(a, 3 + k) -= a_bn * unit_normal.get(k)[pt];
+        gsl::at(u_hll, 3 + k) +=
+            (bn_star - bn_fast) * unit_normal_vector.get(k)[pt];
+        gsl::at(a, 3 + k) -= a_bn * unit_normal_vector.get(k)[pt];
       }
       const double weight_int = s_max * inv_width;
       const double weight_ext = -s_min * inv_width;
-      const double theta = fan_guard_theta(u_hll, a, weight_int, weight_ext);
+      FanGeometry geometry{};
+      for (size_t i = 0, c = 0; i < 3; ++i) {
+        for (size_t j = i; j < 3; ++j, ++c) {
+          gsl::at(geometry.metric, c) = spatial_metric_avg.get(i, j)[pt];
+          gsl::at(geometry.inverse_metric, c) =
+              inv_spatial_metric_avg.get(i, j)[pt];
+        }
+      }
+      geometry.sqrt_det = sqrt_det_spatial_metric_avg[pt];
+      const double theta =
+          fan_guard_theta(u_hll, a, weight_int, weight_ext, geometry);
       if (theta < 1.0) {
         ++stats.limited;
         stats.theta_sum += theta;
@@ -1309,8 +1110,8 @@ void Hllem::dg_boundary_terms(
         // the lowest-numbered test either half fails at theta = 1
         const auto halves =
             fan_half_averages(u_hll, a, weight_int, weight_ext, 1.0);
-        const int failure_int = fan_state_failure(halves[0]);
-        const int failure_ext = fan_state_failure(halves[1]);
+        const int failure_int = fan_state_failure(halves[0], geometry);
+        const int failure_ext = fan_state_failure(halves[1], geometry);
         const int failure =
             failure_int == 0
                 ? failure_ext
