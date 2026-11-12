@@ -127,5 +127,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.BoundaryConditions.HydroFreeOutflow",
           "spatial_velocity",
           "inv_spatial_metric"},
       "HydroFreeOutflow:\n", face_mesh_index, box_with_gridless_tags,
-      tuples::TaggedTuple<>{}, 1.0e-10);
+      tuples::TaggedTuple<helpers::Tags::Range<
+          hydro::Tags::SpatialVelocity<DataVector, 3, Frame::Inertial>>>{
+          std::array{-0.3, 0.3}},
+      1.0e-10);
 }

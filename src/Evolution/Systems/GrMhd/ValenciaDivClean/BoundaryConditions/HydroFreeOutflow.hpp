@@ -46,15 +46,8 @@ namespace grmhd::ValenciaDivClean::BoundaryConditions {
  * is modified such that the normal component is zero at the interface i.e.
  * \f$v_\text{ghost}^i = v^i - (n_jv^j)n^i\f$.
  *
- *  - However, regardless of whether the normal component of the spatial
- * velocity $n_iv^i$ is pointing outward or inward, the lorentz factor \f$W\f$
- * is copied into ghost zone without any modification.
- *
- * \note In principle we need to recompute the Lorentz factor
- * \f$W_\text{ghost}\f$ using $v_\text{ghost}^i$. However, the case in which
- * skipping that procedure becomes problematic is only when the fluid has
- * relativistic incoming normal speed on the external boundary, which already
- * implies the failure of adopting outflow type boundary conditions.
+ *  - The Lorentz factor in the ghost zone is computed from
+ * \f$v_\text{ghost}^i\f$.
  *
  *  - Divergence cleaning scalar field \f$\Phi\f$ is set to zero in ghost zone.
  *

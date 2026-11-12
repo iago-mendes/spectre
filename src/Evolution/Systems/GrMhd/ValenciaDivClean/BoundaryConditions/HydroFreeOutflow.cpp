@@ -87,7 +87,7 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
     const Scalar<DataVector>& interior_specific_internal_energy,
     const tnsr::I<DataVector, 3, Frame::Inertial>& interior_spatial_velocity,
     const tnsr::I<DataVector, 3, Frame::Inertial>& interior_magnetic_field,
-    const Scalar<DataVector>& interior_lorentz_factor,
+    const Scalar<DataVector>& /*interior_lorentz_factor*/,
     const Scalar<DataVector>& interior_pressure,
     const Scalar<DataVector>& interior_temperature,
 
@@ -103,13 +103,15 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
   //  * divergence cleaning field on ghost zone
   //  * spatial metric
   //  * sqrt determinant of spatial metric
+  //  * Lorentz factor on ghost zone
   Variables<tmpl::list<
       ::Tags::TempScalar<0>, hydro::Tags::SpatialVelocity<DataVector, 3>,
       ::Tags::TempScalar<1>, gr::Tags::SpatialMetric<DataVector, 3>,
-      gr::Tags::SqrtDetSpatialMetric<DataVector>>>
+      gr::Tags::SqrtDetSpatialMetric<DataVector>, ::Tags::TempScalar<2>>>
       temp_buffer{number_of_grid_points};
   auto& normal_dot_interior_spatial_velocity =
       get<::Tags::TempScalar<0>>(temp_buffer);
+  auto& exterior_lorentz_factor = get<::Tags::TempScalar<2>>(temp_buffer);
   *spatial_velocity =
       get<hydro::Tags::SpatialVelocity<DataVector, 3>>(temp_buffer);
   auto& exterior_divergence_cleaning_field =
@@ -167,12 +169,15 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
   tenex::evaluate<ti::i>(
       spatial_velocity_one_form,
       (*spatial_velocity)(ti::J) * (interior_spatial_metric(ti::i, ti::j)));
+  dot_product(make_not_null(&exterior_lorentz_factor), *spatial_velocity,
+              *spatial_velocity_one_form);
+  get(exterior_lorentz_factor) = 1.0 / sqrt(1.0 - get(exterior_lorentz_factor));
 
   ConservativeFromPrimitive::apply(
       tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
       interior_rest_mass_density, interior_electron_fraction,
       interior_specific_internal_energy, interior_pressure, *spatial_velocity,
-      interior_lorentz_factor, interior_magnetic_field,
+      exterior_lorentz_factor, interior_magnetic_field,
       interior_sqrt_det_spatial_metric, interior_spatial_metric,
       exterior_divergence_cleaning_field);
 
@@ -181,7 +186,7 @@ std::optional<std::string> HydroFreeOutflow::dg_ghost(
       tilde_phi_flux, *tilde_d, *tilde_ye, *tilde_tau, *tilde_s, *tilde_b,
       *tilde_phi, *lapse, *shift, interior_sqrt_det_spatial_metric,
       interior_spatial_metric, *inv_spatial_metric, interior_pressure,
-      *spatial_velocity, interior_lorentz_factor, interior_magnetic_field);
+      *spatial_velocity, exterior_lorentz_factor, interior_magnetic_field);
 
   return {};
 }

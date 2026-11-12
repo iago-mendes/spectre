@@ -26,6 +26,18 @@ def _spatial_metric(inv_spatial_metric):
     return np.linalg.inv(inv_spatial_metric)
 
 
+def _exterior_lorentz_factor(exterior_spatial_velocity, spatial_metric):
+    return 1.0 / np.sqrt(
+        1.0
+        - np.einsum(
+            "i,ij,j",
+            exterior_spatial_velocity,
+            spatial_metric,
+            exterior_spatial_velocity,
+        )
+    )
+
+
 def error(
     face_mesh_velocity,
     outward_directed_normal_covector,
@@ -68,6 +80,9 @@ def tilde_d(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_d(
         interior_rest_mass_density,
@@ -75,7 +90,7 @@ def tilde_d(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -106,6 +121,9 @@ def tilde_ye(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_ye(
         interior_rest_mass_density,
@@ -113,7 +131,7 @@ def tilde_ye(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -144,6 +162,9 @@ def tilde_tau(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_tau(
         interior_rest_mass_density,
@@ -151,7 +172,7 @@ def tilde_tau(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -182,6 +203,9 @@ def tilde_s(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_s(
         interior_rest_mass_density,
@@ -189,7 +213,7 @@ def tilde_s(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -220,6 +244,9 @@ def tilde_b(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_b(
         interior_rest_mass_density,
@@ -227,7 +254,7 @@ def tilde_b(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -258,6 +285,9 @@ def tilde_phi(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     return cons.tilde_phi(
         interior_rest_mass_density,
@@ -265,7 +295,7 @@ def tilde_phi(
         interior_specific_internal_energy,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
         sqrt_det_spatial_metric,
         spatial_metric,
@@ -412,6 +442,9 @@ def flux_tilde_d(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -444,7 +477,7 @@ def flux_tilde_d(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
@@ -472,6 +505,9 @@ def flux_tilde_ye(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -504,7 +540,7 @@ def flux_tilde_ye(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
@@ -532,6 +568,9 @@ def flux_tilde_tau(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -564,7 +603,7 @@ def flux_tilde_tau(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
@@ -592,6 +631,9 @@ def flux_tilde_s(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -624,7 +666,7 @@ def flux_tilde_s(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
@@ -652,6 +694,9 @@ def flux_tilde_b(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -684,7 +729,7 @@ def flux_tilde_b(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
@@ -712,6 +757,9 @@ def flux_tilde_phi(
     )
     spatial_metric = _spatial_metric(inv_spatial_metric)
     sqrt_det_spatial_metric = np.sqrt(np.linalg.det(spatial_metric))
+    exterior_lorentz_factor = _exterior_lorentz_factor(
+        exterior_spatial_velocity, spatial_metric
+    )
 
     cons_vars = _return_cons_vars(
         face_mesh_velocity,
@@ -744,7 +792,7 @@ def flux_tilde_phi(
         inv_spatial_metric,
         interior_pressure,
         exterior_spatial_velocity,
-        interior_lorentz_factor,
+        exterior_lorentz_factor,
         interior_magnetic_field,
     )
 
