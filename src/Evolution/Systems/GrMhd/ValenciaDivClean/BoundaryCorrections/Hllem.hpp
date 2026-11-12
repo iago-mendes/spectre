@@ -291,10 +291,19 @@ class Hllem final : public evolution::BoundaryCorrection {
         "right treatment of a nearly parallel group. Use the projection on a "
         "cold gas."};
   };
+  struct NumericEigensystem {
+    using type = bool;
+    static constexpr Options::String help = {
+        "Use the numerical eigensystem of the flux Jacobian at the averaged "
+        "state (numerical_characteristics: flux_jacobian_mhd and "
+        "find_real_eigensystem) instead of the analytic one. Where it cannot "
+        "be computed, the analytic eigensystem is kept at that point."};
+  };
   using options =
       tmpl::list<WavesToRestore, UseComplementaryProjection,
                  DegeneracyTolerance, MagneticFieldMagnitudeForHydro,
-                 LightSpeedDensityCutoff, MaxConditionNumber>;
+                 LightSpeedDensityCutoff, MaxConditionNumber,
+                 NumericEigensystem>;
   static constexpr Options::String help = {
       "Computes the HLLEM boundary correction term for the GRMHD system."};
 
@@ -309,7 +318,7 @@ class Hllem final : public evolution::BoundaryCorrection {
         double degeneracy_tolerance, double magnetic_field_magnitude_for_hydro,
         double light_speed_density_cutoff,
         std::optional<double> max_condition_number = std::nullopt,
-        const Options::Context& context = {});
+        bool numeric_eigensystem = false, const Options::Context& context = {});
 
   /// \cond
   explicit Hllem(CkMigrateMessage* /*unused*/);
@@ -505,6 +514,7 @@ class Hllem final : public evolution::BoundaryCorrection {
   double light_speed_density_cutoff_{
       std::numeric_limits<double>::signaling_NaN()};
   std::optional<double> max_condition_number_{};
+  bool numeric_eigensystem_{false};
 };
 bool operator!=(const Hllem& lhs, const Hllem& rhs);
 }  // namespace grmhd::ValenciaDivClean::BoundaryCorrections

@@ -1425,6 +1425,53 @@ void test_max_condition_number(
   }
 }
 
+// NumericEigensystem uses the numerical eigensystem of the same flux Jacobian
+// at the same averaged state. On a generic, well-conditioned interface the
+// eigenvalues are simple and its projectors r_k l_k / (l_k.r_k) are the
+// analytic ones, so the correction must agree with the analytic one to
+// round-off, for every restored set, with and without the projection.
+void test_numeric_eigensystem_matches_analytic(
+    const InterfaceState& state_int, const InterfaceState& state_ext,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const std::array<double, 3>& normal_direction) {
+  const auto none = hllem_correction(
+      bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8},
+      state_int, state_ext, equation_of_state, normal_direction);
+  double scale = 0.0;
+  for (size_t n = 0; n < 10; ++n) {
+    scale = std::max(scale, std::abs(gsl::at(none, n)));
+  }
+  for (const auto waves :
+       {bc::HllemWaves::All, bc::HllemWaves::ContactSlow,
+        bc::HllemWaves::ContactAlfven, bc::HllemWaves::Contact}) {
+    for (const bool projection : {false, true}) {
+      CAPTURE(waves);
+      CAPTURE(projection);
+      const auto analytic = hllem_correction(
+          bc::Hllem{waves, projection, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3, false},
+          state_int, state_ext, equation_of_state, normal_direction);
+      const auto numeric = hllem_correction(
+          bc::Hllem{waves, projection, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3, true},
+          state_int, state_ext, equation_of_state, normal_direction);
+      double restored = 0.0;
+      double difference = 0.0;
+      for (size_t n = 0; n < 10; ++n) {
+        CHECK(std::isfinite(gsl::at(numeric, n)));
+        restored = std::max(restored,
+                            std::abs(gsl::at(analytic, n) - gsl::at(none, n)));
+        difference = std::max(
+            difference, std::abs(gsl::at(numeric, n) - gsl::at(analytic, n)));
+      }
+      CAPTURE(scale);
+      CAPTURE(restored);
+      CAPTURE(difference);
+      // the interface restores something, so the agreement discriminates
+      CHECK(restored > 1.0e-3 * scale);
+      CHECK(difference < 1.0e-9 * scale);
+    }
+  }
+}
+
 // The complementary projection restores only the fluid subspace. In flat
 // space the B_n and phi rows of the flux Jacobian couple only to each other
 // (the GLM waves), so every fluid right eigenvector has zero B_n and phi
@@ -1995,7 +2042,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n"
-          "  MaxConditionNumber: None\n");
+          "  MaxConditionNumber: None\n"
+          "  NumericEigensystem: false\n");
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen), dynamic_cast<const bc::Hllem&>(*hllem),
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
@@ -2012,7 +2060,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n"
-          "  MaxConditionNumber: None\n");
+          "  MaxConditionNumber: None\n"
+          "  NumericEigensystem: false\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_none) !=
               bc::Hllem{bc::HllemWaves::None, false, 1.0e-4, 1.0e-30, 1.0e-8});
   CHECK(bc::Hllem{bc::HllemWaves::None, false, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -2029,7 +2078,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n"
-          "  MaxConditionNumber: None\n");
+          "  MaxConditionNumber: None\n"
+          "  NumericEigensystem: false\n");
   CHECK_FALSE(dynamic_cast<const bc::Hllem&>(*hllem_slow) !=
               bc::Hllem{bc::HllemWaves::Slow, false, 1.0e-4, 1.0e-30, 1.0e-8});
   const auto hllem_alfven =
@@ -2041,7 +2091,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
           "  DegeneracyTolerance: 1.0e-4\n"
           "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
           "  LightSpeedDensityCutoff: 1.0e-8\n"
-          "  MaxConditionNumber: None\n");
+          "  MaxConditionNumber: None\n"
+          "  NumericEigensystem: false\n");
   CHECK_FALSE(
       dynamic_cast<const bc::Hllem&>(*hllem_alfven) !=
       bc::Hllem{bc::HllemWaves::Alfven, false, 1.0e-4, 1.0e-30, 1.0e-8});
@@ -2088,6 +2139,12 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
         make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
                    pair_adiabatic_index, 1),
         *pair_eos, {{1.0, 0.0, 0.0}});
+    test_numeric_eigensystem_matches_analytic(
+        make_state(1.0, 1.0, {{0.2, -0.3, 0.1}}, {{0.5, 0.3, 0.2}},
+                   pair_adiabatic_index, 1),
+        make_state(4.0, 0.2, {{-0.1, 0.25, -0.4}}, {{0.3, -0.2, 0.4}},
+                   pair_adiabatic_index, 1),
+        *pair_eos, {{1.0, 0.0, 0.0}});
     test_complementary_projection_keeps_glm_on_hll(*pair_eos,
                                                    pair_adiabatic_index);
     const auto guarded_from_yaml =
@@ -2099,7 +2156,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
             "  DegeneracyTolerance: 1.0e-10\n"
             "  MagneticFieldMagnitudeForHydro: 1.0e-30\n"
             "  LightSpeedDensityCutoff: 1.0e-8\n"
-            "  MaxConditionNumber: 1.0e3\n");
+            "  MaxConditionNumber: 1.0e3\n"
+            "  NumericEigensystem: false\n");
     CHECK_FALSE(
         dynamic_cast<const bc::Hllem&>(*guarded_from_yaml) !=
         bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3});
@@ -2112,11 +2170,15 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
                           "DegeneracyTolerance: 1.0e-10\n"
                           "MagneticFieldMagnitudeForHydro: 1.0e-30\n"
                           "LightSpeedDensityCutoff: 1.0e-8\n"
-                          "MaxConditionNumber: 0.5\n")),
+                          "MaxConditionNumber: 0.5\n"
+                          "NumericEigensystem: false\n")),
                       Catch::Matchers::ContainsSubstring(
                           "MaxConditionNumber must be at least 1"));
   }
 
+  CHECK(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8,
+                  std::nullopt, true} !=
+        bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8});
   CHECK_FALSE(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
               bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8});
   CHECK(bc::Hllem{bc::HllemWaves::All, true, 1.0e-10, 1.0e-30, 1.0e-8} !=
@@ -2135,6 +2197,14 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.Hllem",
   TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
       make_not_null(&gen),
       bc::Hllem{bc::HllemWaves::All, false, 1.0e-10, 1.0e-30, 1.0e-8, 1.0e3},
+      Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
+      volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
+
+  // ... and so is the numerical eigensystem, on random curved states
+  TestHelpers::evolution::dg::test_boundary_correction_conservation<system>(
+      make_not_null(&gen),
+      bc::Hllem{bc::HllemWaves::All, false, 1.0e-4, 1.0e-30, 1.0e-8, 1.0e3,
+                true},
       Mesh<2>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss},
       volume_data, ranges, helpers::ZeroOnSmoothSolution::Yes, 1.0e-12, true);
 

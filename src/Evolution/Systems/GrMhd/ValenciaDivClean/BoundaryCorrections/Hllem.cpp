@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <iomanip>
 #include <ostream>
 #include <pup.h>
@@ -248,6 +250,181 @@ size_t env_count(const char* const name) {
                           : static_cast<size_t>(
                                 std::max(0L, std::strtol(value, nullptr, 10)));
 }
+
+// One grid point of a tensor, as a tensor of one point.
+template <typename TensorType>
+TensorType point_of(const TensorType& tensor, const size_t point) {
+  TensorType result{size_t{1}};
+  for (size_t c = 0; c < tensor.size(); ++c) {
+    result[c][0] = tensor[c][point];
+  }
+  return result;
+}
+
+// Euclidean norm of the i-th eigenvector, scaled by its largest entry so that
+// it cannot overflow; 0 if the vector is zero or not finite.
+template <typename TensorType>
+double scaled_norm(const TensorType& vectors, const size_t i,
+                   const size_t point) {
+  double largest = 0.0;
+  for (size_t n = 0; n < 9; ++n) {
+    largest = std::max(largest, std::abs(vectors.get(i, n)[point]));
+  }
+  if (not(largest > 0.0 and std::isfinite(largest))) {
+    return 0.0;
+  }
+  double sum = 0.0;
+  for (size_t n = 0; n < 9; ++n) {
+    sum += square(vectors.get(i, n)[point] / largest);
+  }
+  return largest * std::sqrt(sum);
+}
+
+// NumericEigensystem: replace the analytic eigensystem by the numerical one
+// of the same flux Jacobian at the same averaged state (unit lapse, zero
+// shift), from `numerical_characteristics` (`flux_jacobian_mhd` and
+// `find_real_eigensystem`). Its conventions are those of the analytic one:
+// speeds in increasing order (the MHD speed order), modes.get(i, n) the i-th
+// right eigenvector, projectors.get(i, n) the i-th left one. Each vector is
+// scaled to unit Euclidean norm: find_real_eigensystem's vectors carry the
+// balancing factors, whose entries can reach 1e160 and overflow the squared
+// norms of the condition guard; the projector r_k l_k / (l_k.r_k) is
+// unchanged. Where the eigensystem cannot be computed (a non-finite input,
+// find_real_eigensystem throws, or a non-finite result) the analytic one is
+// kept at that point and reported.
+template <typename EquationOfStateType>
+void use_numerical_eigensystem(
+    const gsl::not_null<tnsr::i<DataVector, 9>*> speeds,
+    const gsl::not_null<tnsr::ij<DataVector, 9>*> modes,
+    const gsl::not_null<tnsr::IJ<DataVector, 9>*> projectors,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& electron_fraction,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataVector, 3, Frame::Inertial>& unit_normal,
+    const EquationOfStateType& equation_of_state) {
+  const ScopedFpeState numeric_fpe(false);
+  const size_t num_points = get(rest_mass_density).size();
+  const auto finite_at = [](const auto& tensor, const size_t point) {
+    for (size_t c = 0; c < tensor.size(); ++c) {
+      if (not std::isfinite(tensor[c][point])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::vector<bool> failed(num_points, false);
+  bool all_finite = true;
+  for (size_t pt = 0; pt < num_points; ++pt) {
+    failed[pt] = not(
+        finite_at(spatial_velocity, pt) and finite_at(magnetic_field, pt) and
+        finite_at(rest_mass_density, pt) and
+        finite_at(specific_internal_energy, pt) and
+        finite_at(electron_fraction, pt) and finite_at(lorentz_factor, pt) and
+        finite_at(specific_enthalpy, pt) and finite_at(spatial_metric, pt) and
+        finite_at(inv_spatial_metric, pt) and finite_at(unit_normal, pt));
+    all_finite = all_finite and not failed[pt];
+  }
+
+  static std::atomic<size_t> number_of_failures_reported{0};
+  const auto report_failure = [](const std::string& reason) {
+    if (number_of_failures_reported.fetch_add(1) < 20) {
+      Parallel::printf(
+          "Hllem NumericEigensystem: %s; that face point keeps the analytic "
+          "eigensystem.\n",
+          reason.c_str());
+    }
+  };
+
+  tnsr::i<DataVector, 9> numeric_speeds{num_points};
+  tnsr::ij<DataVector, 9> numeric_modes{num_points};
+  tnsr::IJ<DataVector, 9> numeric_projectors{num_points};
+  bool solved_all = false;
+  if (all_finite) {
+    try {
+      numerical_characteristics(
+          make_not_null(&numeric_speeds), make_not_null(&numeric_modes),
+          make_not_null(&numeric_projectors), spatial_velocity, magnetic_field,
+          rest_mass_density, specific_internal_energy, electron_fraction,
+          lorentz_factor, specific_enthalpy, spatial_metric, inv_spatial_metric,
+          unit_normal, equation_of_state);
+      solved_all = true;
+    } catch (const std::exception& /*e*/) {
+      solved_all = false;
+    }
+  }
+  if (not solved_all) {
+    // Point by point, so that only the failing points keep the analytic
+    // eigensystem.
+    tnsr::i<DataVector, 9> point_speeds{size_t{1}};
+    tnsr::ij<DataVector, 9> point_modes{size_t{1}};
+    tnsr::IJ<DataVector, 9> point_projectors{size_t{1}};
+    for (size_t pt = 0; pt < num_points; ++pt) {
+      if (failed[pt]) {
+        report_failure("non-finite averaged state");
+        continue;
+      }
+      try {
+        numerical_characteristics(
+            make_not_null(&point_speeds), make_not_null(&point_modes),
+            make_not_null(&point_projectors), point_of(spatial_velocity, pt),
+            point_of(magnetic_field, pt), point_of(rest_mass_density, pt),
+            point_of(specific_internal_energy, pt),
+            point_of(electron_fraction, pt), point_of(lorentz_factor, pt),
+            point_of(specific_enthalpy, pt), point_of(spatial_metric, pt),
+            point_of(inv_spatial_metric, pt), point_of(unit_normal, pt),
+            equation_of_state);
+      } catch (const std::exception& /*e*/) {
+        report_failure("find_real_eigensystem failed");
+        failed[pt] = true;
+        continue;
+      }
+      for (size_t i = 0; i < 9; ++i) {
+        numeric_speeds.get(i)[pt] = point_speeds.get(i)[0];
+        for (size_t n = 0; n < 9; ++n) {
+          numeric_modes.get(i, n)[pt] = point_modes.get(i, n)[0];
+          numeric_projectors.get(i, n)[pt] = point_projectors.get(i, n)[0];
+        }
+      }
+    }
+  }
+
+  for (size_t pt = 0; pt < num_points; ++pt) {
+    if (failed[pt]) {
+      continue;
+    }
+    std::array<double, 9> right_norms{};
+    std::array<double, 9> left_norms{};
+    bool ok = true;
+    for (size_t i = 0; ok and i < 9; ++i) {
+      gsl::at(right_norms, i) = scaled_norm(numeric_modes, i, pt);
+      gsl::at(left_norms, i) = scaled_norm(numeric_projectors, i, pt);
+      ok = std::isfinite(numeric_speeds.get(i)[pt]) and
+           gsl::at(right_norms, i) > 0.0 and
+           std::isfinite(gsl::at(right_norms, i)) and
+           gsl::at(left_norms, i) > 0.0 and
+           std::isfinite(gsl::at(left_norms, i));
+    }
+    if (not ok) {
+      report_failure("non-finite numerical eigensystem");
+      continue;
+    }
+    for (size_t i = 0; i < 9; ++i) {
+      speeds->get(i)[pt] = numeric_speeds.get(i)[pt];
+      for (size_t n = 0; n < 9; ++n) {
+        modes->get(i, n)[pt] =
+            numeric_modes.get(i, n)[pt] / gsl::at(right_norms, i);
+        projectors->get(i, n)[pt] =
+            numeric_projectors.get(i, n)[pt] / gsl::at(left_norms, i);
+      }
+    }
+  }
+}
 }  // namespace
 
 Hllem::Hllem(const HllemWaves waves_to_restore,
@@ -256,13 +433,14 @@ Hllem::Hllem(const HllemWaves waves_to_restore,
              const double magnetic_field_magnitude_for_hydro,
              const double light_speed_density_cutoff,
              const std::optional<double> max_condition_number,
-             const Options::Context& context)
+             const bool numeric_eigensystem, const Options::Context& context)
     : waves_to_restore_(waves_to_restore),
       use_complementary_projection_(use_complementary_projection),
       degeneracy_tolerance_(degeneracy_tolerance),
       magnetic_field_magnitude_for_hydro_(magnetic_field_magnitude_for_hydro),
       light_speed_density_cutoff_(light_speed_density_cutoff),
-      max_condition_number_(max_condition_number) {
+      max_condition_number_(max_condition_number),
+      numeric_eigensystem_(numeric_eigensystem) {
   if (max_condition_number_.has_value() and
       not(*max_condition_number_ >= 1.0)) {
     PARSE_ERROR(context,
@@ -285,6 +463,7 @@ void Hllem::pup(PUP::er& p) {
   p | magnetic_field_magnitude_for_hydro_;
   p | light_speed_density_cutoff_;
   p | max_condition_number_;
+  p | numeric_eigensystem_;
 }
 
 double Hllem::dg_package_data(
@@ -729,6 +908,13 @@ void Hllem::dg_boundary_terms(
       make_not_null(&modes), make_not_null(&projectors), mhd_speeds, v_avg,
       b_avg, rho_avg, eps_avg, w_avg, enthalpy_avg, spatial_metric_avg,
       unit_normal, equation_of_state, false);
+  if (numeric_eigensystem_) {
+    use_numerical_eigensystem(make_not_null(&mhd_speeds), make_not_null(&modes),
+                              make_not_null(&projectors), v_avg, b_avg, rho_avg,
+                              eps_avg, ye_avg, w_avg, enthalpy_avg,
+                              spatial_metric_avg, inv_spatial_metric_avg,
+                              unit_normal, equation_of_state);
+  }
 
   // The eigenvectors do not depend on the lapse and shift: the physical
   // flux Jacobian is alpha A - beta_n I, with A the one at unit lapse and zero
@@ -1198,7 +1384,8 @@ bool operator==(const Hllem& lhs, const Hllem& rhs) {
          lhs.magnetic_field_magnitude_for_hydro_ ==
              rhs.magnetic_field_magnitude_for_hydro_ and
          lhs.light_speed_density_cutoff_ == rhs.light_speed_density_cutoff_ and
-         lhs.max_condition_number_ == rhs.max_condition_number_;
+         lhs.max_condition_number_ == rhs.max_condition_number_ and
+         lhs.numeric_eigensystem_ == rhs.numeric_eigensystem_;
 }
 bool operator!=(const Hllem& lhs, const Hllem& rhs) { return not(lhs == rhs); }
 
