@@ -216,11 +216,18 @@ class Hllem final : public evolution::BoundaryCorrection {
         "wave pair rather than adding it on top of the contact."};
   };
   struct DegeneracyTolerance {
+    using type = double;
+    static type lower_bound() { return 0.0; }
+    // At 1e-4, HLLEM with all waves restored runs the magnetized Del Zanna jet
+    // to completion, and the Balsara 1-4 shock tubes give the same results, to
+    // round-off, as with exactly degenerate slow speeds. At 1e-10 the guard
+    // keeps more near-degenerate slow waves and the jet aborts. Values between
+    // 1e-10 and 1e-4 have not been tested.
+    static type suggested_value() { return 1.0e-4; }
     static constexpr Options::String help = {
         "Speed-gap below which neighbouring waves are treated as degenerate "
-        "and "
-        "handled by the complementary projection."};
-    using type = double;
+        "and handled by the complementary projection (or dropped, without "
+        "it)."};
   };
   struct UseComplementaryProjection {
     static constexpr Options::String help = {

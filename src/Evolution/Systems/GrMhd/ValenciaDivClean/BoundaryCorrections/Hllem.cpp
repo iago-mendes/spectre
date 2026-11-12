@@ -473,12 +473,12 @@ void Hllem::dg_boundary_terms(
 
   // --- HLLEM anti-diffusion (flat space; eigensystem at the average state) ---
   // The five-wave eigensystem is built assuming Minkowski (the regime of the
-  // relativistic M&M tests). If the background is curved anywhere on the face we
-  // keep the (conservative) HLL flux and skip the eigensystem entirely -- both
-  // because the anti-diffusion would be masked out anyway and because building
-  // the flat-space eigensystem from curved-metric primitives would feed
-  // superluminal velocities into characteristic_speeds_mhd. (M&M backgrounds are
-  // uniform, so a face is either all-flat or all-curved.)
+  // relativistic M&M tests). If the background is curved anywhere on the face
+  // we keep the (conservative) HLL flux and skip the eigensystem entirely --
+  // both because the anti-diffusion would be masked out anyway and because
+  // building the flat-space eigensystem from curved-metric primitives would
+  // feed superluminal velocities into characteristic_speeds_mhd. (M&M
+  // backgrounds are uniform, so a face is either all-flat or all-curved.)
   if (max(get(metric_flatness_int)) > 1.0e-12 or
       max(get(metric_flatness_ext)) > 1.0e-12) {
     return;
