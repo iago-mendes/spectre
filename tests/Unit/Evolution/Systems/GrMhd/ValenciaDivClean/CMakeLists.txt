@@ -32,6 +32,7 @@ set(LIBRARY_SOURCES
   Subcell/Test_TciOptions.cpp
   Subcell/Test_TimeDerivative.cpp
   Test_Characteristics.cpp
+  Test_CharacteristicsMhd.cpp
   Test_ComovingMagneticFieldMagnitude.cpp
   Test_ComputeFluxesFromPrimitives.cpp
   Test_ConservativeFromPrimitive.cpp

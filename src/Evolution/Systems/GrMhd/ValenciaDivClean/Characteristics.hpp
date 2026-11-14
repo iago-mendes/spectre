@@ -207,6 +207,214 @@ tnsr::i<DataVector, 3> characteristic_speeds_hydro(
         equation_of_state);
 /// @}
 
+/*!
+ * \brief Labels for the characteristic speeds of the relativistic
+ * magnetohydrodynamics system, in increasing order.
+ *
+ * \see `grmhd::ValenciaDivClean::characteristic_speeds_mhd`
+ */
+namespace MhdSpeed {
+/// The smallest fast magnetosonic speed, $\lambda_\text{fast}^-$
+constexpr size_t FastMagnetosonicMinus = 0;
+/// The smallest Alfven speed, $\lambda_\text{Alfven}^-$
+constexpr size_t AlfvenMinus = 1;
+/// The smallest slow magnetosonic speed, $\lambda_\text{slow}^-$
+constexpr size_t SlowMagnetosonicMinus = 2;
+/// The entropy speed, $\lambda_\text{entropy} = v_n = v^i s_i$
+constexpr size_t Entropy = 3;
+/// The largest slow magnetosonic speed, $\lambda_\text{slow}^+$
+constexpr size_t SlowMagnetosonicPlus = 4;
+/// The largest Alfven speed, $\lambda_\text{Alfven}^+$
+constexpr size_t AlfvenPlus = 5;
+/// The largest fast magnetosonic speed, $\lambda_\text{fast}^+$
+constexpr size_t FastMagnetosonicPlus = 6;
+}  // namespace MhdSpeed
+
+/*!
+ * \brief Coefficients of the quartic polynomial whose roots give the
+ * magnetosonic characteristic speeds.
+ *
+ * These coefficients are calculated by expanding Eq. (2.30) in
+ * \cite Teukolsky2026 in the Eulerian frame and dividing by the coefficient of
+ * the quartic term (see `characteristic_speeds_mhd` for the polynomial $N$).
+ *
+ * We order the coefficients as follows:
+ * \begin{equation}
+ *   x^4 + c_3 x^3 + c_2 x^2 + c_1 x + c_0 = 0,
+ * \end{equation}
+ * where $c_i$ is given by `quartic_coefficients.get(i)`.
+ *
+ * The magnetic quantities must be divided by $\sqrt{\rho h}$ (or $\rho h$
+ * for the squared ones), so that all inputs are dimensionless:
+ * `normal_magnetic_field` is $B_n / \sqrt{\rho h}$,
+ * `magnetic_field_dot_spatial_velocity` is $B^i v_i / \sqrt{\rho h}$, and
+ * `comoving_magnetic_field_squared` is $b^2 / (\rho h)$.
+ *
+ * \see `grmhd::ValenciaDivClean::characteristic_speeds_mhd`
+ */
+void magnetosonic_quartic_coefficients(
+    gsl::not_null<tnsr::i<DataVector, 4>*> quartic_coefficients,
+    const Scalar<DataVector>& sound_speed_squared,
+    const Scalar<DataVector>& normal_velocity,
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& normal_magnetic_field,
+    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataVector>& comoving_magnetic_field_squared);
+
+/*!
+ * \brief Find a magnetosonic speed by Newton-Raphson rootfinding.
+ *
+ * A point is accepted once the quartic's residual reaches the larger of
+ * $10^{-14}$ and what double precision can resolve there,
+ * $8 \epsilon_\text{mach} \sum_k |c_k x^k|$ (with $c_4 = 1$). The second
+ * bound matters at strong magnetization, where the coefficients are large.
+ *
+ * \note `magnetosonic_speed` should be initialized to a initial guess close to
+ * the desired root. For example, +1.0 for the fast magnetosonic speed in the
+ * positive direction and -1.0 for the fast magnetosonic speed in the negative
+ * direction.
+ *
+ * \see `grmhd::ValenciaDivClean::magnetosonic_quartic_coefficients` for how to
+ * specify the quartic coefficients.
+ */
+void find_magnetosonic_speed_from_quartic(
+    gsl::not_null<DataVector*> magnetosonic_speed,
+    const tnsr::i<DataVector, 4>& quartic_coefficients);
+
+/*!
+ * \brief Compute the characteristic speeds for the relativistic
+ * magnetohydrodynamics system with divergence cleaning in the Eulerian frame.
+ *
+ * These are the eigenvalues of the flux Jacobian projected along a spatial
+ * direction with unit normal $s_i$, evaluated with unit lapse and zero shift.
+ * With lapse $\alpha$ and shift $\beta^i$, the physical characteristic speeds
+ * are $\alpha \lambda - \beta_n$ with $\beta_n = \beta^i s_i$.
+ *
+ * Following \cite Teukolsky2026 (Eq. (4.13)), the characteristic speeds
+ * $\lambda$ are the zeros of the determinant of the characteristic matrix,
+ * which is, up to a constant factor,
+ * \begin{equation}
+ *   \det(A^a q_a) = a \, G \, (\mathcal{B}^2 - \rho h^* a^2) \, N,
+ * \end{equation}
+ * where $q_a = \lambda n_a + s_a$, with $n_a$ the unit normal to the 3+1 slice,
+ * and
+ * \begin{align}
+ *   a &= q^a u_a = W (v_n - \lambda), \\
+ *   \mathcal{B} &= q^a b_a = \frac{B_n}{W} - W (B^i v_i) (\lambda - v_n), \\
+ *   G &= q^a q_a = 1 - \lambda^2, \\
+ *   N &= a^2 G b^2 - \rho h a^4
+ *        + c_s^2 \left[\rho h a^2 (a^2 + G) - \mathcal{B}^2 G\right].
+ * \end{align}
+ * Here $v_n = v^i s_i$, $B_n = B^i s_i$, $W$ is the Lorentz factor,
+ * $b^2 = B^i B_i / W^2 + (B^i v_i)^2$ is the comoving magnetic field
+ * squared, and $\rho h^* = \rho h + b^2$. Each factor gives a class of
+ * speeds:
+ * - Entropy ($a = 0$):
+ *   \begin{equation}
+ *     \lambda_\text{entropy} = v_n.
+ *   \end{equation}
+ * - %Scalar, from the divergence cleaning ($G = 0$):
+ *   \begin{equation}
+ *     \lambda_\text{scalar}^\pm = \pm 1.
+ *   \end{equation}
+ *   These are the speed of light at every point, so they are not returned.
+ * - Alfven ($\mathcal{B} = \pm \sqrt{\rho h^*} a$): the closed form (Eq.
+ *   (2.74) of \cite Teukolsky2026)
+ *   \begin{equation}
+ *     \lambda_\text{Alfven} = v_n
+ *       + \frac{B_n}{W^2 \left(B^i v_i \pm \sqrt{\rho h^*}\right)},
+ *   \end{equation}
+ *   where the smaller of the two values is $\lambda_\text{Alfven}^-$.
+ * - Magnetosonic ($N = 0$): the four roots of a quartic in $\lambda$, two
+ *   fast and two slow.
+ *
+ * For an admissible state, the order of the speeds is always
+ * \begin{equation}
+ *   \lambda_\text{scalar}^- \leq \lambda_\text{fast}^-
+ *   \leq \lambda_\text{Alfven}^- \leq \lambda_\text{slow}^-
+ *   \leq \lambda_\text{entropy} \leq \lambda_\text{slow}^+
+ *   \leq \lambda_\text{Alfven}^+ \leq \lambda_\text{fast}^+
+ *   \leq \lambda_\text{scalar}^+.
+ * \end{equation}
+ * The scalar speeds are outermost because every other speed lies inside the
+ * light cone. Without them, this is Eq. (42) of \cite Anton2010.
+ *
+ * The magnetosonic speeds are computed as follows:
+ * 1. The fast speeds are found by Newton-Raphson on $N$ written as a monic
+ *    quartic (`magnetosonic_quartic_coefficients`), starting from $\pm 1$
+ *    (`find_magnetosonic_speed_from_quartic`). Every root lies inside
+ *    $[-1, 1]$, so from these starting points Newton converges monotonically
+ *    to the extremal roots.
+ * 2. Dividing the quartic by the two fast roots leaves a quadratic whose
+ *    roots are first estimates of the slow speeds. They inherit the error of
+ *    the fast roots, amplified by
+ *    $1 / (\lambda_\text{slow}^+ - \lambda_\text{slow}^-)$, which is large
+ *    near the degeneracy of the slow and entropy speeds ($B_n \to 0$).
+ * 3. Each slow speed is therefore solved again by Newton-Raphson on $N$
+ *    written in the comoving variable $\mu = \lambda - v_n$ (a form also used
+ *    by \cite Anton2010),
+ *    \begin{equation}
+ *      F(\mu) = -\frac{N}{\rho h \, G}
+ *        = c_s^2 \tilde{\mathcal{B}}^2 - (c_s^2 + \tilde{b}^2) W^2 \mu^2
+ *          + \frac{(1 - c_s^2) W^4 \mu^4}{G},
+ *    \end{equation}
+ *    where a tilde denotes division by $\sqrt{\rho h}$. $F$ has no
+ *    cancellation of order one near $\mu = 0$. Newton starts from two seeds:
+ *    the estimate of step 2, and the closed form that zeroes the first two
+ *    terms of $F$,
+ *    \begin{equation}
+ *      \mu = \frac{c_s \tilde{B}_n}
+ *        {W^2 \left(c_s \tilde{B}^i v_i \pm \sqrt{c_s^2 + \tilde{b}^2}\right)},
+ *    \end{equation}
+ *    which is exact as $B_n \to 0$. Neither seed alone converges to the slow
+ *    speed on every state, so both are tried, starting from the one with the
+ *    smaller first Newton step. Each Newton step is halved as needed to keep
+ *    $\lambda$ inside the light cone, where $G > 0$. A root is accepted only
+ *    if Newton converged within 8 iterations to a point between $v_n$ and
+ *    the corresponding Alfven speed; otherwise the estimate of step 2 is
+ *    kept. For $B_n = 0$ the slow speeds are exactly $v_n$.
+ *
+ * The returned tensor has index 0..6, in increasing order (see `MhdSpeed`):
+ * - `characteristic_speeds.get(0)`: fast magnetosonic speed
+ *   $\lambda_\text{fast}^-$
+ * - `characteristic_speeds.get(1)`: Alfven speed $\lambda_\text{Alfven}^-$
+ * - `characteristic_speeds.get(2)`: slow magnetosonic speed
+ *   $\lambda_\text{slow}^-$
+ * - `characteristic_speeds.get(3)`: entropy speed $v_n$
+ * - `characteristic_speeds.get(4)`: slow magnetosonic speed
+ *   $\lambda_\text{slow}^+$
+ * - `characteristic_speeds.get(5)`: Alfven speed $\lambda_\text{Alfven}^+$
+ * - `characteristic_speeds.get(6)`: fast magnetosonic speed
+ *   $\lambda_\text{fast}^+$
+ *
+ * \note The sound speed must satisfy $0 \leq c_s^2 < 1$, the condition for
+ * the system to be hyperbolic, and this function stops with an error
+ * otherwise. Every causal equation of state satisfies it, provided the state
+ * passed in is consistent with the equation of state (e.g., the specific
+ * enthalpy $h = 1 + \epsilon + p / \rho$ with $p$ from the equation of state
+ * at the given $\rho$ and $\epsilon$).
+ *
+ * \note The normal must be unit with respect to the spatial metric.
+ */
+template <size_t ThermodynamicDim>
+void characteristic_speeds_mhd(
+    gsl::not_null<tnsr::i<DataVector, 7>*> characteristic_speeds,
+
+    /* primitive variables */
+    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataVector>& rest_mass_density,
+    const Scalar<DataVector>& specific_internal_energy,
+    const Scalar<DataVector>& electron_fraction,
+
+    /* other helpful quantities */
+    const Scalar<DataVector>& lorentz_factor,
+    const Scalar<DataVector>& specific_enthalpy,
+    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::i<DataVector, 3>& unit_normal,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
+        equation_of_state);
+
 /**
  * \brief Compute the characteristic matrix (flux Jacobian) for relativistic
  * hydrodynamics + composition ($Y_e$), in a given direction.
