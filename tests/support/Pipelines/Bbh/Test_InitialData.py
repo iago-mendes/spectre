@@ -16,6 +16,7 @@ from spectre.Pipelines.Bbh.InitialData import (
     generate_id,
     generate_id_command,
     id_parameters,
+    separation_dependent_free_data,
 )
 from spectre.support.Logging import configure_logging
 
@@ -145,6 +146,137 @@ class TestInitialData(unittest.TestCase):
         self.assertAlmostEqual(
             params["ObjectBOuterRadius"],
             MIN_SHELL_THICKNESS * params["ExcisionRadiusLeft"],
+        )
+
+    def test_separation_dependent_free_data(self):
+        # Equal masses, no spins, D_0 = 15: the conformal masses are the
+        # fit's factor at D_0 = 15, and only the companion's frame dragging
+        # rotates the horizons
+        guess = separation_dependent_free_data(
+            {
+                "MassA": 0.5,
+                "MassB": 0.5,
+                "DimensionlessSpinA": [0.0, 0.0, 0.0],
+                "DimensionlessSpinB": [0.0, 0.0, 0.0],
+            },
+            separation=15.0,
+            orbital_angular_velocity=0.01,
+            negative_expansion_bc=True,
+        )
+        self.assertAlmostEqual(guess["conformal_mass_a"], 0.8219 * 0.5)
+        self.assertAlmostEqual(guess["conformal_mass_b"], 0.8219 * 0.5)
+        npt.assert_allclose(
+            guess["horizon_rotation_a"], [0.0, 0.0, -1.664 * 0.01 * 0.5 / 15.0]
+        )
+        npt.assert_allclose(
+            guess["horizon_rotation_b"], [0.0, 0.0, -1.664 * 0.01 * 0.5 / 15.0]
+        )
+        npt.assert_allclose(guess["center_of_mass_offset"], [0.0, 0.0, 0.0])
+        # q = 10, chi_A = 0.99 aligned, D_0 = 10, both excision conditions.
+        # Reference values from an independent transcription of the fit.
+        target_params = {
+            "MassA": 10.0 / 11.0,
+            "MassB": 1.0 / 11.0,
+            "DimensionlessSpinA": [0.0, 0.0, 0.99],
+            "DimensionlessSpinB": [0.0, 0.0, 0.0],
+        }
+        for negative_expansion_bc, expected in (
+            (
+                True,
+                (0.6957325890363734, 0.08250606383080626, -0.4894889683170177),
+            ),
+            (
+                False,
+                (0.7048119483043631, 0.08341399975760524, -0.4660351985414215),
+            ),
+        ):
+            guess = separation_dependent_free_data(
+                target_params,
+                separation=10.0,
+                orbital_angular_velocity=0.02701,
+                negative_expansion_bc=negative_expansion_bc,
+            )
+            self.assertAlmostEqual(guess["conformal_mass_a"], expected[0])
+            self.assertAlmostEqual(guess["conformal_mass_b"], expected[1])
+            npt.assert_allclose(
+                guess["horizon_rotation_a"], [0.0, 0.0, expected[2]]
+            )
+            npt.assert_allclose(
+                guess["horizon_rotation_b"], [0.0, 0.0, -0.003639474727272727]
+            )
+            npt.assert_allclose(
+                guess["center_of_mass_offset"], [0.0, 0.04143859419054489, 0.0]
+            )
+        # The conformal masses grow toward the target masses with separation
+        masses = [
+            separation_dependent_free_data(
+                target_params,
+                separation=separation,
+                orbital_angular_velocity=separation**-1.5,
+                negative_expansion_bc=True,
+            )["conformal_mass_a"]
+            for separation in (6.0, 10.0, 15.0, 30.0, 100.0)
+        ]
+        self.assertTrue(all(m1 < m2 for m1, m2 in zip(masses, masses[1:])))
+        self.assertLess(masses[-1], target_params["MassA"])
+        # The option fills the free data that are not given, and keeps the
+        # ones that are
+        common_args = [
+            "--mass-ratio",
+            "10",
+            "--chi-A",
+            "0",
+            "0",
+            "0.99",
+            "--chi-B",
+            "0",
+            "0",
+            "0",
+            "--separation",
+            "10",
+            "--orbital-angular-velocity",
+            "0.02701",
+            "--radial-expansion-velocity",
+            "-6.87e-5",
+            "--refinement-level",
+            "1",
+            "--polynomial-order",
+            "5",
+            "-E",
+            str(self.bin_dir / "SolveXcts"),
+            "--no-schedule",
+            "--no-submit",
+        ]
+
+        def background(name, extra_args):
+            try:
+                generate_id_command(
+                    common_args + ["-o", str(self.test_dir / name)] + extra_args
+                )
+            except SystemExit as e:
+                self.assertEqual(e.code, 0)
+            with open(
+                self.test_dir / name / "0000_InitialData/InitialData.yaml", "r"
+            ) as open_input_file:
+                return list(yaml.safe_load_all(open_input_file))[1][
+                    "Background"
+                ]["Binary"]
+
+        default = background("Default", [])
+        self.assertAlmostEqual(
+            default["ObjectRight"]["KerrSchild"]["Mass"],
+            (0.826 + 0.012 + 0.021 * 0.99**2) * 10.0 / 11.0,
+        )
+        self.assertEqual(default["CenterOfMassOffset"], [0.0, 0.0])
+        guessed = background("Guessed", ["--separation-dependent-guess"])
+        self.assertAlmostEqual(
+            guessed["ObjectRight"]["KerrSchild"]["Mass"], 0.6957325890363734
+        )
+        self.assertAlmostEqual(
+            guessed["ObjectLeft"]["KerrSchild"]["Mass"], 0.08250606383080626
+        )
+        npt.assert_allclose(
+            guessed["CenterOfMassOffset"], [0.04143859419054489, 0.0]
         )
 
     def test_extra_radial_points_clip(self):

@@ -57,6 +57,112 @@ def L1_distance(m1, m2, separation):
     return separation * (0.5 - 0.227 * np.log10(m2 / m1))
 
 
+def excision_factor(
+    chi_a: Sequence[float], chi_b: Sequence[float], negative_expansion_bc: bool
+) -> float:
+    """Excision radius of both objects as a fraction of their outer horizon
+    radius r_+ (of a Kerr black hole with the conformal mass and the spin)"""
+    if not negative_expansion_bc:
+        return 1.0
+    # For high spins, we need to place the excisions closer to the outer
+    # horizon in order to avoid the inner horizon.
+    return (
+        0.97
+        if max(np.linalg.norm(chi_a), np.linalg.norm(chi_b)) > 0.9
+        else 0.93
+    )
+
+
+def separation_dependent_free_data(
+    target_params: Dict[TargetParams, Union[float, Sequence[float]]],
+    separation: float,
+    orbital_angular_velocity: float,
+    negative_expansion_bc: bool,
+) -> dict:
+    """Initial guesses for the free data that depend on the separation.
+
+    Fit to the converged free data of 171 BBH initial-data control runs
+    (q = 1 to 1e6, chi = 0 to 0.999, D_0 = 4.9 to 77.5, both excision
+    conditions). The default guesses in 'generate_id' were fit at D_0 = 15
+    only, and they overestimate the conformal masses at small separations
+    (by 11% for the larger black hole at q = 10, chi = 0.99, D_0 = 10). With
+    too large conformal masses the first elliptic solve can have no solution.
+
+    - Conformal masses: Mbar = f M with
+      f = 1 - (1 - f_15) (15 / D_0)^0.7495, where f_15 depends on log10(q),
+      1 - 1/q, the spin through 1 - sqrt(1 - chi^2), and the excision
+      condition.
+    - Horizon rotations: h times the frame-dragging angular velocity of a
+      Kerr black hole with the target mass M and spin chi at the excision
+      radius (in the direction of -chi), plus a frame-dragging term
+      -c Omega_0 M_other / D_0 along the orbital axis.
+    - Center-of-mass offset: 0.7022 (1 - 1/q) / (q + 5.251) along y.
+
+    Returns the free data as the keyword arguments of 'generate_id' take
+    them: 'conformal_mass_a', 'conformal_mass_b', 'horizon_rotation_a',
+    'horizon_rotation_b' (without the orbital angular velocity) and
+    'center_of_mass_offset'.
+    """
+    mass_a, mass_b = target_params["MassA"], target_params["MassB"]
+    chi_a = np.asarray(target_params["DimensionlessSpinA"], dtype=float)
+    chi_b = np.asarray(target_params["DimensionlessSpinB"], dtype=float)
+    q = max(mass_a / mass_b, 1.0)
+    log10q = np.log10(q)
+    g = 1.0 - 1.0 / q
+    zero_expansion = 0.0 if negative_expansion_bc else 1.0
+    eps = excision_factor(chi_a, chi_b, negative_expansion_bc)
+    d15 = 15.0 / separation
+    result = {}
+    for name, chi, mass, mass_other in (
+        ("a", chi_a, mass_a, mass_b),
+        ("b", chi_b, mass_b, mass_a),
+    ):
+        chi_mag = min(float(np.linalg.norm(chi)), 1.0)
+        k = 1.0 - np.sqrt(1.0 - chi_mag**2)
+        if name == "a":
+            f15 = (
+                0.8219
+                + 0.03787 * log10q
+                - 0.002628 * log10q**2
+                - 0.06323 * g
+                + 0.03094 * k
+                + 0.00737 * zero_expansion
+            )
+        else:
+            f15 = 0.8219 + 0.1221 * g + 0.03094 * k + 0.00737 * zero_expansion
+        result[f"conformal_mass_{name}"] = (
+            1.0 - (1.0 - f15) * d15**0.7495
+        ) * mass
+        # Frame-dragging angular velocity of Kerr at the excision radius,
+        # relative to the horizon's
+        a = min(chi_mag, 1.0 - 1e-7)
+        if a < 1e-12:
+            drag_ratio = 1.0
+        else:
+            r_plus = 1.0 + np.sqrt(1.0 - a**2)
+            r = eps * r_plus
+            delta = r**2 - 2.0 * r + a**2
+            drag_ratio = (2.0 * a * r / ((r**2 + a**2) ** 2 - a**2 * delta)) / (
+                a / (2.0 * r_plus)
+            )
+        if negative_expansion_bc:
+            h = 0.9847 + (0.03151 if name == "a" else -0.06285) * g
+        else:
+            h = 0.9638 + (0.04086 if name == "a" else -0.05934) * g
+        h -= 0.04976 * (d15 - 1.0)
+        rotation = (
+            -h
+            * drag_ratio
+            * chi
+            / (2.0 * mass * (1.0 + np.sqrt(1.0 - chi_mag**2)))
+        )
+        c = 1.664 + (0.1822 if name == "a" else -0.2020) * g
+        rotation[2] -= c * orbital_angular_velocity * mass_other / separation
+        result[f"horizon_rotation_{name}"] = list(rotation)
+    result["center_of_mass_offset"] = [0.0, 0.7022 * g / (q + 5.251), 0.0]
+    return result
+
+
 def id_parameters(
     conformal_mass_a: float,
     conformal_mass_b: float,
@@ -119,18 +225,9 @@ def id_parameters(
     r_plus_B = conformal_mass_b * (1.0 + np.sqrt(1 - np.dot(chi_B, chi_B)))
     Omega_B = list(horizon_rotation_b)
     Omega_B[2] += orbital_angular_velocity
-    if negative_expansion_bc:
-        # For high spins, we need to place the excisions closer to the outer
-        # horizon in order to avoid the inner horizon.
-        excision_factor = (
-            0.97
-            if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9
-            else 0.93
-        )
-    else:
-        excision_factor = 1.0
-    excision_radius_a = excision_factor * r_plus_A
-    excision_radius_b = excision_factor * r_plus_B
+    factor = excision_factor(chi_A, chi_B, negative_expansion_bc)
+    excision_radius_a = factor * r_plus_A
+    excision_radius_b = factor * r_plus_B
     # Falloff widths of superposition
     L1_dist_A = L1_distance(conformal_mass_a, conformal_mass_b, separation)
     L1_dist_B = separation - L1_dist_A
@@ -271,6 +368,7 @@ def generate_id(
     numeric_initial_guess_max_control_residual: Optional[float] = None,
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
+    separation_dependent_guess: bool = False,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -355,6 +453,11 @@ def generate_id(
         solve of the control loop that started from the previous solution
         from the background if it fails. See 'support.Pipelines.Bbh.ControlId'.
         (default: False)
+      separation_dependent_guess: Compute the initial guesses for the free
+        data that are not given explicitly (conformal masses, horizon
+        rotations, and the center-of-mass offset if it is zero) with
+        'separation_dependent_free_data' instead of the fits at D_0 = 15.
+        (default: False)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -431,6 +534,23 @@ def generate_id(
     # black hole on (1 - 1/q), so it saturates at an isolated-black-hole
     # plateau as q -> infinity. Both factors have the same q = 1 limit, so the
     # guesses are symmetric under exchange of the black holes at equal mass.
+    if separation_dependent_guess:
+        guess = separation_dependent_free_data(
+            target_params,
+            separation=separation,
+            orbital_angular_velocity=orbital_angular_velocity,
+            negative_expansion_bc=negative_expansion_bc,
+        )
+        if conformal_mass_a is None:
+            conformal_mass_a = guess["conformal_mass_a"]
+        if conformal_mass_b is None:
+            conformal_mass_b = guess["conformal_mass_b"]
+        if horizon_rotation_a is None:
+            horizon_rotation_a = guess["horizon_rotation_a"]
+        if horizon_rotation_b is None:
+            horizon_rotation_b = guess["horizon_rotation_b"]
+        if not np.any(center_of_mass_offset):
+            center_of_mass_offset = guess["center_of_mass_offset"]
     q = max(target_params["MassA"] / target_params["MassB"], 1.0)
     log10q = np.log10(q)
     if conformal_mass_a is None:
@@ -779,6 +899,16 @@ def generate_id(
         " that started from the previous solution from the background if it"
         " fails (a full Newton step raises the residual more than tenfold, the"
         " Newton solver doesn't converge, or the solve fails)."
+    ),
+)
+@click.option(
+    "--separation-dependent-guess",
+    is_flag=True,
+    help=(
+        "Start the control loop from initial guesses for the free data that"
+        " depend on the separation (conformal masses, horizon rotations and"
+        " center-of-mass offset) instead of the guesses fit at D_0 = 15."
+        " Free data given explicitly are kept."
     ),
 )
 @click.option(
