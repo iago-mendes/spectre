@@ -2156,6 +2156,121 @@ class TestRestartControlId(unittest.TestCase):
         # The restart from an earlier iteration doesn't replay that run
         self.restart(id_dir, "Restart1", restart_iteration=1)
 
+    def test_restart_with_jacobian_file(self):
+        id_dir, calls, _ = self.run_control("Uninterrupted")
+        control_params = read_control_params(id_dir)
+        jacobians = control_params["Jacobian.dat"]
+        free_data = control_params["FreeData.dat"]
+        steps = control_params["StepSizeConstraints.dat"]
+        num_params = free_data.shape[1]
+        applied_alpha = 3
+        # Restart from an iteration after the delay of the center-of-mass
+        # control, whose next step is a full Newton step
+        restart_iteration = len(calls) - 2
+        jacobian = jacobians[restart_iteration].reshape(num_params, num_params)
+        com_rows = slice(num_params - 3, num_params)
+        self.assertTrue(
+            np.any(
+                jacobian[com_rows]
+                != jacobians[restart_iteration - 1].reshape(
+                    num_params, num_params
+                )[com_rows]
+            )
+        )
+        self.assertEqual(steps[restart_iteration, applied_alpha], 1.0)
+        # The replayed Jacobian, given as a file (text with N x N entries, or
+        # '.npy' with N^2 entries), changes nothing
+        jacobian_files = [
+            self.test_dir / "Replayed.txt",
+            self.test_dir / "Replayed.npy",
+        ]
+        np.savetxt(jacobian_files[0], jacobian)
+        np.save(jacobian_files[1], jacobian.flatten())
+        for jacobian_file in jacobian_files:
+            restart_dir, restart_calls, _ = self.restart(
+                id_dir,
+                f"Same{jacobian_file.suffix}",
+                restart_iteration=restart_iteration,
+                jacobian_file=jacobian_file,
+            )
+            self.assertEqual(
+                without_globs(restart_calls),
+                without_globs(calls[restart_iteration:]),
+            )
+            self.assertSameControlParams(restart_dir, id_dir)
+            record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+            self.assertEqual(
+                record["jacobian_file"], str(jacobian_file.resolve())
+            )
+            npt.assert_array_equal(record["jacobian"], jacobian)
+        # Twice the Jacobian halves the first new step, which is solved, and
+        # Broyden's update continues from the given Jacobian
+        doubled_file = self.test_dir / "Doubled.txt"
+        np.savetxt(doubled_file, 2.0 * jacobian)
+        restart_dir, restart_calls, _ = self.restart(
+            id_dir,
+            "Doubled",
+            restart_iteration=restart_iteration,
+            jacobian_file=doubled_file,
+            max_iterations=restart_iteration + 1,
+        )
+        self.assertEqual(len(restart_calls), 1)
+        new_params = read_control_params(restart_dir)
+        new_free_data = new_params["FreeData.dat"]
+        self.assertEqual(len(new_free_data), restart_iteration + 2)
+        npt.assert_array_equal(
+            new_free_data[: restart_iteration + 1],
+            free_data[: restart_iteration + 1],
+        )
+        self.assertEqual(
+            new_params["StepSizeConstraints.dat"][
+                restart_iteration, applied_alpha
+            ],
+            1.0,
+        )
+        npt.assert_allclose(
+            new_free_data[restart_iteration + 1] - free_data[restart_iteration],
+            0.5
+            * (free_data[restart_iteration + 1] - free_data[restart_iteration]),
+            rtol=1e-10,
+            atol=1e-15,
+        )
+        scales = new_params["ControlScales.dat"][0]
+        u_scale, f_scale = scales[:num_params], scales[num_params:]
+        step = (
+            new_free_data[restart_iteration + 1]
+            - new_free_data[restart_iteration]
+        ) / u_scale
+        residual = new_params["Residuals.dat"][restart_iteration + 1] / f_scale
+        npt.assert_allclose(
+            new_params["Jacobian.dat"][restart_iteration + 1].reshape(
+                num_params, num_params
+            ),
+            2.0 * jacobian + np.outer(residual, step) / np.dot(step, step),
+            # The step from the free data is rounded, the code's is not
+            rtol=1e-6,
+            atol=1e-9,
+        )
+        # A file that isn't a finite square matrix of the loop's size is
+        # refused
+        bad_matrices = {
+            "NotSquare.txt": np.ones((2, 3)),
+            "NotFinite.txt": np.full_like(jacobian, np.nan),
+            "WrongSize.txt": np.identity(num_params + 1),
+        }
+        for name, matrix in bad_matrices.items():
+            np.savetxt(self.test_dir / name, matrix)
+            with self.assertRaisesRegex(
+                AssertionError, "finite square matrix|has shape"
+            ):
+                self.restart(
+                    id_dir,
+                    f"Bad{Path(name).stem}",
+                    restart_iteration=restart_iteration,
+                    jacobian_file=self.test_dir / name,
+                    dry_run=True,
+                )
+
 
 if __name__ == "__main__":
     configure_logging(log_level=logging.DEBUG)
