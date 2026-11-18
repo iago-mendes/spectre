@@ -1475,8 +1475,18 @@ def mock_restart_measured_params(run_dir, control_params):
     rotation_a = np.array(free_data["horizon_rotation_a"])
     rotation_b = np.array(free_data["horizon_rotation_b"])
     offset = np.array(free_data["center_of_mass_offset"])
+    # A truncation error that falls with the polynomial order, so that the
+    # convergence test before the control loop needs several solves
+    truncation_error = 0.0
+    if mock_restart_measured_params.order_error != 0.0:
+        with open(Path(run_dir) / "InitialData.yaml", "r") as open_input_file:
+            metadata = next(yaml.safe_load_all(open_input_file))
+        polynomial_order = metadata["Next"]["With"]["control_polynomial_order"]
+        truncation_error = (
+            mock_restart_measured_params.order_error * 10.0**-polynomial_order
+        )
     return {
-        "MassA": mock_mass(mass_a) + 0.01 * mass_b,
+        "MassA": mock_mass(mass_a) + 0.01 * mass_b + truncation_error,
         "MassB": mock_mass(mass_b) + 0.01 * mass_a,
         "DimensionlessSpinA": (
             -4.0 * mass_a * rotation_a + 0.01 * mass_b * rotation_b
@@ -1534,6 +1544,7 @@ def list_files(directory):
 class TestRestartControlId(unittest.TestCase):
     def setUp(self):
         mock_restart_measured_params.com_shift = 0.0
+        mock_restart_measured_params.order_error = 0.0
         self.test_dir = Path(
             unit_test_build_path(), "support/Pipelines/Bbh/ControlIdRestart"
         )
@@ -1728,6 +1739,52 @@ class TestRestartControlId(unittest.TestCase):
         self.assertEqual(restart_calls, calls[crash_at:])
         self.assertEqual([call["P"] for call in restart_calls], [7, 8])
         self.assertSameControlParams(restart_dir, reference_dir)
+
+    def test_restart_after_crash_in_initial_convergence_test(self):
+        mock_restart_measured_params.order_error = 10.0
+        reference_dir, calls, reference_last_run_dir = self.run_control(
+            "Reference", run_convergence_tests=True
+        )
+        initial_test_calls = calls[
+            : next(
+                i
+                for i, call in enumerate(calls)
+                if call["name"].endswith("_InitialData")
+            )
+        ]
+        self.assertEqual([call["P"] for call in initial_test_calls], [5, 7])
+        # Crash in the second solve of the test, after the first finished
+        crash_at = 1
+        crashed_dir, crashed_calls, _ = self.run_control(
+            "Crashed", crash_at=crash_at, run_convergence_tests=True
+        )
+        self.assertEqual(len(crashed_calls), crash_at + 1)
+        # A dry run renders the input file of the solve that crashed, and
+        # solves nothing
+        check_dir, check_calls, check_run_dir = self.restart(
+            crashed_dir, "Check", dry_run=True
+        )
+        self.assertEqual(check_calls, calls[crash_at : crash_at + 1])
+        self.assertEqual(
+            Path(check_run_dir),
+            check_dir / "ConvergenceTest" / "Initial" / calls[crash_at]["name"],
+        )
+        # The restart reuses the solve of the test that finished
+        restart_dir, restart_calls, last_run_dir = self.restart(
+            crashed_dir, "Restart"
+        )
+        self.assertTrue(
+            (
+                restart_dir / "ConvergenceTest" / "Initial" / calls[0]["name"]
+            ).is_symlink()
+        )
+        self.assertEqual(
+            without_globs(restart_calls), without_globs(calls[crash_at:])
+        )
+        self.assertSameControlParams(restart_dir, reference_dir)
+        self.assertEqual(
+            Path(last_run_dir).name, Path(reference_last_run_dir).name
+        )
 
     def test_restart_with_constraint_that_did_not_bind(self):
         # The center of mass that the control aims for needs the larger black
