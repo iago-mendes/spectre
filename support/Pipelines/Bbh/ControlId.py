@@ -741,6 +741,7 @@ def _convergence_test(
     numeric_initial_guess: bool = False,
     elliptic_absolute_residual: Optional[float] = None,
     reuse_solves: bool = False,
+    dry_run: bool = False,
 ) -> Optional[int]:
     """Test the convergence of the physical parameters with polynomial order
 
@@ -789,6 +790,10 @@ def _convergence_test(
     With 'reuse_solves', the solves whose 'P' directories are already in the
     'test_dir' are not solved again (e.g., a restarted control loop links the
     solves that its previous loop finished; see 'restart_control_id').
+
+    With 'dry_run', the test renders and checks the input file of its first
+    solve that is not reused, and stops there without solving (a dry run of a
+    restart, see 'restart_control_id').
     """
     is_initial = mode == "initial"
     label = "Initial" if is_initial else "Final"
@@ -905,11 +910,22 @@ def _convergence_test(
                     elliptic_absolute_residual=elliptic_absolute_residual,
                     initial_guess_file_glob=initial_guess_file_glob,
                     redirect_output=True,
+                    **(dict(submit=False) if dry_run else {}),
                 )
+                if dry_run:
+                    logger.info(
+                        "Dry run of the restart: the replay reproduces the"
+                        f" previous loop, and the input file of the {label}"
+                        f" convergence test at P={P} is in '{P_run_dir}'."
+                        " Not solving."
+                    )
+                    raise _RestartDryRun(P_run_dir)
             measured_params_by_order[P] = _measured_params(
                 P_run_dir, control_params
             )
             run_dir_by_order[P] = P_run_dir
+        except _RestartDryRun:
+            raise
         except UnconvergedSolveError as e:
             # Raised by the postprocessing of the solve before it finds
             # horizons (see 'PostprocessId.py')
@@ -919,6 +935,9 @@ def _convergence_test(
             )
             continue
         except Exception as e:
+            # A dry run checks the input file: an error there is the result
+            if dry_run:
+                raise
             logger.warning(
                 f"{label} convergence test: solve at P={P} failed: {e}"
             )
@@ -1231,6 +1250,23 @@ def _restart_control_options(
     return control_options, changed, segments, completed
 
 
+def _link_finished_test_solves(
+    test_dir: Path, new_test_dir: Path, control_params: List[TargetParams]
+):
+    """Link the solves of a convergence test that finished into the test
+    directory of a restart, so that the restart reuses them"""
+    new_test_dir.mkdir(parents=True, exist_ok=True)
+    for P_dir in sorted(test_dir.glob("P[0-9][0-9]")):
+        # The link to the run that the test starts from is made by the test
+        if P_dir.is_symlink():
+            continue
+        try:
+            _measured_params(P_dir, control_params)
+        except Exception:
+            continue
+        (new_test_dir / P_dir.name).symlink_to(P_dir.resolve())
+
+
 def _render_restart_submit_script(
     id_dir: Path,
     restart_command: List[str],
@@ -1315,6 +1351,8 @@ def restart_control_id(
     'ControlParams.h5', and a record of the restart in 'Restart.yaml'. If the
     previous loop had converged and died in its final convergence test, the
     restart skips the control loop and reuses the solves of the test that
+    finished. If the previous loop died in its convergence test before the
+    control loop, the restart runs that test again and reuses its solves that
     finished.
 
     Options that act only after the restart iteration can be changed (the
@@ -1328,7 +1366,8 @@ def restart_control_id(
 
     With 'dry_run', the restart replays and checks the previous loop, renders
     the input file of its first solve (and checks it with the executable's
-    '--check-options'), and stops without solving.
+    '--check-options'), and stops without solving. The first solve can be one
+    of the convergence test before the control loop.
 
     With a 'scheduler', the restart first runs dry in the subdirectory
     'RestartCheck' of the 'id_dir', then writes a submit script 'Submit.sh'
@@ -1446,6 +1485,14 @@ def restart_control_id(
         (id_dir / "ConvergenceTest" / "Initial").symlink_to(
             (tests_dir / "Initial").resolve()
         )
+    elif (tests_dir / "Initial").exists():
+        # The previous loop died in the test before the control loop: the
+        # restart runs the test again and reuses the solves that finished
+        _link_finished_test_solves(
+            tests_dir / "Initial",
+            id_dir / "ConvergenceTest" / "Initial",
+            control_options["control_params"],
+        )
     residuals = _read_dat(restart_from / "ControlParams.h5", "Residuals")
     converged = len(residuals) > 0 and np.max(np.abs(residuals[-1])) < (
         control_options.get("residual_tolerance", DEFAULT_RESIDUAL_TOLERANCE)
@@ -1455,17 +1502,11 @@ def restart_control_id(
         and restart_iteration == last_iteration
         and converged
     ):
-        final_dir = id_dir / "ConvergenceTest" / "Final"
-        final_dir.mkdir(parents=True, exist_ok=True)
-        for P_dir in sorted((tests_dir / "Final").glob("P[0-9][0-9]")):
-            # The link to the last run of the control loop is made by the test
-            if P_dir.is_symlink():
-                continue
-            try:
-                _measured_params(P_dir, control_options["control_params"])
-            except Exception:
-                continue
-            (final_dir / P_dir.name).symlink_to(P_dir.resolve())
+        _link_finished_test_solves(
+            tests_dir / "Final",
+            id_dir / "ConvergenceTest" / "Final",
+            control_options["control_params"],
+        )
 
     # Record the restart and the options it runs with
     with open(id_dir / "Restart.yaml", "w") as open_record:
@@ -2173,6 +2214,11 @@ def control_id(
             output_filename=output_filename,
             numeric_initial_guess=numeric_initial_guess_in_tests,
             elliptic_absolute_residual=elliptic_absolute_residual,
+            # A restart of a loop that died in this test (before any control
+            # run) reuses the solves that finished, and a dry run stops at the
+            # first solve that it would run
+            reuse_solves=restart_from is not None,
+            dry_run=restart_dry_run,
         )
 
     # Initialize Jacobian as an identity matrix
