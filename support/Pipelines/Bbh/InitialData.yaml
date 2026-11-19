@@ -60,6 +60,12 @@ Next:
 {% if control_broyden_update | default("paper") != "paper" %}
     control_broyden_update: {{ control_broyden_update }}
 {% endif %}
+{% if control_globalization | default("none") != "none" %}
+    control_globalization: {{ control_globalization }}
+{% endif %}
+{% if control_max_step | default(None) %}
+    control_max_step: {{ "%e" | format(control_max_step) }}
+{% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}

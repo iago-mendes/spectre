@@ -272,6 +272,8 @@ def generate_id(
     numeric_initial_guess_max_excision_move: Optional[float] = None,
     numeric_initial_guess_fallback: bool = False,
     control_broyden_update: str = "paper",
+    control_globalization: str = "none",
+    control_max_step: Optional[float] = None,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -359,6 +361,12 @@ def generate_id(
       control_broyden_update: How Broyden's method of the control loop
         updates the Jacobian, 'paper' or 'secant'. See
         'support.Pipelines.Bbh.ControlId'. (default: 'paper')
+      control_globalization: Globalization of the steps of the control loop,
+        'none', 'line_search' or 'trust_region'. See
+        'support.Pipelines.Bbh.ControlId'. (default: 'none')
+      control_max_step: Longest step of the scaled free data of the control
+        loop's globalization. See 'support.Pipelines.Bbh.ControlId'.
+        (default: None, Numerical Recipes' bound)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -546,6 +554,8 @@ def generate_id(
         ),
         numeric_initial_guess_fallback=numeric_initial_guess_fallback,
         control_broyden_update=control_broyden_update,
+        control_globalization=control_globalization,
+        control_max_step=control_max_step,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -797,6 +807,26 @@ def generate_id(
         " Numerical Recipes (Eq. 9.7.17) with a noise guard and a stop on steps"
         " that change no residual measurably."
     ),
+)
+@click.option(
+    "--control-globalization",
+    type=click.Choice(["none", "line_search", "trust_region"]),
+    default="none",
+    show_default=True,
+    help=(
+        "Globalization of the steps of the control loop: a line search or a"
+        " trust region on |F|^2 / 2, which rejects (and re-solves) steps that"
+        " don't improve the control residual."
+    ),
+)
+@click.option(
+    "--control-max-step",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "Longest step of the scaled free data of the control loop's"
+        " globalization."
+    ),
+    show_default="Numerical Recipes' bound",
 )
 @click.option(
     "--pipeline-dir",

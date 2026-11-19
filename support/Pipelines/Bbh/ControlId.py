@@ -66,6 +66,60 @@ DEFAULT_BROYDEN_UPDATE: BroydenUpdate = "paper"
 # 1e-8 carry no information. Numerical Recipes uses the machine epsilon,
 # relative to |F|, because its F is exact to rounding.
 BROYDEN_RESIDUAL_NOISE = 1.0e-8
+BROYDEN_UPDATES: List[BroydenUpdate] = ["paper", "secant"]
+
+# Globalizations of the control's quasi-Newton steps (see 'control_id'):
+# - none: every step is taken, as in the papers.
+# - line_search: backtracking line search on f = |F|^2 / 2 (Numerical Recipes
+#   3e, Sec. 9.7.1, routine 'lnsrch').
+# - trust_region: dogleg steps in a trust region (Dennis & Schnabel, Numerical
+#   Methods for Unconstrained Optimization and Nonlinear Equations, Sec. 6.4).
+Globalization = Literal["none", "line_search", "trust_region"]
+GLOBALIZATIONS: List[Globalization] = ["none", "line_search", "trust_region"]
+DEFAULT_GLOBALIZATION: Globalization = "none"
+# Sufficient decrease of the line search: f_new <= f + c grad(f) . du
+LINE_SEARCH_SUFFICIENT_DECREASE = 1.0e-4
+# Shortest fraction of a step that the line search solves at
+LINE_SEARCH_MIN_ALPHA = 1.0e-2
+# A trust-region step is accepted if the ratio rho of the actual to the
+# predicted reduction of f exceeds this (Dennis & Schnabel's 1e-4)
+TRUST_REGION_ACCEPTANCE_RATIO = 1.0e-4
+# The trust radius shrinks to this factor times the step if rho is below the
+# shrink ratio, and grows by the grow factor if rho exceeds the grow ratio
+# and the step reached the radius
+TRUST_REGION_SHRINK_RATIO = 0.25
+TRUST_REGION_SHRINK_FACTOR = 0.25
+TRUST_REGION_GROW_RATIO = 0.75
+TRUST_REGION_GROW_FACTOR = 2.0
+# Default longest step in scaled free data, as Numerical Recipes' 'newt':
+# this factor times max(|u|, number of free data)
+DEFAULT_MAX_STEP_FACTOR = 100.0
+# Solves along one direction (line search) or from one Jacobian (trust
+# region) before the Jacobian is reset
+GLOBALIZATION_MAX_TRIALS = 4
+# Largest condition number of a reset Jacobian updated with a rejected step
+MAX_RESET_JACOBIAN_CONDITION = 1.0e12
+# Columns of 'Globalization.dat', one row per solve with a globalization or
+# the 'secant' update. Codes: index in GLOBALIZATIONS and BROYDEN_UPDATES. NaN
+# where a column doesn't apply.
+GLOBALIZATION_LEGEND = [
+    "Solve",
+    "Iteration",
+    "Trial",
+    "Globalization",
+    "BroydenUpdate",
+    "MaxStep",
+    "StepLength",
+    "LineSearchAlpha",
+    "TrustRadius",
+    "FBefore",
+    "FModel",
+    "FAfter",
+    "Rho",
+    "Slope",
+    "Accepted",
+    "JacobianReset",
+]
 
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
@@ -1120,6 +1174,17 @@ RESTART_OPTIONS = {
     "final_convergence_test_max_polynomial_order": (
         "final_convergence_test_max_polynomial_order"
     ),
+    "broyden_update": "control_broyden_update",
+    "globalization": "control_globalization",
+    "max_step": "control_max_step",
+}
+# Options that the input file template renders itself when 'generate_id' gets
+# them, so a restart passes them to 'generate_id' instead of adding them to
+# the template
+RESTART_OPTIONS_IN_TEMPLATE = {
+    "control_broyden_update",
+    "control_globalization",
+    "control_max_step",
 }
 # The line of the input file template after which a restart records the
 # options it changed
@@ -1217,6 +1282,8 @@ def _restart_control_options(
         "negative_expansion_bc": "negative_expansion_bc",
         "control_step_size_constraints": "step_size_constraints",
         "control_broyden_update": "broyden_update",
+        "control_globalization": "globalization",
+        "control_max_step": "max_step",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
@@ -1244,6 +1311,9 @@ def _restart_control_options(
         max_iterations=DEFAULT_MAX_ITERATIONS,
         final_convergence_test_tolerance=None,
         final_convergence_test_max_polynomial_order=None,
+        broyden_update=DEFAULT_BROYDEN_UPDATE,
+        globalization=DEFAULT_GLOBALIZATION,
+        max_step=None,
     )
     changed = {}
     for option, value in overrides.items():
@@ -1371,12 +1441,22 @@ def restart_control_id(
 
     Options that act only after the restart iteration can be changed (the
     'overrides', see 'RESTART_OPTIONS'): 'step_size_constraints',
-    'max_iterations', 'final_convergence_test_tolerance' and
-    'final_convergence_test_max_polynomial_order'. The restart refuses if
-    the new options would have changed a replayed iteration (e.g., a
-    step-size constraint that binds on a replayed step), and names it. The
-    input files of the new runs record the changed options in their 'Next'
-    section.
+    'max_iterations', 'final_convergence_test_tolerance',
+    'final_convergence_test_max_polynomial_order', 'broyden_update',
+    'globalization' and 'max_step'. The restart refuses if the new
+    step-size constraints would have changed a replayed iteration (e.g., a
+    constraint that binds on a replayed step), and names it. The new
+    'broyden_update', 'globalization' and 'max_step' act on the solves after
+    the restart iteration only: the replay runs with the previous loop's (see
+    'restart_previous_options' in 'control_id'). So a loop that ran without
+    a globalization can be restarted with one from any of its iterations,
+    e.g., the one before its control residual jumped. The input files of the
+    new runs record the changed options in their 'Next' section.
+
+    In a loop with a globalization, every solve is a run, including the
+    rejected ones (see 'globalization' in 'control_id'), and the
+    'restart_iteration' counts solves. A restart from a rejected solve
+    continues the iteration that it was part of.
 
     With 'dry_run', the restart replays and checks the previous loop, renders
     the input file of its first solve (and checks it with the executable's
@@ -1415,12 +1495,28 @@ def restart_control_id(
     ):
         raise ValueError(
             "The maximum number of iterations"
-            f" {control_options['max_iterations']} would end the control loop"
+            f" {control_options.get('max_iterations', DEFAULT_MAX_ITERATIONS)}"
+            " would end the control loop"
             f" in the replayed iterations (up to {restart_iteration})."
         )
     for key, values in changed.items():
         logger.info(
             f"Restart changes '{key}' from {values['old']} to {values['new']}."
+        )
+    # The previous loop's methods, with which the replay steps to its solves
+    # (unless it recorded them in 'Globalization.dat'). The new ones act after
+    # the restart iteration.
+    previous_options = {}
+    for option, default in [
+        ("broyden_update", DEFAULT_BROYDEN_UPDATE),
+        ("globalization", DEFAULT_GLOBALIZATION),
+        ("max_step", None),
+    ]:
+        key = RESTART_OPTIONS[option]
+        previous_options[option] = (
+            changed[key]["old"]
+            if key in changed
+            else control_options.get(option, default)
         )
 
     if scheduler:
@@ -1445,6 +1541,9 @@ def restart_control_id(
                     "max_iterations",
                     "final_convergence_test_tolerance",
                     "final_convergence_test_max_polynomial_order",
+                    "broyden_update",
+                    "globalization",
+                    "max_step",
                 ]
                 if option in overrides
             ]
@@ -1535,11 +1634,14 @@ def restart_control_id(
             ),
             open_record,
         )
+    template_options = {
+        key: values["new"]
+        for key, values in changed.items()
+        if key not in RESTART_OPTIONS_IN_TEMPLATE
+    }
     id_input_file_template = (
-        _restart_input_file_template(
-            id_dir, {key: values["new"] for key, values in changed.items()}
-        )
-        if changed
+        _restart_input_file_template(id_dir, template_options)
+        if template_options
         else None
     )
 
@@ -1552,6 +1654,7 @@ def restart_control_id(
             restart_iteration=restart_iteration,
             restart_dry_run=dry_run,
             restart_input_file_template=id_input_file_template,
+            restart_previous_options=previous_options,
             **control_options,
         )
     except _RestartDryRun as dry_run_end:
@@ -1572,6 +1675,8 @@ def control_id(
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
+    globalization: Globalization = DEFAULT_GLOBALIZATION,
+    max_step: Optional[float] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
@@ -1586,6 +1691,7 @@ def control_id(
     restart_iteration: Optional[int] = None,
     restart_dry_run: bool = False,
     restart_input_file_template: Optional[Union[str, Path]] = None,
+    restart_previous_options: Optional[Dict] = None,
 ):
     """Control BBH physical parameters.
 
@@ -1696,7 +1802,61 @@ def control_id(
         zero, as are those whose control is delayed. A step whose predicted
         change J du of every residual is below that noise can't make progress,
         so the control loop then stops with an error. The two coincide for full
-        Newton steps. (Default: 'paper')
+        Newton steps. With a 'globalization', the update is always 'secant'.
+        (Default: 'paper')
+      globalization: Accept a step of the free data only if it improves the
+        solution, measured by f = |F|^2 / 2 of the scaled residuals F / f_scale
+        of the parameters whose control is not delayed. Their scaled free data
+        is the variable; the delayed free data stays fixed, so the Newton step
+        solves the block of the Jacobian of these rows and columns. A rejected
+        solve (a 'trial') keeps the free data, and the next solve steps from
+        it again. Every solve is a run of the initial-data directory and a row
+        of 'Residuals.dat', 'FreeData.dat', 'StepSizeConstraints.dat' and
+        'Jacobian.dat' (the Jacobian that the step after it starts from), and
+        of 'Globalization.dat', which says whether it was accepted (see
+        'GLOBALIZATION_LEGEND'). An iteration of the control loop is an
+        accepted step: the delay of the asymptotic controls counts
+        iterations, the 'max_iterations' counts solves. A solve that meets the
+        'residual_tolerance' is always accepted. The step-size constraints
+        shorten every trial step as above, and the Broyden update is 'secant'.
+        Options:
+        - 'none': every step is taken.
+        - 'line_search': backtracking line search of Numerical Recipes 3e
+          (Sec. 9.7.1, routine 'lnsrch'). The direction is the Newton step,
+          shortened to at most 'max_step' and by the step-size constraints.
+          The first trial is the whole direction (alpha = 1), and a trial is
+          accepted if f decreases sufficiently,
+          f(u + alpha du) <= f(u) + c alpha grad(f) . du, with grad(f) = J^T F
+          and c = LINE_SEARCH_SUFFICIENT_DECREASE (1e-4). Otherwise alpha is
+          the minimum of a quadratic (first backtrack) or cubic model of f,
+          within [0.1, 0.5] times the last alpha.
+        - 'trust_region': dogleg steps in a trust region of radius Delta
+          (Dennis & Schnabel, Secs. 6.4.2-6.4.3): the Newton step if it is
+          shorter than Delta, else the point at distance Delta on the path
+          from 0 to the Cauchy point and on to the Newton step. A trial is
+          accepted if the ratio rho of the actual to the predicted reduction
+          of f, f(u) - |F + J du|^2 / 2, exceeds
+          TRUST_REGION_ACCEPTANCE_RATIO (1e-4). Then Delta becomes 1/4 of the
+          step if rho < 1/4, or twice Delta (at most 'max_step') if rho > 3/4
+          and the step reached Delta. The first Delta is the length of the
+          first Newton step, or twice the last accepted step if that is
+          shorter (e.g., in a restart), and at most 'max_step'.
+        Both globalizations reject at most GLOBALIZATION_MAX_TRIALS (4) solves
+        along a direction (line search) or from a Jacobian (trust region),
+        and stop at a line-search alpha below LINE_SEARCH_MIN_ALPHA (0.01), at
+        a step that is not a descent direction of f, or at a step whose
+        predicted change of every residual is below BROYDEN_RESIDUAL_NOISE
+        (the last two cost no solve). The Jacobian is then reset to the
+        initial approximation evaluated at the current free data, updated
+        with the shortest rejected step of the iteration (the 'secant'
+        update), and the globalization tries again from the current free
+        data, once per iteration; the trust radius stays. If that fails too,
+        the control loop stops with an error. (Default: 'none')
+      max_step: Longest step of the scaled free data u / u_scale of a
+        globalization: the line search shortens longer Newton steps to it, and
+        the trust radius never exceeds it. (Default: None, i.e., 100 times
+        max(|u / u_scale|, number of free data), as Numerical Recipes'
+        'newt', which only guards against absurd steps)
       run_convergence_tests: Run resolution convergence tests. A test before
         the control loop selects the polynomial order for the control loop,
         and a test after the control loop checks that it was appropriate. The
@@ -1783,6 +1943,13 @@ def control_id(
       restart_input_file_template: Input file template of the solves after
         the restart iteration (see 'restart_control_id'). (Default: the
         pipeline's)
+      restart_previous_options: The 'broyden_update', 'globalization' and
+        'max_step' of the previous loop (see 'restart_from'), with which the
+        replay steps to and updates with its solves if it recorded no
+        'Globalization.dat'. Otherwise the replay takes each solve's methods
+        from that table. The 'broyden_update', 'globalization' and
+        'max_step' of this loop act on the solves after the restart
+        iteration only. (Default: this loop's options)
     """
 
     assert (
@@ -1793,6 +1960,25 @@ def control_id(
             f"Unknown step-size constraint '{constraint}'. Choose from"
             f" {STEP_SIZE_CONSTRAINTS}."
         )
+    assert broyden_update in BROYDEN_UPDATES, (
+        f"Unknown Broyden update '{broyden_update}'. Choose from"
+        f" {BROYDEN_UPDATES}."
+    )
+    assert (
+        globalization in GLOBALIZATIONS
+    ), f"Unknown globalization '{globalization}'. Choose from {GLOBALIZATIONS}."
+    assert max_step is None or max_step > 0.0, "The 'max_step' must be > 0."
+    if restart_previous_options is None:
+        restart_previous_options = {}
+    # The input files of the solves record the options that differ from the
+    # defaults (see 'generate_id')
+    globalization_options = {}
+    if broyden_update != DEFAULT_BROYDEN_UPDATE:
+        globalization_options["control_broyden_update"] = broyden_update
+    if globalization != DEFAULT_GLOBALIZATION:
+        globalization_options["control_globalization"] = globalization
+    if max_step is not None:
+        globalization_options["control_max_step"] = max_step
 
     # Read input file
     if id_run_dir is None:
@@ -1808,8 +1994,6 @@ def control_id(
         / (target_params["MassA"] + target_params["MassB"])
         * separation
     )
-    horizon_rotation_a = initial_free_data["horizon_rotation_a"]
-    horizon_rotation_b = initial_free_data["horizon_rotation_b"]
 
     # Prepare file and legends to output diagnostic data. Every run of the
     # control loop is a segment in the initial-data directory, so the diagnostic
@@ -1870,6 +2054,7 @@ def control_id(
             "ControlScales",
             "Jacobian",
             "StepSizeConstraints",
+            "Globalization",
         ]:
             recorded_data[subfile_name] = _read_dat(
                 restart_from / "ControlParams.h5", subfile_name
@@ -1895,7 +2080,9 @@ def control_id(
     def replaying(iteration):
         return restart_from is not None and iteration <= restart_iteration
 
-    def check_replay(subfile_name, row, values, first_columns=False):
+    def check_replay(
+        subfile_name, row, values, first_columns=False, equal_nan=False
+    ):
         """Stop the restart if the replay doesn't reproduce the 'row' of the
         previous loop's subfile (if it has that row), or only its first
         columns"""
@@ -1910,6 +2097,7 @@ def control_id(
             recorded[row],
             rtol=RESTART_RELATIVE_TOLERANCE,
             atol=RESTART_ABSOLUTE_TOLERANCE,
+            equal_nan=equal_nan,
         ):
             raise RuntimeError(
                 f"The restart doesn't reproduce row {row} of '{subfile_name}'"
@@ -1944,25 +2132,42 @@ def control_id(
                     " other code or other options?"
                 )
 
-    iteration = 0
+    # Index of the last solve, i.e., of its row in 'Residuals.dat'. Without a
+    # globalization (see 'globalization') every solve is an iteration.
+    solve = -1
+    # Run of the last solve
     control_run_dir = id_run_dir
-    # Free data of the solve in 'control_run_dir'
+    # Free data and control residual (max |F|, as compared with the
+    # 'residual_tolerance') of the last solve
+    solve_free_data = initial_free_data.copy()
+    solve_control_residual = None
+    # Run, free data and control residual of the last accepted solve, i.e.,
+    # of the free data that the control loop steps from. Without a
+    # globalization every solve is accepted.
+    accepted_run_dir = control_run_dir
     previous_free_data = initial_free_data.copy()
-    # Control residual of the solve in 'control_run_dir', i.e., max |F| as
-    # compared with the 'residual_tolerance'
     previous_control_residual = None
+
+    def accept_solve():
+        nonlocal accepted_run_dir
+        nonlocal previous_control_residual
+        accepted_run_dir = control_run_dir
+        previous_free_data.clear()
+        previous_free_data.update(solve_free_data)
+        previous_control_residual = solve_control_residual
 
     # Function to be minimized
     def Residual(u):
-        nonlocal iteration
+        nonlocal solve
         nonlocal control_run_dir
-        nonlocal previous_control_residual
+        nonlocal solve_control_residual
 
-        if iteration > 0:
+        solve += 1
+        if solve > 0:
             logger.info(
                 "\n"
                 "=========================================="
-                f" Control of BBH Parameters ({iteration}) "
+                f" Control of BBH Parameters ({solve}) "
                 "=========================================="
             )
             # Start with initial free data choices and update the ones being
@@ -2036,15 +2241,13 @@ def control_id(
                     + ("previous solution." if seed else "background.")
                 )
 
-            if replaying(iteration):
+            if replaying(solve):
                 # Measure the parameters in the recorded run of the previous
                 # control loop instead of solving
-                control_run_dir = str(
-                    id_dir / recorded_runs[iteration].path.name
-                )
+                control_run_dir = str(id_dir / recorded_runs[solve].path.name)
                 check_replayed_free_data(free_data, control_run_dir)
                 logger.info(
-                    f"Replayed control iteration {iteration} from the run"
+                    f"Replayed control iteration {solve} from the run"
                     f" '{Path(control_run_dir).resolve()}'."
                 )
             else:
@@ -2077,11 +2280,12 @@ def control_id(
                             if restart_input_file_template is not None
                             else {}
                         ),
+                        **globalization_options,
                         **kwargs,
                     )
 
                 seed_glob = str(
-                    Path(control_run_dir).resolve() / "BbhVolume*.h5"
+                    Path(accepted_run_dir).resolve() / "BbhVolume*.h5"
                 )
                 if restart_dry_run:
                     # Render and check the input file, but don't solve
@@ -2090,7 +2294,7 @@ def control_id(
                     logger.info(
                         "Dry run of the restart: the replay reproduces the"
                         " previous loop, and the input file of iteration"
-                        f" {iteration} is in '{run_dir}'. Not solving."
+                        f" {solve} is in '{run_dir}'. Not solving."
                     )
                     raise _RestartDryRun(run_dir)
                 try:
@@ -2144,12 +2348,12 @@ def control_id(
                     # parameters of an unconverged solve would steer the
                     # control loop with noise.
                     raise UnconvergedSolveError(
-                        f"Control iteration {iteration}: {error} Stopping the"
+                        f"Control iteration {solve}: {error} Stopping the"
                         " control loop."
                     ) from error
                 control_run_dir = str(Segment.last(id_dir).path)
-            previous_free_data.clear()
-            previous_free_data.update(free_data)
+            solve_free_data.clear()
+            solve_free_data.update(free_data)
 
         # Get measured physical parameters
         measured_params = _measured_params(control_run_dir, control_params)
@@ -2166,11 +2370,11 @@ def control_id(
                 residual = np.append(residual, [measured_params[key] - target])
             else:
                 residual = np.append(residual, measured_params[key] - target)
-        previous_control_residual = float(np.max(np.abs(residual)))
-        logger.info(f"Control Residual = {previous_control_residual:e}")
-        if replaying(iteration):
-            check_replay("Residuals", iteration, residual)
-            check_replay("FreeData", iteration, u)
+        solve_control_residual = float(np.max(np.abs(residual)))
+        logger.info(f"Control Residual = {solve_control_residual:e}")
+        if replaying(solve):
+            check_replay("Residuals", solve, residual)
+            check_replay("FreeData", solve, u)
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
                 "Residuals", residual_legend, 0
@@ -2197,6 +2401,7 @@ def control_id(
     # control is delayed, 'F_measured' doesn't.
     F = Residual(u)
     F_measured = F.copy()
+    accept_solve()
 
     # A restart takes the polynomial order that the previous loop selected
     # from its control runs (the first run after the first), if it has any
@@ -2251,9 +2456,6 @@ def control_id(
             dry_run=restart_dry_run,
         )
 
-    # Initialize Jacobian as an identity matrix
-    J = np.identity(len(u))
-
     # Prepare map between parameters and their indices so that we can specify
     # Jacobian terms below
     param_index_map = dict()
@@ -2263,83 +2465,113 @@ def control_id(
         param_index_map[FreeDataFromParams[param]] = param_index
         param_index += 1 if param in ScalarQuantities else 3
 
-    # Adjust non-unity components of the Jacobian
-    #
-    # The expressions below come from differentiating the Kerr expressions
-    # chi = - 2 r Omega and r = M (1 + sqrt(1 - chi^2)), where chi is the
-    # dimensionless spin, r is the horizon radius, Omega is the horizon
-    # rotation, and M is the mass.
-    for spin_key, mass_key, horizon_rotation in zip(
-        ["DimensionlessSpinA", "DimensionlessSpinB"],
-        ["conformal_mass_a", "conformal_mass_b"],
-        [horizon_rotation_a, horizon_rotation_b],
-    ):
-        conformal_mass = u[param_index_map[mass_key]]
-        conformal_spin = target_params[spin_key]
-        spin_term = 1.0 + np.sqrt(1 - np.dot(conformal_spin, conformal_spin))
-        for i in range(3):
-            J[
-                param_index_map[spin_key] + i,
-                param_index_map[mass_key],
-            ] = (
-                -2.0 * horizon_rotation[i] * spin_term
+    def free_data_at(u, key):
+        """Free data 'key' at the controlled free data 'u'. Free data that is
+        not controlled keeps its initial value."""
+        if key not in param_index_map:
+            return initial_free_data[key]
+        idx = param_index_map[key]
+        return u[idx] if key in ScalarQuantities else u[idx : idx + 3]
+
+    def initial_jacobian(u):
+        """The approximate Jacobian of the papers, in raw units, evaluated at
+        the free data 'u'. The control loop starts from it at the initial
+        free data, and a globalization resets to it (see 'globalization')."""
+        # Initialize Jacobian as an identity matrix
+        J = np.identity(len(u))
+
+        # Adjust non-unity components of the Jacobian
+        #
+        # The expressions below come from differentiating the Kerr expressions
+        # chi = - 2 r Omega and r = M (1 + sqrt(1 - chi^2)), where chi is the
+        # dimensionless spin, r is the horizon radius, Omega is the horizon
+        # rotation, and M is the mass.
+        for spin_key, mass_key, horizon_rotation in zip(
+            ["DimensionlessSpinA", "DimensionlessSpinB"],
+            ["conformal_mass_a", "conformal_mass_b"],
+            [
+                free_data_at(u, "horizon_rotation_a"),
+                free_data_at(u, "horizon_rotation_b"),
+            ],
+        ):
+            conformal_mass = u[param_index_map[mass_key]]
+            conformal_spin = target_params[spin_key]
+            spin_term = 1.0 + np.sqrt(
+                1 - np.dot(conformal_spin, conformal_spin)
             )
+            for i in range(3):
+                J[
+                    param_index_map[spin_key] + i,
+                    param_index_map[mass_key],
+                ] = (
+                    -2.0 * horizon_rotation[i] * spin_term
+                )
+                J[
+                    param_index_map[spin_key] + i,
+                    param_index_map[spin_key] + i,
+                ] = (
+                    -2.0 * conformal_mass * spin_term
+                )
+        # The expression below is the reduced mass of the system, which shows up
+        # in the Newtonian expressions further below.
+        q = target_params["MassRatio"]
+        eta = q / (q + 1) ** 2
+        # The expressions below come from differentiating the Newtonian
+        # approximation E_ADM ~ M + 1/2 eta adot0^2 D0^2, where adot0 is the
+        # initial radial expansion velocity and D0 is the initial
+        # separation. They are evaluated under the conditions M=1 and q=MA/MB,
+        # which holds (at least approximately) for the initial guess of the
+        # free data.
+        if "AdmMass" in control_params:
+            adot0 = free_data_at(u, "radial_expansion_velocity")
             J[
-                param_index_map[spin_key] + i,
-                param_index_map[spin_key] + i,
+                param_index_map["AdmMass"],
+                param_index_map["radial_expansion_velocity"],
             ] = (
-                -2.0 * conformal_mass * spin_term
+                eta * adot0 * separation**2
             )
-    # The expression below is the reduced mass of the system, which shows up in
-    # the Newtonian expressions further below.
-    q = target_params["MassRatio"]
-    eta = q / (q + 1) ** 2
-    # The expressions below come from differentiating the Newtonian
-    # approximation E_ADM ~ M + 1/2 eta adot0^2 D0^2, where adot0 is the
-    # initial radial expansion velocity and D0 is the initial
-    # separation. They are evaluated under the conditions M=1 and q=MA/MB, which
-    # holds (at least approximately) for the initial guess of the free data.
-    if "AdmMass" in control_params:
-        adot0 = initial_free_data["radial_expansion_velocity"]
-        J[
-            param_index_map["AdmMass"],
-            param_index_map["radial_expansion_velocity"],
-        ] = (
-            eta * adot0 * separation**2
-        )
-        if "MassA" in control_params:
-            J[
-                param_index_map["AdmMass"], param_index_map["conformal_mass_a"]
-            ] = (1.0 + 0.5 * eta / q * adot0**2 * separation**2)
-        if "MassB" in control_params:
-            J[
-                param_index_map["AdmMass"], param_index_map["conformal_mass_b"]
-            ] = (1.0 + 0.5 * q * eta * adot0**2 * separation**2)
-    # The expressions below come from differentiating the Newtonian
-    # approximation J_ADM ~ eta D0^2 Omega0, where D0 is the initial
-    # separation and Omega0 is the initial angular orbital velocity.
-    if "AdmAngularMomentumZ" in control_params:
-        OmegaZ0 = initial_free_data["orbital_angular_velocity"]
-        J[
-            param_index_map["AdmAngularMomentumZ"],
-            param_index_map["orbital_angular_velocity"],
-        ] = (
-            eta * separation**2
-        )
-        if "MassA" in control_params:
+            if "MassA" in control_params:
+                J[
+                    param_index_map["AdmMass"],
+                    param_index_map["conformal_mass_a"],
+                ] = (
+                    1.0 + 0.5 * eta / q * adot0**2 * separation**2
+                )
+            if "MassB" in control_params:
+                J[
+                    param_index_map["AdmMass"],
+                    param_index_map["conformal_mass_b"],
+                ] = (
+                    1.0 + 0.5 * q * eta * adot0**2 * separation**2
+                )
+        # The expressions below come from differentiating the Newtonian
+        # approximation J_ADM ~ eta D0^2 Omega0, where D0 is the initial
+        # separation and Omega0 is the initial angular orbital velocity.
+        if "AdmAngularMomentumZ" in control_params:
+            OmegaZ0 = free_data_at(u, "orbital_angular_velocity")
             J[
                 param_index_map["AdmAngularMomentumZ"],
-                param_index_map["conformal_mass_a"],
+                param_index_map["orbital_angular_velocity"],
             ] = (
-                eta / q * separation**2 * OmegaZ0
+                eta * separation**2
             )
-        if "MassB" in control_params:
-            J[
-                param_index_map["AdmAngularMomentumZ"],
-                param_index_map["conformal_mass_b"],
-            ] = (
-                q * eta * separation**2 * OmegaZ0
-            )
+            if "MassA" in control_params:
+                J[
+                    param_index_map["AdmAngularMomentumZ"],
+                    param_index_map["conformal_mass_a"],
+                ] = (
+                    eta / q * separation**2 * OmegaZ0
+                )
+            if "MassB" in control_params:
+                J[
+                    param_index_map["AdmAngularMomentumZ"],
+                    param_index_map["conformal_mass_b"],
+                ] = (
+                    q * eta * separation**2 * OmegaZ0
+                )
+        return J
+
+    J = initial_jacobian(u)
 
     # Non-dimensionalize the Newton system. From here on J is the Jacobian of
     # the scaled residual F / f_scale with respect to the scaled free data
@@ -2477,40 +2709,36 @@ def control_id(
             )
         return alphas
 
-    while iteration < max_iterations:
-        iteration += 1
-
-        # Start the control of the delayed parameters once a minimum number of
-        # iterations has passed and the horizon parameters have settled.
-        # Controlling the asymptotic quantities while the horizon masses and
-        # spins are still far from their targets can drive the free data
-        # off-bounds.
-        if delay_control:
-            max_horizon_residual = (
-                np.max(np.abs(F[horizon_indices]))
-                if np.any(horizon_indices)
-                else 0.0
+    def method_of(step_solve):
+        """Globalization, Broyden update and maximum step (option) of the
+        solve 'step_solve', i.e., of the step to it, of its acceptance and of
+        the Jacobian update with it. A restarted loop replays the solves of the
+        previous loop with the methods they ran with: the ones recorded in its
+        'Globalization.dat', or its options if it has no such table."""
+        if not replaying(step_solve):
+            return globalization, broyden_update, max_step
+        recorded = recorded_data.get("Globalization")
+        if recorded is None or recorded.size == 0:
+            return (
+                restart_previous_options.get("globalization", globalization),
+                restart_previous_options.get("broyden_update", broyden_update),
+                restart_previous_options.get("max_step", max_step),
             )
-            if (
-                iteration >= control_delay
-                and max_horizon_residual
-                < HORIZON_RESIDUAL_FOR_ASYMPTOTIC_CONTROL
-            ):
-                delay_control = False
-            logger.info(
-                "Max residual of horizon parameters ="
-                f" {max_horizon_residual:e}."
-                f" {'Delaying' if delay_control else 'Starting'} control of"
-                " asymptotic parameters."
-            )
+        rows = recorded[recorded[:, 0] == step_solve]
+        if len(rows) == 0:
+            return DEFAULT_GLOBALIZATION, DEFAULT_BROYDEN_UPDATE, None
+        row = dict(zip(GLOBALIZATION_LEGEND, rows[0]))
+        return (
+            GLOBALIZATIONS[int(row["Globalization"])],
+            BROYDEN_UPDATES[int(row["BroydenUpdate"])],
+            None if np.isnan(row["MaxStep"]) else float(row["MaxStep"]),
+        )
 
-        # Update the free parameters using a quasi-Newton-Raphson method
-        Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
-        if delay_control:
-            Delta_u[delayed_indices] = 0.0
-
-        # Shorten the step to satisfy the enforced step-size constraints. The
-        # whole step is scaled by the same alpha to preserve its direction.
+    def constrain_step(Delta_u):
+        """Shorten the step to satisfy the enforced step-size constraints. The
+        whole step is scaled by the same alpha to preserve its direction.
+        Returns the shortened step, alpha, the binding constraints, and the
+        row of 'StepSizeConstraints.dat'."""
         alphas = step_size_alphas(u, Delta_u)
         alpha = min(
             [1.0] + [alphas[constraint] for constraint in step_size_constraints]
@@ -2547,32 +2775,60 @@ def control_id(
             + [alpha]
             + effective_spins_after_step
         )
+        return Delta_u, alpha, binding, alphas, step_size_row
+
+    # The row of 'Jacobian.dat' of a solve is the Jacobian that the step after
+    # it starts from, so it is written before that step (or at the end), once
+    # the Jacobian can no longer change (see 'globalization')
+    pending_jacobian_row = False
+
+    def write_jacobian_row():
+        nonlocal pending_jacobian_row
+        if not pending_jacobian_row:
+            return
+        pending_jacobian_row = False
+        if replaying(solve):
+            check_replay("Jacobian", solve, J.flatten())
+        with spectre_h5.H5File(output_filename, "a") as output_file:
+            dat_file = output_file.try_insert_dat(
+                "Jacobian", jacobian_legend, 0
+            )
+            dat_file.append(J.flatten())
+
+    def record_step(alpha, binding, alphas, step_size_row):
+        """Write the row of 'StepSizeConstraints.dat' of the next solve, and
+        stop if the constraints allow no step"""
+        write_jacobian_row()
+        step_solve = solve + 1
         # A replayed step must be the recorded one. The enforced constraints
         # may differ from the previous loop's, but not change a replayed step.
-        if replaying(iteration):
+        if replaying(step_solve):
             recorded_steps = recorded_data["StepSizeConstraints"]
-            if iteration - 1 < len(recorded_steps) and not np.isclose(
+            if step_solve - 1 < len(recorded_steps) and not np.isclose(
                 alpha,
-                recorded_steps[iteration - 1][3],
+                recorded_steps[step_solve - 1][3],
                 rtol=RESTART_RELATIVE_TOLERANCE,
                 atol=RESTART_ABSOLUTE_TOLERANCE,
             ):
                 raise RuntimeError(
                     f"The step-size constraints {list(step_size_constraints)}"
                     " change the replayed step of control iteration"
-                    f" {iteration}: they apply alpha = {alpha:g} (binding:"
+                    f" {step_solve}: they apply alpha = {alpha:g} (binding:"
                     f" {binding}), the previous loop applied alpha ="
-                    f" {recorded_steps[iteration - 1][3]:g}. Restart from an"
+                    f" {recorded_steps[step_solve - 1][3]:g}. Restart from an"
                     " earlier iteration, or with other constraints."
                 )
-            check_replay("StepSizeConstraints", iteration - 1, step_size_row)
-        elif replaying(iteration - 1):
+            check_replay("StepSizeConstraints", step_solve - 1, step_size_row)
+        elif replaying(step_solve - 1) and (
+            method_of(step_solve)[::2] == method_of(step_solve - 1)[::2]
+        ):
             # The first new step: its alphas (of every constraint, enforced
             # or not) are computed from the replayed state, so they are the
-            # recorded ones. The applied alpha may differ.
+            # recorded ones. The applied alpha may differ. A new
+            # globalization or maximum step changes the step itself.
             check_replay(
                 "StepSizeConstraints",
-                iteration - 1,
+                step_solve - 1,
                 step_size_row[: len(STEP_SIZE_CONSTRAINTS)],
                 first_columns=True,
             )
@@ -2587,60 +2843,499 @@ def control_id(
                 " free data (alpha = 0), so the control loop cannot make"
                 f" progress. Step-size constraints: {alphas}."
             )
-        scaled_Delta_u = Delta_u / u_scale
-        if broyden_update == "secant":
-            # Change of the scaled residual that the linear model predicts. A
-            # full Newton step solves J du = -F, so it is -F by construction.
-            predicted_change = (
-                -F / f_scale
-                if alpha == 1.0 and not delay_control
-                else np.dot(J, scaled_Delta_u)
-            )
-            max_change = np.max(np.abs(predicted_change))
-            if not delay_control and max_change < BROYDEN_RESIDUAL_NOISE:
-                raise RuntimeError(
-                    "The step of the free data (alpha ="
-                    f" {alpha:g}, binding: {binding}) changes no residual by"
-                    f" more than their noise {BROYDEN_RESIDUAL_NOISE:g} (the"
-                    f" largest predicted change is {max_change:e}), so the"
-                    " control loop cannot make progress."
-                )
-            predicted_F = F_measured / f_scale + predicted_change
 
-        u += Delta_u
-
-        # Compute residual and check stopping condition
-        F = Residual(u)
-        if np.max(np.abs(F)) < residual_tolerance:
-            break
-        F_measured = F.copy()
-        if delay_control:
-            F[delayed_indices] = 0.0
-
-        # Update the Jacobian using Broyden's method, in scaled variables so
-        # that no single control can dominate the update
-        if broyden_update == "secant":
-            w = F_measured / f_scale - predicted_F
-            if delay_control:
-                w[delayed_indices] = 0.0
-            w[np.abs(w) < BROYDEN_RESIDUAL_NOISE] = 0.0
-            logger.info(
-                "Broyden update (secant) of the rows"
-                f" {list(np.flatnonzero(w))}; the others changed as predicted,"
-                f" within the noise {BROYDEN_RESIDUAL_NOISE:g}."
-            )
-        else:
-            w = F / f_scale
-        J += np.outer(w, scaled_Delta_u) / np.dot(
-            scaled_Delta_u, scaled_Delta_u
-        )
-        if replaying(iteration):
-            check_replay("Jacobian", iteration, J.flatten())
+    def record_globalization(row):
+        """Write the row of 'Globalization.dat' of the last solve"""
+        if replaying(solve):
+            recorded = recorded_data.get("Globalization")
+            if recorded is not None and recorded.size > 0:
+                rows = np.flatnonzero(recorded[:, 0] == solve)
+                if len(rows) > 0:
+                    check_replay(
+                        "Globalization", int(rows[0]), row, equal_nan=True
+                    )
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
-                "Jacobian", jacobian_legend, 0
+                "Globalization", GLOBALIZATION_LEGEND, 0
             )
-            dat_file.append(J.flatten())
+            dat_file.append(row)
+
+    def secant_update(
+        J, scaled_step, scaled_F_after, scaled_F_before, predicted_change
+    ):
+        """Broyden's update in the general form of Numerical Recipes 3e
+        (Eq. 9.7.17), with the noise guard of its routine 'broydn': the
+        measured scaled residual after the step minus the one that the
+        Jacobian predicted, except in components below their noise or whose
+        control is delayed. Returns the updated Jacobian."""
+        w = scaled_F_after - (scaled_F_before + predicted_change)
+        if delay_control:
+            w[delayed_indices] = 0.0
+        w[np.abs(w) < BROYDEN_RESIDUAL_NOISE] = 0.0
+        logger.info(
+            "Broyden update (secant) of the rows"
+            f" {list(np.flatnonzero(w))}; the others changed as predicted,"
+            f" within the noise {BROYDEN_RESIDUAL_NOISE:g}."
+        )
+        return J + np.outer(w, scaled_step) / np.dot(scaled_step, scaled_step)
+
+    def dogleg_step(newton_step, gradient, active_jacobian, active, radius):
+        """Dogleg step of length at most 'radius' (Dennis & Schnabel, Sec.
+        6.4.2): the Newton step if it is that short, else the point at
+        distance 'radius' on the path from 0 to the Cauchy point (the minimum
+        of the linear model along the steepest descent -gradient) and on to
+        the Newton step. All in scaled variables. Returns the step and whether
+        it is the Newton step."""
+        if np.linalg.norm(newton_step) <= radius:
+            return newton_step, True
+        gradient_image = np.dot(active_jacobian, gradient[active])
+        cauchy_step = (
+            -np.dot(gradient, gradient)
+            / np.dot(gradient_image, gradient_image)
+            * gradient
+        )
+        if np.linalg.norm(cauchy_step) >= radius:
+            return -radius / np.linalg.norm(gradient) * gradient, False
+        # The point s = cauchy + tau (newton - cauchy) with |s| = radius
+        difference = newton_step - cauchy_step
+        a = np.dot(difference, difference)
+        b = 2.0 * np.dot(cauchy_step, difference)
+        c = np.dot(cauchy_step, cauchy_step) - radius**2
+        tau = (-b + np.sqrt(b**2 - 4.0 * a * c)) / (2.0 * a)
+        return cauchy_step + tau * difference, False
+
+    def backtrack(line_search, f_after):
+        """Next fraction alpha of the line search after a trial at alpha with
+        'f_after' failed the sufficient decrease: the minimum of a quadratic
+        (first backtrack) or cubic (later ones) model of f(alpha), kept in
+        [0.1, 0.5] times the last alpha (Numerical Recipes 3e, routine
+        'lnsrch')."""
+        alpha, slope = line_search["alpha"], line_search["slope"]
+        f_before = line_search["f_before"]
+        if line_search["previous"] is None:
+            next_alpha = -slope / (2.0 * (f_after - f_before - slope))
+        else:
+            previous_alpha, previous_f = line_search["previous"]
+            rhs1 = f_after - f_before - alpha * slope
+            rhs2 = previous_f - f_before - previous_alpha * slope
+            a = (rhs1 / alpha**2 - rhs2 / previous_alpha**2) / (
+                alpha - previous_alpha
+            )
+            b = (
+                -previous_alpha * rhs1 / alpha**2
+                + alpha * rhs2 / previous_alpha**2
+            ) / (alpha - previous_alpha)
+            if a == 0.0:
+                next_alpha = -slope / (2.0 * b)
+            else:
+                discriminant = b**2 - 3.0 * a * slope
+                if discriminant < 0.0:
+                    next_alpha = 0.5 * alpha
+                elif b <= 0.0:
+                    next_alpha = (-b + np.sqrt(discriminant)) / (3.0 * a)
+                else:
+                    next_alpha = -slope / (b + np.sqrt(discriminant))
+            next_alpha = min(next_alpha, 0.5 * alpha)
+        line_search["previous"] = (alpha, f_after)
+        line_search["alpha"] = max(next_alpha, 0.1 * alpha)
+
+    iteration = 0
+    # Radius of the trust region in scaled free data
+    trust_radius = None
+    # Length of the last accepted step in scaled free data
+    previous_step_length = None
+    converged = False
+    out_of_solves = False
+    while solve < max_iterations and not (converged or out_of_solves):
+        iteration += 1
+
+        # Start the control of the delayed parameters once a minimum number of
+        # iterations has passed and the horizon parameters have settled.
+        # Controlling the asymptotic quantities while the horizon masses and
+        # spins are still far from their targets can drive the free data
+        # off-bounds.
+        if delay_control:
+            max_horizon_residual = (
+                np.max(np.abs(F[horizon_indices]))
+                if np.any(horizon_indices)
+                else 0.0
+            )
+            if (
+                iteration >= control_delay
+                and max_horizon_residual
+                < HORIZON_RESIDUAL_FOR_ASYMPTOTIC_CONTROL
+            ):
+                delay_control = False
+            logger.info(
+                "Max residual of horizon parameters ="
+                f" {max_horizon_residual:e}."
+                f" {'Delaying' if delay_control else 'Starting'} control of"
+                " asymptotic parameters."
+            )
+
+        # The globalizations minimize f = |F|^2 / 2 of the scaled residuals of
+        # the parameters whose control is not delayed, over the scaled free
+        # data of the same parameters (the others stay fixed)
+        active = (
+            ~delayed_indices if delay_control else np.ones(len(u), dtype=bool)
+        )
+        scaled_F = F_measured / f_scale
+        f_before = 0.5 * np.dot(scaled_F[active], scaled_F[active])
+        # Solves of this iteration, and of its current direction
+        trial = 0
+        direction_trials = 0
+        # Scaled steps and measured residuals of the rejected solves
+        rejected = []
+        jacobian_reset = False
+        # Whether the Jacobian was reset since the last solve
+        reset_before_step = False
+        line_search = None
+
+        def reset_jacobian(method, reason):
+            """When a globalization finds no acceptable step from the current
+            free data: reset the Jacobian to the initial approximation at the
+            current free data, updated with the shortest rejected step, and
+            try again once. Stop if that fails too."""
+            nonlocal J, jacobian_reset, reset_before_step
+            nonlocal line_search, direction_trials
+            if jacobian_reset:
+                raise RuntimeError(
+                    f"The {method.replace('_', ' ')} found no step that"
+                    f" decreases f = |F|^2 / 2 (now {f_before:e}) from the"
+                    " free data of control iteration"
+                    f" {iteration - 1}, neither with Broyden's Jacobian nor"
+                    f" after resetting it: {reason} Stopping the control"
+                    " loop."
+                )
+            logger.warning(
+                f"The {method.replace('_', ' ')} found no acceptable step:"
+                f" {reason} Resetting the Jacobian to the initial"
+                " approximation at the current free data"
+                + (
+                    ", updated with the shortest rejected step."
+                    if rejected
+                    else "."
+                )
+            )
+            J = initial_jacobian(u) * (
+                u_scale[np.newaxis, :] / f_scale[:, np.newaxis]
+            )
+            if rejected:
+                scaled_step, trial_F = min(
+                    rejected, key=lambda entry: np.linalg.norm(entry[0])
+                )
+                updated_J = secant_update(
+                    J,
+                    scaled_step,
+                    trial_F / f_scale,
+                    F_measured / f_scale,
+                    np.dot(J, scaled_step),
+                )
+                # E.g., a step that changed no residual makes the update
+                # singular along it
+                if np.linalg.cond(updated_J[np.ix_(active, active)]) < (
+                    MAX_RESET_JACOBIAN_CONDITION
+                ):
+                    J = updated_J
+                else:
+                    logger.warning(
+                        "The update with the shortest rejected step makes"
+                        " the Jacobian singular. Using the initial"
+                        " approximation alone."
+                    )
+            jacobian_reset = True
+            reset_before_step = True
+            line_search = None
+            direction_trials = 0
+
+        while True:
+            method, update, max_step_option = method_of(solve + 1)
+            # A shortened step needs the general form of Broyden's update
+            if method != "none":
+                update = "secant"
+            largest_step = (
+                max_step_option
+                if max_step_option is not None
+                else DEFAULT_MAX_STEP_FACTOR
+                * max(np.linalg.norm(u / u_scale), len(u))
+            )
+            line_search_alpha = np.nan
+            radius = np.nan
+            if method == "none":
+                # Update the free parameters using a quasi-Newton-Raphson
+                # method
+                write_jacobian_row()
+                Delta_u = -np.dot(np.linalg.inv(J), F / f_scale) * u_scale
+                if delay_control:
+                    Delta_u[delayed_indices] = 0.0
+                Delta_u, alpha, binding, alphas, step_size_row = constrain_step(
+                    Delta_u
+                )
+                record_step(alpha, binding, alphas, step_size_row)
+                scaled_Delta_u = Delta_u / u_scale
+                if update == "secant":
+                    # Change of the scaled residual that the linear model
+                    # predicts. A full Newton step solves J du = -F, so it is
+                    # -F by construction.
+                    predicted_change = (
+                        -F / f_scale
+                        if alpha == 1.0 and not delay_control
+                        else np.dot(J, scaled_Delta_u)
+                    )
+                    max_change = np.max(np.abs(predicted_change))
+                    if (
+                        not delay_control
+                        and max_change < BROYDEN_RESIDUAL_NOISE
+                    ):
+                        raise RuntimeError(
+                            "The step of the free data (alpha ="
+                            f" {alpha:g}, binding: {binding}) changes no"
+                            " residual by more than their noise"
+                            f" {BROYDEN_RESIDUAL_NOISE:g} (the largest"
+                            f" predicted change is {max_change:e}), so the"
+                            " control loop cannot make progress."
+                        )
+            else:
+                # Newton step and gradient of f of the controlled rows
+                active_jacobian = J[np.ix_(active, active)]
+                newton_step = np.zeros(len(u))
+                newton_step[active] = -np.linalg.solve(
+                    active_jacobian, scaled_F[active]
+                )
+                gradient = np.zeros(len(u))
+                gradient[active] = np.dot(active_jacobian.T, scaled_F[active])
+                if method == "line_search":
+                    if line_search is None:
+                        # A new direction: the Newton step, at most
+                        # 'largest_step' long, shortened by the step-size
+                        # constraints
+                        offered_step = newton_step.copy()
+                        is_newton_step = True
+                        if np.linalg.norm(offered_step) > largest_step:
+                            offered_step *= largest_step / np.linalg.norm(
+                                offered_step
+                            )
+                            is_newton_step = False
+                    else:
+                        offered_step = (
+                            line_search["alpha"] * line_search["direction"]
+                        )
+                        is_newton_step = False
+                else:
+                    if trust_radius is None:
+                        # The first trust region: the Newton step, unless a
+                        # previous step was shorter (e.g., in a restarted
+                        # loop), in which case twice that
+                        trust_radius = min(
+                            np.linalg.norm(newton_step), largest_step
+                        )
+                        if previous_step_length is not None:
+                            trust_radius = min(
+                                trust_radius, 2.0 * previous_step_length
+                            )
+                        logger.info(f"Initial trust radius: {trust_radius:e}.")
+                    radius = trust_radius
+                    offered_step, is_newton_step = dogleg_step(
+                        newton_step, gradient, active_jacobian, active, radius
+                    )
+                Delta_u, alpha, binding, alphas, step_size_row = constrain_step(
+                    offered_step * u_scale
+                )
+                scaled_Delta_u = Delta_u / u_scale
+                if method == "line_search":
+                    if line_search is None:
+                        line_search = dict(
+                            direction=scaled_Delta_u.copy(),
+                            alpha=1.0,
+                            slope=np.dot(gradient, scaled_Delta_u),
+                            f_before=f_before,
+                            previous=None,
+                        )
+                    line_search_alpha = line_search["alpha"]
+                # Checks before the solve, which cost no solve
+                predicted_change = np.dot(J, scaled_Delta_u)
+                failure = None
+                if alpha > 0.0 and np.dot(gradient, scaled_Delta_u) >= 0.0:
+                    failure = (
+                        "the step is not a descent direction of f (the"
+                        " slope is"
+                        f" {np.dot(gradient, scaled_Delta_u):e})."
+                    )
+                elif (
+                    alpha > 0.0
+                    and not delay_control
+                    and np.max(np.abs(predicted_change))
+                    < BROYDEN_RESIDUAL_NOISE
+                ):
+                    failure = (
+                        "the step changes no residual by more than their"
+                        f" noise {BROYDEN_RESIDUAL_NOISE:g} (the largest"
+                        " predicted change is"
+                        f" {np.max(np.abs(predicted_change)):e})."
+                    )
+                if failure is not None:
+                    reset_jacobian(method, failure)
+                    continue
+                record_step(alpha, binding, alphas, step_size_row)
+                is_newton_step = (
+                    is_newton_step and alpha == 1.0 and not delay_control
+                )
+                if is_newton_step:
+                    # A full Newton step solves J du = -F, so the linear model
+                    # predicts the change -F by construction
+                    predicted_change = -scaled_F
+            # The model of f after the step, and its slope along the step
+            active_jacobian = J[np.ix_(active, active)]
+            model_F = scaled_F[active] + np.dot(
+                active_jacobian, scaled_Delta_u[active]
+            )
+            f_model = 0.5 * np.dot(model_F, model_F)
+            slope = np.dot(
+                np.dot(active_jacobian.T, scaled_F[active]),
+                scaled_Delta_u[active],
+            )
+
+            trial_u = u + Delta_u
+            jacobian_of_step = J
+            reset_of_step = reset_before_step
+            reset_before_step = False
+
+            # Compute residual and check stopping condition
+            trial_F = Residual(trial_u)
+            trial += 1
+            direction_trials += 1
+            scaled_trial_F = trial_F / f_scale
+            f_after = 0.5 * np.dot(
+                scaled_trial_F[active], scaled_trial_F[active]
+            )
+            predicted_reduction = f_before - f_model
+            rho = (
+                (f_before - f_after) / predicted_reduction
+                if predicted_reduction > 0.0
+                else -np.inf
+            )
+            converged = np.max(np.abs(trial_F)) < residual_tolerance
+            if converged or method == "none":
+                accepted = True
+            elif method == "line_search":
+                # Sufficient decrease (Armijo)
+                accepted = bool(
+                    f_after
+                    <= f_before + LINE_SEARCH_SUFFICIENT_DECREASE * slope
+                )
+            else:
+                accepted = bool(rho > TRUST_REGION_ACCEPTANCE_RATIO)
+            if method == "trust_region":
+                step_length = np.linalg.norm(scaled_Delta_u)
+                if rho < TRUST_REGION_SHRINK_RATIO:
+                    trust_radius = TRUST_REGION_SHRINK_FACTOR * step_length
+                elif (
+                    rho > TRUST_REGION_GROW_RATIO
+                    and step_length >= 0.99 * radius
+                ):
+                    trust_radius = min(
+                        TRUST_REGION_GROW_FACTOR * trust_radius, largest_step
+                    )
+            if method != "none" or update != "paper":
+                logger.info(
+                    f"Control iteration {iteration}, solve {solve} ({method},"
+                    f" {update} update): step length"
+                    f" {np.linalg.norm(scaled_Delta_u):e}"
+                    + (
+                        f", line search alpha {line_search_alpha:g}"
+                        if method == "line_search"
+                        else ""
+                    )
+                    + (
+                        f", trust radius {radius:e}"
+                        if method == "trust_region"
+                        else ""
+                    )
+                    + f", f = {f_before:e} -> {f_after:e} (model {f_model:e},"
+                    f" rho = {rho:g}): "
+                    + ("accepted." if accepted else "rejected.")
+                )
+                record_globalization(
+                    [
+                        solve,
+                        iteration,
+                        trial - 1,
+                        GLOBALIZATIONS.index(method),
+                        BROYDEN_UPDATES.index(update),
+                        (
+                            np.nan
+                            if max_step_option is None
+                            else max_step_option
+                        ),
+                        np.linalg.norm(scaled_Delta_u),
+                        line_search_alpha,
+                        radius,
+                        f_before,
+                        f_model,
+                        f_after,
+                        rho,
+                        slope,
+                        float(accepted),
+                        float(reset_of_step),
+                    ]
+                )
+
+            if accepted:
+                u += Delta_u
+                F = trial_F
+                accept_solve()
+                previous_step_length = np.linalg.norm(scaled_Delta_u)
+                if converged:
+                    break
+                F_measured = F.copy()
+                if delay_control:
+                    F[delayed_indices] = 0.0
+
+                # Update the Jacobian using Broyden's method, in scaled
+                # variables so that no single control can dominate the update
+                if update == "secant":
+                    J = secant_update(
+                        jacobian_of_step,
+                        scaled_Delta_u,
+                        F_measured / f_scale,
+                        scaled_F,
+                        predicted_change,
+                    )
+                else:
+                    w = F / f_scale
+                    J += np.outer(w, scaled_Delta_u) / np.dot(
+                        scaled_Delta_u, scaled_Delta_u
+                    )
+                pending_jacobian_row = True
+                break
+
+            # The solve is rejected: the free data stays, and the next trial
+            # steps from it again
+            pending_jacobian_row = True
+            rejected.append((scaled_Delta_u, trial_F))
+            if solve >= max_iterations:
+                out_of_solves = True
+                break
+            failure = None
+            if direction_trials >= GLOBALIZATION_MAX_TRIALS:
+                failure = (
+                    f"{direction_trials} solves along this direction were"
+                    " rejected."
+                )
+            elif method == "line_search":
+                backtrack(line_search, f_after)
+                if line_search["alpha"] < LINE_SEARCH_MIN_ALPHA:
+                    failure = (
+                        "the line search needs alpha ="
+                        f" {line_search['alpha']:g}, below"
+                        f" {LINE_SEARCH_MIN_ALPHA:g}."
+                    )
+            if failure is not None:
+                reset_jacobian(method, failure)
+
+    write_jacobian_row()
+    # The control loop ends at the last accepted solve
+    control_run_dir = accepted_run_dir
 
     if restart_dry_run:
         logger.info(
@@ -2743,6 +3438,33 @@ def _restart_cli_scheduler_defaults():
     help=(
         "Polynomial order that the final convergence test climbs to, instead"
         " of the previous's."
+    ),
+)
+@click.option(
+    "--broyden-update",
+    type=click.Choice(BROYDEN_UPDATES),
+    help=(
+        "How Broyden's method updates the Jacobian after the restart, instead"
+        " of the previous loop's: 'paper' assumes full Newton steps, 'secant'"
+        " is the general form of Numerical Recipes (Eq. 9.7.17)."
+    ),
+)
+@click.option(
+    "--globalization",
+    type=click.Choice(GLOBALIZATIONS),
+    help=(
+        "Globalization of the control steps after the restart, instead of the"
+        " previous loop's: a line search or a trust region on |F|^2 / 2, which"
+        " rejects (and re-solves) steps that don't improve the control"
+        " residual."
+    ),
+)
+@click.option(
+    "--max-step",
+    type=click.FloatRange(0.0, None, min_open=True),
+    help=(
+        "Longest step of the scaled free data of a globalization after the"
+        " restart, instead of the previous loop's."
     ),
 )
 @click.option(

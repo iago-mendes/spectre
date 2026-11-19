@@ -21,6 +21,9 @@ from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import to_dataframe
 from spectre.Pipelines.Bbh.ControlId import (
     BROYDEN_RESIDUAL_NOISE,
+    GLOBALIZATION_LEGEND,
+    GLOBALIZATION_MAX_TRIALS,
+    GLOBALIZATIONS,
     MAX_EFFECTIVE_SPIN,
     UnconvergedSolveError,
     _convergence_errors,
@@ -1354,6 +1357,252 @@ class TestBroydenUpdate(unittest.TestCase):
         self.assertGreater(np.max(np.abs(paper["Jacobian"][1])), 1.0e10)
 
 
+# A measured mass that saturates: the response of the mass to the conformal
+# mass falls off like the response of a spin near extremality to the horizon
+# rotation. From beyond the solution (SATURATING_SOLUTION, about 1.17), where
+# the response is weak, Broyden's method steps far past the solution and the
+# control residual jumps.
+SATURATING_MASS_SCALE = 0.52
+SATURATING_INITIAL_CONFORMAL_MASS = 1.5
+
+
+def saturating_mass(conformal_mass):
+    return SATURATING_MASS_SCALE * np.tanh(
+        conformal_mass / SATURATING_MASS_SCALE
+    )
+
+
+def column(table, name):
+    return table[:, GLOBALIZATION_LEGEND.index(name)]
+
+
+def jumps(residuals, factor=3.0):
+    """Solves whose max |F| exceeds 'factor' times the best one before"""
+    max_residuals = np.max(np.abs(residuals), axis=1)
+    best = np.minimum.accumulate(max_residuals)
+    return [
+        solve
+        for solve in range(1, len(max_residuals))
+        if max_residuals[solve] > factor * best[solve - 1]
+    ]
+
+
+class TestGlobalization(unittest.TestCase):
+    """The line search and the trust region on the mocked control loop of the
+    conformal masses (see 'TestNumericInitialGuessInControl')."""
+
+    def setUp(self):
+        self.test_dir = Path(
+            unit_test_build_path(),
+            "support/Pipelines/Bbh/ControlIdGlobalization",
+        )
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def run_control(
+        self,
+        name,
+        mass=saturating_mass,
+        initial_conformal_mass=SATURATING_INITIAL_CONFORMAL_MASS,
+        **kwargs,
+    ):
+        """Runs the control loop in its own directory, with the measured mass
+        'mass(conformal_mass)'. Returns the tables of 'ControlParams.h5'."""
+        id_dir = self.test_dir / name / "ID"
+        run_dir = id_dir / "0000_InitialData"
+        write_seeding_segment(
+            run_dir,
+            {
+                "conformal_mass_a": initial_conformal_mass,
+                "conformal_mass_b": initial_conformal_mass,
+            },
+            GOOD_SOLVE_OUTPUT,
+        )
+        metadata, body = seeding_input_file()
+        for side in ["ObjectLeft", "ObjectRight"]:
+            body["Background"]["Binary"][side]["KerrSchild"][
+                "Mass"
+            ] = initial_conformal_mass
+        with open(run_dir / "InitialData.yaml", "w") as open_input_file:
+            yaml.safe_dump_all([metadata, body], open_input_file)
+        mock_control_generate_id.calls = []
+        mock_control_generate_id.seeded_failures = []
+        mock_control_generate_id.unconverged_background = []
+
+        def measured_params(run_dir, control_params):
+            free_data = json.loads(
+                (Path(run_dir) / "free_data.json").read_text()
+            )
+            return {
+                "MassA": mass(free_data["conformal_mass_a"]),
+                "MassB": mass(free_data["conformal_mass_b"]),
+                "DimensionlessSpinA": np.zeros(3),
+                "DimensionlessSpinB": np.zeros(3),
+            }
+
+        try:
+            with (
+                patch(
+                    "spectre.Pipelines.Bbh.ControlId.generate_id",
+                    side_effect=mock_control_generate_id,
+                ),
+                patch(
+                    "spectre.Pipelines.Bbh.ControlId._measured_params",
+                    side_effect=measured_params,
+                ),
+            ):
+                self.last_run_dir = control_id(
+                    id_input_file_path=run_dir / "InitialData.yaml",
+                    control_params=SEEDING_CONTROL_PARAMS,
+                    residual_tolerance=1.0e-8,
+                    **kwargs,
+                )
+        finally:
+            self.tables = {
+                table: _read_dat(id_dir / "ControlParams.h5", table)
+                for table in [
+                    "ControlScales",
+                    "FreeData",
+                    "Residuals",
+                    "Jacobian",
+                    "StepSizeConstraints",
+                    "Globalization",
+                ]
+            }
+        return self.tables
+
+    def test_no_globalization_by_default(self):
+        tables = self.run_control("none")
+        self.assertEqual(tables["Globalization"].size, 0)
+        self.assertEqual(Path(self.last_run_dir).name, "0013_InitialData")
+
+    def test_globalizations_stop_the_jumps(self):
+        # Without a globalization, the control residual jumps (as in the
+        # survey's loops at spins near 1)
+        none = self.run_control("none")
+        self.assertGreater(len(jumps(none["Residuals"])), 0)
+        self.assertLess(np.max(np.abs(none["Residuals"][-1])), 1.0e-8)
+        for globalization in ["line_search", "trust_region"]:
+            tables = self.run_control(
+                globalization, globalization=globalization
+            )
+            residuals, rows = tables["Residuals"], tables["Globalization"]
+            num_solves = len(residuals) - 1
+            # Every solve after the first has a row, in order
+            npt.assert_array_equal(
+                column(rows, "Solve"), range(1, len(rows) + 1)
+            )
+            self.assertEqual(len(rows), num_solves)
+            self.assertTrue(
+                np.all(
+                    column(rows, "Globalization")
+                    == GLOBALIZATIONS.index(globalization)
+                )
+            )
+            # The loop converges in at most as many solves as without
+            self.assertLess(np.max(np.abs(residuals[-1])), 1.0e-8)
+            self.assertLessEqual(num_solves, len(none["Residuals"]) - 1)
+            self.assertEqual(
+                Path(self.last_run_dir).name, f"{num_solves:04d}_InitialData"
+            )
+            # The accepted solves decrease f, and their control residuals
+            # never jump
+            accepted = column(rows, "Accepted") == 1.0
+            npt.assert_array_less(
+                column(rows, "FAfter")[accepted],
+                column(rows, "FBefore")[accepted],
+            )
+            accepted_residuals = residuals[
+                np.concatenate([[0], column(rows, "Solve")[accepted]]).astype(
+                    int
+                )
+            ]
+            self.assertEqual(jumps(accepted_residuals), [])
+            # The tables have one row per solve. A rejected solve leaves the
+            # free data, and the next one steps from it again.
+            self.assertEqual(len(tables["FreeData"]), num_solves + 1)
+            self.assertEqual(len(tables["StepSizeConstraints"]), num_solves)
+            self.assertEqual(len(tables["Jacobian"]), num_solves)
+            iterations = column(rows, "Iteration")
+            for row in np.flatnonzero(~accepted):
+                solve = int(column(rows, "Solve")[row])
+                npt.assert_array_equal(
+                    tables["Jacobian"][solve], tables["Jacobian"][solve - 1]
+                )
+                self.assertEqual(iterations[row + 1], iterations[row])
+                self.assertEqual(
+                    column(rows, "Trial")[row + 1],
+                    column(rows, "Trial")[row] + 1,
+                )
+            if globalization == "line_search":
+                # Each iteration's first trial is the whole step, and the
+                # backtracks are shorter
+                rejected = np.flatnonzero(~accepted)
+                self.assertGreater(len(rejected), 0)
+                alphas = column(rows, "LineSearchAlpha")
+                npt.assert_array_equal(alphas[column(rows, "Trial") == 0], 1.0)
+                npt.assert_array_less(alphas[rejected + 1], alphas[rejected])
+            else:
+                # The trust region never lets the step grow past it
+                npt.assert_array_less(
+                    column(rows, "StepLength"),
+                    column(rows, "TrustRadius") * (1.0 + 1.0e-12),
+                )
+
+    def test_failure_resets_jacobian_then_stops(self):
+        # The measured masses don't respond to the free data, so no step can
+        # decrease f: each globalization rejects its trials, resets the
+        # Jacobian, rejects its trials again and stops
+        constant_mass = lambda conformal_mass: 0.4
+        for globalization in ["line_search", "trust_region"]:
+            with self.assertRaisesRegex(
+                RuntimeError, "found no step that decreases"
+            ):
+                self.run_control(
+                    globalization,
+                    mass=constant_mass,
+                    initial_conformal_mass=0.3,
+                    globalization=globalization,
+                )
+            rows = self.tables["Globalization"]
+            self.assertEqual(len(rows), 2 * GLOBALIZATION_MAX_TRIALS)
+            npt.assert_array_equal(column(rows, "Accepted"), 0.0)
+            npt.assert_array_equal(
+                column(rows, "JacobianReset"),
+                [0.0] * GLOBALIZATION_MAX_TRIALS
+                + [1.0]
+                + [0.0] * (GLOBALIZATION_MAX_TRIALS - 1),
+            )
+            # The reset Jacobian is the initial one: this map has no secant
+            # information to add
+            jacobians = self.tables["Jacobian"]
+            npt.assert_array_equal(
+                jacobians[GLOBALIZATION_MAX_TRIALS], jacobians[0]
+            )
+            # The free data never moved
+            npt.assert_array_equal(
+                self.tables["Residuals"],
+                np.repeat(self.tables["Residuals"][:1], len(rows) + 1, axis=0),
+            )
+
+    def test_max_step(self):
+        # The line search shortens the Newton step to the 'max_step'
+        max_step = 0.05
+        tables = self.run_control(
+            "line_search",
+            globalization="line_search",
+            max_step=max_step,
+            max_iterations=4,
+        )
+        rows = tables["Globalization"]
+        npt.assert_array_less(
+            column(rows, "StepLength"), max_step * (1.0 + 1.0e-12)
+        )
+        npt.assert_array_equal(column(rows, "MaxStep"), max_step)
+
+
 class TestEllipticSolveConvergence(unittest.TestCase):
     def setUp(self):
         self.run_dir = Path(
@@ -1607,6 +1856,7 @@ def mock_restart_generate_id(
                 else Path(initial_guess_file_glob).parent.name
             ),
             P=polynomial_order,
+            globalization=kwargs.get("control_globalization", "none"),
             **{
                 key: np.asarray(value, dtype=float).tolist()
                 for key, value in free_data.items()
@@ -1660,9 +1910,10 @@ def mock_restart_measured_params(run_dir, control_params):
         truncation_error = (
             mock_restart_measured_params.order_error * 10.0**-polynomial_order
         )
+    mass = mock_restart_measured_params.mass
     return {
-        "MassA": mock_mass(mass_a) + 0.01 * mass_b + truncation_error,
-        "MassB": mock_mass(mass_b) + 0.01 * mass_a,
+        "MassA": mass(mass_a) + 0.01 * mass_b + truncation_error,
+        "MassB": mass(mass_b) + 0.01 * mass_a,
         "DimensionlessSpinA": (
             -4.0 * mass_a * rotation_a + 0.01 * mass_b * rotation_b
         ),
@@ -1720,6 +1971,7 @@ class TestRestartControlId(unittest.TestCase):
     def setUp(self):
         mock_restart_measured_params.com_shift = 0.0
         mock_restart_measured_params.order_error = 0.0
+        mock_restart_measured_params.mass = mock_mass
         self.test_dir = Path(
             unit_test_build_path(), "support/Pipelines/Bbh/ControlIdRestart"
         )
@@ -1788,6 +2040,9 @@ class TestRestartControlId(unittest.TestCase):
                     ],
                     run_convergence_tests=next_with.get(
                         "run_convergence_tests", False
+                    ),
+                    globalization=next_with.get(
+                        "control_globalization", "none"
                     ),
                 )
             except SimulatedCrash:
@@ -2142,6 +2397,126 @@ class TestRestartControlId(unittest.TestCase):
         self.assertEqual(
             Path(restart_last_run_dir).name, Path(last_run_dir).name
         )
+
+    def test_restart_with_globalization(self):
+        # A loop without a globalization whose control residual jumps
+        mock_restart_measured_params.mass = saturating_mass
+        id_dir, calls, _ = self.run_control(
+            "Uninterrupted",
+            initial_conformal_mass=SATURATING_INITIAL_CONFORMAL_MASS,
+        )
+        tables = read_control_params(id_dir)
+        self.assertNotIn("Globalization.dat", tables)
+        first_jump = jumps(tables["Residuals.dat"])[0]
+        restart_iteration = first_jump - 1
+        for globalization in ["line_search", "trust_region"]:
+            restart_dir, restart_calls, last_run_dir = self.restart(
+                id_dir,
+                f"Restart_{globalization}",
+                restart_iteration=restart_iteration,
+                globalization=globalization,
+            )
+            restart_tables = read_control_params(restart_dir)
+            # The replayed iterations are the previous loop's
+            for name, num_rows in [
+                ("Residuals.dat", restart_iteration + 1),
+                ("FreeData.dat", restart_iteration + 1),
+                ("Jacobian.dat", restart_iteration + 1),
+                ("StepSizeConstraints.dat", restart_iteration),
+            ]:
+                npt.assert_array_equal(
+                    restart_tables[name][:num_rows],
+                    tables[name][:num_rows],
+                    name,
+                )
+            # The globalization acts on the new solves only, and they record
+            # it in their input files
+            rows = restart_tables["Globalization.dat"]
+            npt.assert_array_equal(
+                column(rows, "Solve"),
+                range(restart_iteration + 1, restart_iteration + 1 + len(rows)),
+            )
+            self.assertEqual(
+                {call["globalization"] for call in restart_calls},
+                {globalization},
+            )
+            self.assertEqual(set(mock_restart_generate_id.templates), {None})
+            record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+            self.assertEqual(
+                record["changed_options"],
+                {
+                    "control_globalization": {
+                        "old": "none",
+                        "new": globalization,
+                    }
+                },
+            )
+            # The first new step comes from the replayed state, with the
+            # new method
+            self.assertEqual(rows[0, 0], restart_iteration + 1)
+            self.assertEqual(
+                column(rows, "Globalization")[0],
+                GLOBALIZATIONS.index(globalization),
+            )
+            self.assertGreater(len(restart_calls), 1)
+
+    def test_restart_globalized_loop(self):
+        # Loops with a globalization, restarted from accepted and rejected
+        # solves, reproduce themselves
+        mock_restart_measured_params.mass = saturating_mass
+        for globalization in ["line_search", "trust_region"]:
+            id_dir, calls, last_run_dir = self.run_control(
+                f"Uninterrupted_{globalization}",
+                initial_conformal_mass=SATURATING_INITIAL_CONFORMAL_MASS,
+                control_globalization=globalization,
+            )
+            rows = read_control_params(id_dir)["Globalization.dat"]
+            self.assertEqual(len(rows), len(calls))
+            # Restart from the first solve, from the first rejected one and
+            # the one after it, and from two later ones
+            rejected_solves = column(rows, "Solve")[
+                column(rows, "Accepted") == 0.0
+            ].astype(int)
+            self.assertGreater(len(rejected_solves), 0)
+            first_rejected = int(rejected_solves[0])
+            for restart_iteration in sorted(
+                {
+                    0,
+                    first_rejected,
+                    first_rejected + 1,
+                    len(calls) // 2,
+                    len(calls) - 1,
+                }
+            ):
+                restart_dir, restart_calls, restart_last_run_dir = self.restart(
+                    id_dir,
+                    f"Restart_{globalization}_{restart_iteration}",
+                    restart_iteration=restart_iteration,
+                )
+                self.assertEqual(
+                    without_globs(restart_calls),
+                    without_globs(calls[restart_iteration:]),
+                )
+                self.assertSameControlParams(restart_dir, id_dir)
+                self.assertEqual(
+                    Path(restart_last_run_dir).name, Path(last_run_dir).name
+                )
+        # The replay runs with the methods the solves ran with, also when the
+        # restart switches the globalization off. (Without a globalization,
+        # this loop later steps beyond the spin limit and stops.)
+        with self.assertRaisesRegex(RuntimeError, "allow no step"):
+            self.restart(
+                id_dir,
+                "RestartWithout",
+                restart_iteration=3,
+                globalization="none",
+            )
+        restart_tables = read_control_params(self.test_dir / "RestartWithout")
+        npt.assert_array_equal(restart_tables["Globalization.dat"], rows[:3])
+        for name in ["Residuals.dat", "FreeData.dat", "Jacobian.dat"]:
+            npt.assert_array_equal(
+                restart_tables[name][:4], read_control_params(id_dir)[name][:4]
+            )
 
     def test_replay_mismatch(self):
         id_dir, calls, _ = self.run_control("Uninterrupted")

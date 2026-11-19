@@ -14,10 +14,12 @@ from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_BROYDEN_UPDATE,
     DEFAULT_CONTROL_DELAY,
     DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    DEFAULT_GLOBALIZATION,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RESIDUAL_TOLERANCE,
     DEFAULT_STEP_SIZE_CONSTRAINTS,
     BroydenUpdate,
+    Globalization,
     StepSizeConstraint,
     TargetParams,
     check_elliptic_solve_converged,
@@ -51,6 +53,8 @@ def postprocess_id(
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
     control_broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
+    control_globalization: Globalization = DEFAULT_GLOBALIZATION,
+    control_max_step: Optional[float] = None,
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
@@ -121,6 +125,11 @@ def postprocess_id(
       control_broyden_update: How Broyden's method of the control loop
         updates the Jacobian, 'paper' or 'secant'. See ControlId.py for
         details. (Default: 'paper')
+      control_globalization: Globalization of the steps of the control loop,
+        'none', 'line_search' or 'trust_region'. See ControlId.py for details.
+        (Default: 'none')
+      control_max_step: Longest step of the scaled free data of the control
+        loop's globalization. See ControlId.py for details. (Default: None)
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory of the simulation, in which the pipeline
@@ -241,6 +250,8 @@ def postprocess_id(
             negative_expansion_bc=negative_expansion_bc,
             step_size_constraints=control_step_size_constraints,
             broyden_update=control_broyden_update,
+            globalization=control_globalization,
+            max_step=control_max_step,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
             final_convergence_test_tolerance=final_convergence_test_tolerance,
