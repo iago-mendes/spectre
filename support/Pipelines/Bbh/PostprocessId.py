@@ -11,11 +11,13 @@ import yaml
 
 from spectre.IO.H5 import open_volfiles, select_observation
 from spectre.Pipelines.Bbh.ControlId import (
+    DEFAULT_BROYDEN_UPDATE,
     DEFAULT_CONTROL_DELAY,
     DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RESIDUAL_TOLERANCE,
     DEFAULT_STEP_SIZE_CONSTRAINTS,
+    BroydenUpdate,
     StepSizeConstraint,
     TargetParams,
     check_elliptic_solve_converged,
@@ -48,6 +50,7 @@ def postprocess_id(
     control_step_size_constraints: Sequence[
         StepSizeConstraint
     ] = DEFAULT_STEP_SIZE_CONSTRAINTS,
+    control_broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
@@ -115,6 +118,9 @@ def postprocess_id(
       control_step_size_constraints: Step-size constraints to enforce in the
         control loop, any of 'mass', 'com' and 'spin'. See ControlId.py for
         details. (Default: ['spin'])
+      control_broyden_update: How Broyden's method of the control loop
+        updates the Jacobian, 'paper' or 'secant'. See ControlId.py for
+        details. (Default: 'paper')
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory of the simulation, in which the pipeline
@@ -234,6 +240,7 @@ def postprocess_id(
             polynomial_order=control_polynomial_order,
             negative_expansion_bc=negative_expansion_bc,
             step_size_constraints=control_step_size_constraints,
+            broyden_update=control_broyden_update,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
             final_convergence_test_tolerance=final_convergence_test_tolerance,
