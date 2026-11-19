@@ -274,6 +274,8 @@ def generate_id(
     control_broyden_update: str = "paper",
     control_globalization: str = "none",
     control_max_step: Optional[float] = None,
+    control_globalization_fallback: str = "reset",
+    control_uphill_detection: bool = False,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -367,6 +369,12 @@ def generate_id(
       control_max_step: Longest step of the scaled free data of the control
         loop's globalization. See 'support.Pipelines.Bbh.ControlId'.
         (default: None, Numerical Recipes' bound)
+      control_globalization_fallback: What the control loop's globalization
+        does when it finds no acceptable step, 'reset' or 'finite_difference'.
+        See 'support.Pipelines.Bbh.ControlId'. (default: 'reset')
+      control_uphill_detection: Go to that fallback as soon as two rejected
+        solves show an uphill direction. See 'support.Pipelines.Bbh.ControlId'.
+        (default: False)
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -556,6 +564,8 @@ def generate_id(
         control_broyden_update=control_broyden_update,
         control_globalization=control_globalization,
         control_max_step=control_max_step,
+        control_globalization_fallback=control_globalization_fallback,
+        control_uphill_detection=control_uphill_detection,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -827,6 +837,25 @@ def generate_id(
         " globalization."
     ),
     show_default="Numerical Recipes' bound",
+)
+@click.option(
+    "--control-globalization-fallback",
+    type=click.Choice(["reset", "finite_difference"]),
+    default="reset",
+    show_default=True,
+    help=(
+        "What the control loop's globalization does when it finds no"
+        " acceptable step: reset the Jacobian, or recompute some of its"
+        " columns by finite differences."
+    ),
+)
+@click.option(
+    "--control-uphill-detection",
+    is_flag=True,
+    help=(
+        "Go to the globalization's fallback as soon as two rejected solves"
+        " show an uphill direction."
+    ),
 )
 @click.option(
     "--pipeline-dir",

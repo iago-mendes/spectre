@@ -21,9 +21,11 @@ from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import to_dataframe
 from spectre.Pipelines.Bbh.ControlId import (
     BROYDEN_RESIDUAL_NOISE,
+    FINITE_DIFFERENCE_STEP,
     GLOBALIZATION_LEGEND,
     GLOBALIZATION_MAX_TRIALS,
     GLOBALIZATIONS,
+    LEGACY_GLOBALIZATION_COLUMNS,
     MAX_EFFECTIVE_SPIN,
     UnconvergedSolveError,
     _convergence_errors,
@@ -1406,10 +1408,18 @@ class TestGlobalization(unittest.TestCase):
         name,
         mass=saturating_mass,
         initial_conformal_mass=SATURATING_INITIAL_CONFORMAL_MASS,
+        measured_masses=None,
         **kwargs,
     ):
         """Runs the control loop in its own directory, with the measured mass
-        'mass(conformal_mass)'. Returns the tables of 'ControlParams.h5'."""
+        'mass(conformal_mass)' of each black hole, or the measured masses
+        'measured_masses(conformal_mass_a, conformal_mass_b)'. Returns the
+        tables of 'ControlParams.h5'."""
+        if measured_masses is None:
+            measured_masses = lambda mass_a, mass_b: (
+                mass(mass_a),
+                mass(mass_b),
+            )
         id_dir = self.test_dir / name / "ID"
         run_dir = id_dir / "0000_InitialData"
         write_seeding_segment(
@@ -1435,9 +1445,12 @@ class TestGlobalization(unittest.TestCase):
             free_data = json.loads(
                 (Path(run_dir) / "free_data.json").read_text()
             )
+            mass_a, mass_b = measured_masses(
+                free_data["conformal_mass_a"], free_data["conformal_mass_b"]
+            )
             return {
-                "MassA": mass(free_data["conformal_mass_a"]),
-                "MassB": mass(free_data["conformal_mass_b"]),
+                "MassA": mass_a,
+                "MassB": mass_b,
                 "DimensionlessSpinA": np.zeros(3),
                 "DimensionlessSpinB": np.zeros(3),
             }
@@ -1586,6 +1599,108 @@ class TestGlobalization(unittest.TestCase):
                 self.tables["Residuals"],
                 np.repeat(self.tables["Residuals"][:1], len(rows) + 1, axis=0),
             )
+
+    def test_finite_difference_fallback(self):
+        # The initial Jacobian (the identity in the masses) has the wrong sign
+        # in the row of MassA, so the Newton steps go uphill. The line search
+        # with the reset to the initial Jacobian stops; with finite-difference
+        # columns it converges.
+        jacobian = np.array([[-1.0, -0.5], [-0.8, 1.0]])
+        offset = np.array([1.2, 0.3])
+        linear_masses = lambda mass_a, mass_b: tuple(
+            offset + jacobian @ np.array([mass_a, mass_b])
+        )
+        kwargs = dict(
+            measured_masses=linear_masses,
+            initial_conformal_mass=0.3,
+            globalization="line_search",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "found no step that decreases"
+        ):
+            self.run_control("reset", **kwargs)
+        reset_solves = len(self.tables["Residuals"]) - 1
+        tables = self.run_control(
+            "finite_difference",
+            globalization_fallback="finite_difference",
+            **kwargs,
+        )
+        self.assertLess(np.max(np.abs(tables["Residuals"][-1])), 1.0e-8)
+        self.assertLessEqual(len(tables["Residuals"]) - 1, reset_solves)
+        rows = tables["Globalization"]
+        kind = column(rows, "Kind")
+        # The finite-difference solves follow the rejected solves of the
+        # first direction, one per mass, and are not steps
+        probe_rows = np.flatnonzero(kind == 1.0)
+        npt.assert_array_equal(probe_rows, [4, 5])
+        npt.assert_array_equal(column(rows, "Accepted")[:6], 0.0)
+        npt.assert_allclose(
+            column(rows, "StepLength")[probe_rows], FINITE_DIFFERENCE_STEP
+        )
+        npt.assert_array_equal(column(rows, "Fallback"), 1.0)
+        npt.assert_array_equal(column(rows, "JacobianReset")[6], 1.0)
+        # The new columns are the true Jacobian of the scaled masses (the
+        # scales of both are the target mass), and the next step converges
+        num_free_data = tables["FreeData"].shape[1]
+        refreshed_jacobian = tables["Jacobian"][6].reshape(
+            num_free_data, num_free_data
+        )
+        npt.assert_allclose(refreshed_jacobian[:2, :2], jacobian, atol=1.0e-9)
+        self.assertEqual(column(rows, "Accepted")[6], 1.0)
+        # With a trust region too
+        tables = self.run_control(
+            "trust_region",
+            globalization_fallback="finite_difference",
+            **{**kwargs, "globalization": "trust_region"},
+        )
+        self.assertLess(np.max(np.abs(tables["Residuals"][-1])), 1.0e-8)
+        self.assertGreater(
+            np.sum(column(tables["Globalization"], "Kind") == 1.0), 0
+        )
+
+    def test_uphill_detection(self):
+        # The Newton steps of the wrong-sign Jacobian go uphill, and f rises
+        # in proportion to the step: the fallback starts after two rejected
+        # solves instead of four
+        linear_masses = lambda mass_a, mass_b: (1.0 - mass_a, mass_b + 0.1)
+        for globalization in ["line_search", "trust_region"]:
+            kwargs = dict(
+                measured_masses=linear_masses,
+                initial_conformal_mass=0.3,
+                globalization=globalization,
+                globalization_fallback="finite_difference",
+            )
+            rows = self.run_control(f"without_{globalization}", **kwargs)[
+                "Globalization"
+            ]
+            npt.assert_array_equal(
+                column(rows, "Kind")[: GLOBALIZATION_MAX_TRIALS + 1],
+                [0.0] * GLOBALIZATION_MAX_TRIALS + [1.0],
+            )
+            npt.assert_array_equal(column(rows, "Uphill"), 0.0)
+            tables = self.run_control(
+                f"with_{globalization}", uphill_detection=True, **kwargs
+            )
+            rows = tables["Globalization"]
+            npt.assert_array_equal(column(rows, "Kind")[:3], [0.0, 0.0, 1.0])
+            npt.assert_array_equal(column(rows, "Uphill")[:2], [0.0, 1.0])
+            npt.assert_array_equal(column(rows, "UphillDetection"), 1.0)
+            self.assertLess(np.max(np.abs(tables["Residuals"][-1])), 1.0e-8)
+        # An overshoot is not uphill: on the saturating map f rises more than
+        # linearly with the step, and the line search backtracks as without
+        # the detection
+        without = self.run_control("overshoot", globalization="line_search")
+        with_detection = self.run_control(
+            "overshoot_detection",
+            globalization="line_search",
+            uphill_detection=True,
+        )
+        npt.assert_array_equal(
+            without["Residuals"], with_detection["Residuals"]
+        )
+        npt.assert_array_equal(
+            column(with_detection["Globalization"], "Uphill"), 0.0
+        )
 
     def test_max_step(self):
         # The line search shortens the Newton step to the 'max_step'
@@ -2043,6 +2158,12 @@ class TestRestartControlId(unittest.TestCase):
                     ),
                     globalization=next_with.get(
                         "control_globalization", "none"
+                    ),
+                    globalization_fallback=next_with.get(
+                        "control_globalization_fallback", "reset"
+                    ),
+                    uphill_detection=next_with.get(
+                        "control_uphill_detection", False
                     ),
                 )
             except SimulatedCrash:
@@ -2517,6 +2638,113 @@ class TestRestartControlId(unittest.TestCase):
             npt.assert_array_equal(
                 restart_tables[name][:4], read_control_params(id_dir)[name][:4]
             )
+
+    def test_restart_with_finite_differences(self):
+        # Measured masses that fall with the conformal masses: the trust
+        # region with the reset to the initial Jacobian (the wrong sign)
+        # stops, as some loops on eiger did
+        mock_restart_measured_params.mass = lambda mass: 0.9 - mass
+        id_dir, calls, last_run_dir = self.run_control(
+            "Reset",
+            initial_conformal_mass=0.35,
+            control_globalization="trust_region",
+            allow_failure=True,
+        )
+        self.assertIsNone(last_run_dir)
+        tables = read_control_params(id_dir)
+        rows = tables["Globalization.dat"]
+        accepted = np.flatnonzero(column(rows, "Accepted") == 1.0)
+        last_accepted = int(column(rows, "Solve")[accepted[-1]])
+        # Restarted from its last accepted solve with the finite-difference
+        # fallback and the uphill detection, it converges
+        restart_dir, restart_calls, _ = self.restart(
+            id_dir,
+            "Restart",
+            restart_iteration=last_accepted,
+            globalization_fallback="finite_difference",
+            uphill_detection=True,
+        )
+        restart_tables = read_control_params(restart_dir)
+        self.assertLess(
+            np.max(np.abs(restart_tables["Residuals.dat"][-1])), 1.0e-8
+        )
+        restart_rows = restart_tables["Globalization.dat"]
+        npt.assert_array_equal(
+            restart_rows[:last_accepted], rows[:last_accepted]
+        )
+        npt.assert_array_equal(
+            column(restart_rows, "Fallback")[last_accepted:], 1.0
+        )
+        self.assertGreater(np.sum(column(restart_rows, "Kind") == 1.0), 0)
+        record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+        self.assertEqual(
+            sorted(record["changed_options"]),
+            ["control_globalization_fallback", "control_uphill_detection"],
+        )
+        # A loop with the fallback from the start, restarted from before,
+        # at and after its finite-difference solves, reproduces itself
+        id_dir, calls, last_run_dir = self.run_control(
+            "FiniteDifference",
+            initial_conformal_mass=0.35,
+            control_globalization="trust_region",
+            control_globalization_fallback="finite_difference",
+            control_uphill_detection=True,
+        )
+        rows = read_control_params(id_dir)["Globalization.dat"]
+        probe_solves = column(rows, "Solve")[column(rows, "Kind") == 1.0]
+        self.assertGreater(len(probe_solves), 1)
+        for restart_iteration in [
+            int(probe_solves[0]) - 1,
+            int(probe_solves[0]),
+            int(probe_solves[-1]),
+            int(probe_solves[-1]) + 1,
+        ]:
+            restart_dir, restart_calls, restart_last_run_dir = self.restart(
+                id_dir,
+                f"Restart{restart_iteration}",
+                restart_iteration=restart_iteration,
+            )
+            self.assertEqual(
+                without_globs(restart_calls),
+                without_globs(calls[restart_iteration:]),
+            )
+            self.assertSameControlParams(restart_dir, id_dir)
+
+    def test_restart_loop_before_finite_differences(self):
+        # Loops that ran before the finite-difference fallback have the first
+        # columns of 'Globalization.dat' only, and replay with the defaults of
+        # the later ones
+        mock_restart_measured_params.mass = saturating_mass
+        id_dir, calls, _ = self.run_control(
+            "Uninterrupted",
+            initial_conformal_mass=SATURATING_INITIAL_CONFORMAL_MASS,
+            control_globalization="line_search",
+        )
+        rows = read_control_params(id_dir)["Globalization.dat"]
+        with h5py.File(id_dir / "ControlParams.h5", "a") as open_h5_file:
+            attrs = dict(open_h5_file["Globalization.dat"].attrs)
+            del open_h5_file["Globalization.dat"]
+            dataset = open_h5_file.create_dataset(
+                "Globalization.dat",
+                data=rows[:, :LEGACY_GLOBALIZATION_COLUMNS],
+                maxshape=(None, LEGACY_GLOBALIZATION_COLUMNS),
+            )
+            for key, value in attrs.items():
+                dataset.attrs[key] = (
+                    value[:LEGACY_GLOBALIZATION_COLUMNS]
+                    if key == "Legend"
+                    else value
+                )
+        restart_dir, restart_calls, _ = self.restart(
+            id_dir, "Restart", restart_iteration=len(calls) // 2
+        )
+        self.assertEqual(
+            without_globs(restart_calls),
+            without_globs(calls[len(calls) // 2 :]),
+        )
+        npt.assert_array_equal(
+            read_control_params(restart_dir)["Globalization.dat"], rows
+        )
 
     def test_replay_mismatch(self):
         id_dir, calls, _ = self.run_control("Uninterrupted")

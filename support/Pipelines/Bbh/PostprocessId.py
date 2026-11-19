@@ -15,11 +15,13 @@ from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_CONTROL_DELAY,
     DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     DEFAULT_GLOBALIZATION,
+    DEFAULT_GLOBALIZATION_FALLBACK,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RESIDUAL_TOLERANCE,
     DEFAULT_STEP_SIZE_CONSTRAINTS,
     BroydenUpdate,
     Globalization,
+    GlobalizationFallback,
     StepSizeConstraint,
     TargetParams,
     check_elliptic_solve_converged,
@@ -55,6 +57,10 @@ def postprocess_id(
     control_broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
     control_globalization: Globalization = DEFAULT_GLOBALIZATION,
     control_max_step: Optional[float] = None,
+    control_globalization_fallback: GlobalizationFallback = (
+        DEFAULT_GLOBALIZATION_FALLBACK
+    ),
+    control_uphill_detection: bool = False,
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
@@ -130,6 +136,11 @@ def postprocess_id(
         (Default: 'none')
       control_max_step: Longest step of the scaled free data of the control
         loop's globalization. See ControlId.py for details. (Default: None)
+      control_globalization_fallback: What the control loop's globalization
+        does when it finds no acceptable step, 'reset' or 'finite_difference'.
+        See ControlId.py for details. (Default: 'reset')
+      control_uphill_detection: Go to that fallback as soon as two rejected
+        solves show an uphill direction. See ControlId.py. (Default: False)
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory of the simulation, in which the pipeline
@@ -252,6 +263,8 @@ def postprocess_id(
             broyden_update=control_broyden_update,
             globalization=control_globalization,
             max_step=control_max_step,
+            globalization_fallback=control_globalization_fallback,
+            uphill_detection=control_uphill_detection,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
             final_convergence_test_tolerance=final_convergence_test_tolerance,

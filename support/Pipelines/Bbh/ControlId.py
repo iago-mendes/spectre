@@ -99,6 +99,33 @@ DEFAULT_MAX_STEP_FACTOR = 100.0
 GLOBALIZATION_MAX_TRIALS = 4
 # Largest condition number of a reset Jacobian updated with a rejected step
 MAX_RESET_JACOBIAN_CONDITION = 1.0e12
+# What a globalization does when it finds no acceptable step (see
+# 'control_id'):
+# - reset: reset the Jacobian to the initial approximation at the current free
+#   data, updated with the shortest rejected step.
+# - finite_difference: recompute the columns of the Jacobian of the free data
+#   that dominate the rejected step by one-sided finite differences, one solve
+#   per column.
+GlobalizationFallback = Literal["reset", "finite_difference"]
+GLOBALIZATION_FALLBACKS: List[GlobalizationFallback] = [
+    "reset",
+    "finite_difference",
+]
+DEFAULT_GLOBALIZATION_FALLBACK: GlobalizationFallback = "reset"
+# Step of a finite-difference column in scaled free data (as the
+# finite-difference checks of the Jacobian, 'experiments/fd_jacobian')
+FINITE_DIFFERENCE_STEP = 1.0e-4
+# Columns of the finite-difference fallback: the free data whose component of
+# the rejected step is at least this fraction of its largest, at most this many
+FINITE_DIFFERENCE_COLUMN_FRACTION = 0.1
+FINITE_DIFFERENCE_MAX_COLUMNS = 6
+# Uphill detection: two rejected steps along one direction (line search) or
+# from one Jacobian (trust region) that both raise f, whose rise per unit step
+# differs by at most this factor, and grows slower than the square root of
+# their length ratio (a rise linear in the step, not the quadratic one of an
+# overshoot). The lengths must differ by at least the minimum ratio.
+UPHILL_MAX_RATE_RATIO = 3.0
+UPHILL_MIN_LENGTH_RATIO = 1.5
 # Columns of 'Globalization.dat', one row per solve with a globalization or
 # the 'secant' update. Codes: index in GLOBALIZATIONS and BROYDEN_UPDATES. NaN
 # where a column doesn't apply.
@@ -119,7 +146,16 @@ GLOBALIZATION_LEGEND = [
     "Slope",
     "Accepted",
     "JacobianReset",
+    # Appended later: loops that predate them have none of these columns
+    "Fallback",
+    "UphillDetection",
+    # 0: a trial step, 1: a finite-difference solve
+    "Kind",
+    # Whether the direction counted as uphill after this solve
+    "Uphill",
 ]
+# Columns of 'Globalization.dat' before the finite-difference fallback
+LEGACY_GLOBALIZATION_COLUMNS = 16
 
 # Free data choices associated with each physical parameter
 # Note 1: the values below need to match the argument names of `generate_id`.
@@ -1177,6 +1213,8 @@ RESTART_OPTIONS = {
     "broyden_update": "control_broyden_update",
     "globalization": "control_globalization",
     "max_step": "control_max_step",
+    "globalization_fallback": "control_globalization_fallback",
+    "uphill_detection": "control_uphill_detection",
 }
 # Options that the input file template renders itself when 'generate_id' gets
 # them, so a restart passes them to 'generate_id' instead of adding them to
@@ -1185,6 +1223,8 @@ RESTART_OPTIONS_IN_TEMPLATE = {
     "control_broyden_update",
     "control_globalization",
     "control_max_step",
+    "control_globalization_fallback",
+    "control_uphill_detection",
 }
 # The line of the input file template after which a restart records the
 # options it changed
@@ -1284,6 +1324,8 @@ def _restart_control_options(
         "control_broyden_update": "broyden_update",
         "control_globalization": "globalization",
         "control_max_step": "max_step",
+        "control_globalization_fallback": "globalization_fallback",
+        "control_uphill_detection": "uphill_detection",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
@@ -1314,6 +1356,8 @@ def _restart_control_options(
         broyden_update=DEFAULT_BROYDEN_UPDATE,
         globalization=DEFAULT_GLOBALIZATION,
         max_step=None,
+        globalization_fallback=DEFAULT_GLOBALIZATION_FALLBACK,
+        uphill_detection=False,
     )
     changed = {}
     for option, value in overrides.items():
@@ -1511,6 +1555,8 @@ def restart_control_id(
         ("broyden_update", DEFAULT_BROYDEN_UPDATE),
         ("globalization", DEFAULT_GLOBALIZATION),
         ("max_step", None),
+        ("globalization_fallback", DEFAULT_GLOBALIZATION_FALLBACK),
+        ("uphill_detection", False),
     ]:
         key = RESTART_OPTIONS[option]
         previous_options[option] = (
@@ -1544,9 +1590,15 @@ def restart_control_id(
                     "broyden_update",
                     "globalization",
                     "max_step",
+                    "globalization_fallback",
                 ]
                 if option in overrides
             ]
+            + (
+                ["--uphill-detection"]
+                if overrides.get("uphill_detection")
+                else []
+            )
             + ["--no-schedule"]
         )
         submit_script = _render_restart_submit_script(
@@ -1677,6 +1729,10 @@ def control_id(
     broyden_update: BroydenUpdate = DEFAULT_BROYDEN_UPDATE,
     globalization: Globalization = DEFAULT_GLOBALIZATION,
     max_step: Optional[float] = None,
+    globalization_fallback: GlobalizationFallback = (
+        DEFAULT_GLOBALIZATION_FALLBACK
+    ),
+    uphill_detection: bool = False,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     final_convergence_test_tolerance: Optional[float] = None,
@@ -1846,12 +1902,33 @@ def control_id(
         and stop at a line-search alpha below LINE_SEARCH_MIN_ALPHA (0.01), at
         a step that is not a descent direction of f, or at a step whose
         predicted change of every residual is below BROYDEN_RESIDUAL_NOISE
-        (the last two cost no solve). The Jacobian is then reset to the
+        (the last two cost no solve), or, with 'uphill_detection', at an
+        uphill direction. Then the 'globalization_fallback' acts, once per
+        iteration. By default ('reset'), the Jacobian is reset to the
         initial approximation evaluated at the current free data, updated
         with the shortest rejected step of the iteration (the 'secant'
         update), and the globalization tries again from the current free
-        data, once per iteration; the trust radius stays. If that fails too,
-        the control loop stops with an error. (Default: 'none')
+        data; the trust radius stays. If that fails too, the control loop
+        stops with an error. (Default: 'none')
+      globalization_fallback: What a globalization does when it finds no
+        acceptable step (above): 'reset' the Jacobian, or 'finite_difference':
+        recompute the columns j of the Jacobian of the free data that dominate
+        the first rejected step du of the current direction (|du_j| >= 10 % of
+        max |du_j| over the controlled free data, at most 6, largest first),
+        J_ij = (F_i(u + h e_j) - F_i(u)) / h in scaled variables with
+        h = 1e-4 along du_j (or against it if a step-size constraint forbids
+        that). Each column is a solve, seeded like a trial, that is a run and
+        a row of 'Globalization.dat' ('Kind' 1); it is not a step. After the
+        last column the method steps again from the same free data (the trust
+        radius restarts as at the first iteration). If that fails too, the
+        control loop stops. (Default: 'reset')
+      uphill_detection: Go to the fallback as soon as the last two rejected
+        solves of a direction (line search) or of a Jacobian (trust region)
+        both raised f, by amounts whose ratio to the step length differs by
+        at most a factor 3 and less than the square root of the ratio of the
+        step lengths (which must be >= 1.5): f rises linearly with the step,
+        i.e., the direction is uphill, rather than quadratically, as after an
+        overshoot. Shrinking the step can't help then. (Default: False)
       max_step: Longest step of the scaled free data u / u_scale of a
         globalization: the line search shortens longer Newton steps to it, and
         the trust radius never exceeds it. (Default: None, i.e., 100 times
@@ -1943,8 +2020,9 @@ def control_id(
       restart_input_file_template: Input file template of the solves after
         the restart iteration (see 'restart_control_id'). (Default: the
         pipeline's)
-      restart_previous_options: The 'broyden_update', 'globalization' and
-        'max_step' of the previous loop (see 'restart_from'), with which the
+      restart_previous_options: The 'broyden_update', 'globalization',
+        'max_step', 'globalization_fallback' and 'uphill_detection' of the
+        previous loop (see 'restart_from'), with which the
         replay steps to and updates with its solves if it recorded no
         'Globalization.dat'. Otherwise the replay takes each solve's methods
         from that table. The 'broyden_update', 'globalization' and
@@ -1968,6 +2046,10 @@ def control_id(
         globalization in GLOBALIZATIONS
     ), f"Unknown globalization '{globalization}'. Choose from {GLOBALIZATIONS}."
     assert max_step is None or max_step > 0.0, "The 'max_step' must be > 0."
+    assert globalization_fallback in GLOBALIZATION_FALLBACKS, (
+        f"Unknown globalization fallback '{globalization_fallback}'. Choose"
+        f" from {GLOBALIZATION_FALLBACKS}."
+    )
     if restart_previous_options is None:
         restart_previous_options = {}
     # The input files of the solves record the options that differ from the
@@ -1979,6 +2061,12 @@ def control_id(
         globalization_options["control_globalization"] = globalization
     if max_step is not None:
         globalization_options["control_max_step"] = max_step
+    if globalization_fallback != DEFAULT_GLOBALIZATION_FALLBACK:
+        globalization_options["control_globalization_fallback"] = (
+            globalization_fallback
+        )
+    if uphill_detection:
+        globalization_options["control_uphill_detection"] = True
 
     # Read input file
     if id_run_dir is None:
@@ -2710,28 +2798,47 @@ def control_id(
         return alphas
 
     def method_of(step_solve):
-        """Globalization, Broyden update and maximum step (option) of the
-        solve 'step_solve', i.e., of the step to it, of its acceptance and of
-        the Jacobian update with it. A restarted loop replays the solves of the
-        previous loop with the methods they ran with: the ones recorded in its
-        'Globalization.dat', or its options if it has no such table."""
+        """Globalization, Broyden update, maximum step (option), fallback and
+        uphill detection of the solve 'step_solve', i.e., of the step to it,
+        of its acceptance, of the Jacobian update with it, and of what follows
+        its rejection. A restarted loop replays the solves of the previous
+        loop with the methods they ran with: the ones recorded in its
+        'Globalization.dat', or its options if it has no such table. Rows
+        without the later columns ran with their defaults."""
         if not replaying(step_solve):
-            return globalization, broyden_update, max_step
+            return (
+                globalization,
+                broyden_update,
+                max_step,
+                globalization_fallback,
+                uphill_detection,
+            )
         recorded = recorded_data.get("Globalization")
         if recorded is None or recorded.size == 0:
+            previous = restart_previous_options
             return (
-                restart_previous_options.get("globalization", globalization),
-                restart_previous_options.get("broyden_update", broyden_update),
-                restart_previous_options.get("max_step", max_step),
+                previous.get("globalization", globalization),
+                previous.get("broyden_update", broyden_update),
+                previous.get("max_step", max_step),
+                previous.get("globalization_fallback", globalization_fallback),
+                previous.get("uphill_detection", uphill_detection),
             )
         rows = recorded[recorded[:, 0] == step_solve]
         if len(rows) == 0:
-            return DEFAULT_GLOBALIZATION, DEFAULT_BROYDEN_UPDATE, None
+            return (
+                DEFAULT_GLOBALIZATION,
+                DEFAULT_BROYDEN_UPDATE,
+                None,
+                DEFAULT_GLOBALIZATION_FALLBACK,
+                False,
+            )
         row = dict(zip(GLOBALIZATION_LEGEND, rows[0]))
         return (
             GLOBALIZATIONS[int(row["Globalization"])],
             BROYDEN_UPDATES[int(row["BroydenUpdate"])],
             None if np.isnan(row["MaxStep"]) else float(row["MaxStep"]),
+            GLOBALIZATION_FALLBACKS[int(row.get("Fallback", 0))],
+            bool(row.get("UphillDetection", 0.0)),
         )
 
     def constrain_step(Delta_u):
@@ -2820,7 +2927,7 @@ def control_id(
                 )
             check_replay("StepSizeConstraints", step_solve - 1, step_size_row)
         elif replaying(step_solve - 1) and (
-            method_of(step_solve)[::2] == method_of(step_solve - 1)[::2]
+            method_of(step_solve)[0:3:2] == method_of(step_solve - 1)[0:3:2]
         ):
             # The first new step: its alphas (of every constraint, enforced
             # or not) are computed from the replayed state, so they are the
@@ -2851,8 +2958,12 @@ def control_id(
             if recorded is not None and recorded.size > 0:
                 rows = np.flatnonzero(recorded[:, 0] == solve)
                 if len(rows) > 0:
+                    # A loop from before the later columns has fewer
                     check_replay(
-                        "Globalization", int(rows[0]), row, equal_nan=True
+                        "Globalization",
+                        int(rows[0]),
+                        row[: recorded.shape[1]],
+                        equal_nan=True,
                     )
         with spectre_h5.H5File(output_filename, "a") as output_file:
             dat_file = output_file.try_insert_dat(
@@ -2986,27 +3097,77 @@ def control_id(
         direction_trials = 0
         # Scaled steps and measured residuals of the rejected solves
         rejected = []
+        # Scaled steps and rises of f of the rejected solves of the current
+        # direction
+        direction_rejected = []
+        # Whether the fallback ran in this iteration
         jacobian_reset = False
         # Whether the Jacobian was reset since the last solve
         reset_before_step = False
         line_search = None
+        # Finite-difference solves still to run (free-data index and scaled
+        # step), and the columns measured so far
+        probes = []
+        probe_columns = {}
 
-        def reset_jacobian(method, reason):
+        def fallback(method, fallback_method, reason, reference_step):
             """When a globalization finds no acceptable step from the current
-            free data: reset the Jacobian to the initial approximation at the
-            current free data, updated with the shortest rejected step, and
-            try again once. Stop if that fails too."""
+            free data: reset the Jacobian or recompute some of its columns by
+            finite differences (see 'globalization_fallback' in 'control_id'),
+            and try again once. Stop if that fails too."""
             nonlocal J, jacobian_reset, reset_before_step
-            nonlocal line_search, direction_trials
+            nonlocal line_search, direction_trials, direction_rejected
             if jacobian_reset:
                 raise RuntimeError(
                     f"The {method.replace('_', ' ')} found no step that"
                     f" decreases f = |F|^2 / 2 (now {f_before:e}) from the"
                     " free data of control iteration"
                     f" {iteration - 1}, neither with Broyden's Jacobian nor"
-                    f" after resetting it: {reason} Stopping the control"
-                    " loop."
+                    + (
+                        " after resetting it"
+                        if fallback_method == "reset"
+                        else (
+                            " after recomputing its columns by finite"
+                            " differences"
+                        )
+                    )
+                    + f": {reason} Stopping the control loop."
                 )
+            jacobian_reset = True
+            line_search = None
+            direction_trials = 0
+            direction_rejected = []
+            if fallback_method == "finite_difference":
+                # The free data that dominates the rejected step
+                magnitudes = np.where(active, np.abs(reference_step), 0.0)
+                columns = [
+                    int(j)
+                    for j in np.argsort(-magnitudes, kind="stable")
+                    if magnitudes[j] > 0.0
+                    and magnitudes[j]
+                    >= FINITE_DIFFERENCE_COLUMN_FRACTION * np.max(magnitudes)
+                ][:FINITE_DIFFERENCE_MAX_COLUMNS]
+                for j in columns:
+                    # Along the rejected step, unless a step-size constraint
+                    # forbids it
+                    step = FINITE_DIFFERENCE_STEP * (
+                        -1.0 if reference_step[j] < 0.0 else 1.0
+                    )
+                    unit_step = np.zeros(len(u))
+                    unit_step[j] = step * u_scale[j]
+                    alphas = step_size_alphas(u, unit_step)
+                    if any(
+                        alphas[constraint] < 1.0
+                        for constraint in step_size_constraints
+                    ):
+                        step = -step
+                    probes.append((j, step))
+                logger.warning(
+                    f"The {method.replace('_', ' ')} found no acceptable step:"
+                    f" {reason} Recomputing the columns {columns} of the"
+                    " Jacobian by finite differences, one solve each."
+                )
+                return
             logger.warning(
                 f"The {method.replace('_', ' ')} found no acceptable step:"
                 f" {reason} Resetting the Jacobian to the initial"
@@ -3043,13 +3204,115 @@ def control_id(
                         " the Jacobian singular. Using the initial"
                         " approximation alone."
                     )
-            jacobian_reset = True
             reset_before_step = True
-            line_search = None
-            direction_trials = 0
+
+        def uphill_direction():
+            """Whether the last two rejected solves of the current direction
+            both raised f by an amount proportional to their step (see
+            UPHILL_MAX_RATE_RATIO)"""
+            if len(direction_rejected) < 2:
+                return False
+            (step_1, rise_1), (step_2, rise_2) = sorted(
+                direction_rejected[-2:],
+                key=lambda entry: -np.linalg.norm(entry[0]),
+            )
+            length_1, length_2 = (
+                np.linalg.norm(step_1),
+                np.linalg.norm(step_2),
+            )
+            if not (rise_1 > 0.0 and rise_2 > 0.0 and length_2 > 0.0):
+                return False
+            length_ratio = length_1 / length_2
+            rate_ratio = (rise_1 / length_1) / (rise_2 / length_2)
+            return bool(
+                length_ratio >= UPHILL_MIN_LENGTH_RATIO
+                and 1.0 / UPHILL_MAX_RATE_RATIO
+                <= rate_ratio
+                <= min(UPHILL_MAX_RATE_RATIO, np.sqrt(length_ratio))
+            )
 
         while True:
-            method, update, max_step_option = method_of(solve + 1)
+            (
+                method,
+                update,
+                max_step_option,
+                fallback_method,
+                detect_uphill,
+            ) = method_of(solve + 1)
+            if probes:
+                # A finite-difference solve: one column of the Jacobian
+                j, step = probes.pop(0)
+                offered_step = np.zeros(len(u))
+                offered_step[j] = step
+                Delta_u, alpha, binding, alphas, step_size_row = constrain_step(
+                    offered_step * u_scale
+                )
+                record_step(alpha, binding, alphas, step_size_row)
+                scaled_Delta_u = Delta_u / u_scale
+                trial_F = Residual(u + Delta_u)
+                trial += 1
+                scaled_trial_F = trial_F / f_scale
+                f_after = 0.5 * np.dot(
+                    scaled_trial_F[active], scaled_trial_F[active]
+                )
+                probe_columns[j] = (scaled_trial_F - scaled_F) / (
+                    scaled_Delta_u[j]
+                )
+                converged = np.max(np.abs(trial_F)) < residual_tolerance
+                logger.info(
+                    f"Control iteration {iteration}, solve {solve}:"
+                    f" finite-difference column {j} (scaled step"
+                    f" {scaled_Delta_u[j]:e}), f = {f_after:e}."
+                )
+                record_globalization(
+                    [
+                        solve,
+                        iteration,
+                        trial - 1,
+                        GLOBALIZATIONS.index(method),
+                        BROYDEN_UPDATES.index(update),
+                        (
+                            np.nan
+                            if max_step_option is None
+                            else max_step_option
+                        ),
+                        np.linalg.norm(scaled_Delta_u),
+                        np.nan,
+                        np.nan,
+                        f_before,
+                        np.nan,
+                        f_after,
+                        np.nan,
+                        np.nan,
+                        float(converged),
+                        0.0,
+                        GLOBALIZATION_FALLBACKS.index(fallback_method),
+                        float(detect_uphill),
+                        1.0,
+                        0.0,
+                    ]
+                )
+                pending_jacobian_row = True
+                if converged:
+                    # The solve meets the tolerance: the control loop ends
+                    # there
+                    u += Delta_u
+                    F = trial_F
+                    accept_solve()
+                    break
+                if not probes:
+                    # Replace the columns, and step again from the current
+                    # free data with the method (the trust region restarts
+                    # its radius)
+                    for j, column in probe_columns.items():
+                        J[:, j] = column
+                    probe_columns.clear()
+                    trust_radius = None
+                    reset_before_step = True
+                if solve >= max_iterations:
+                    out_of_solves = True
+                    break
+                continue
             # A shortened step needs the general form of Broyden's update
             if method != "none":
                 update = "secant"
@@ -3174,7 +3437,7 @@ def control_id(
                         f" {np.max(np.abs(predicted_change)):e})."
                     )
                 if failure is not None:
-                    reset_jacobian(method, failure)
+                    fallback(method, fallback_method, failure, scaled_Delta_u)
                     continue
                 record_step(alpha, binding, alphas, step_size_row)
                 is_newton_step = (
@@ -3236,6 +3499,10 @@ def control_id(
                     trust_radius = min(
                         TRUST_REGION_GROW_FACTOR * trust_radius, largest_step
                     )
+            uphill = False
+            if not accepted and method != "none":
+                direction_rejected.append((scaled_Delta_u, f_after - f_before))
+                uphill = detect_uphill and uphill_direction()
             if method != "none" or update != "paper":
                 logger.info(
                     f"Control iteration {iteration}, solve {solve} ({method},"
@@ -3277,6 +3544,10 @@ def control_id(
                         slope,
                         float(accepted),
                         float(reset_of_step),
+                        GLOBALIZATION_FALLBACKS.index(fallback_method),
+                        float(detect_uphill),
+                        0.0,
+                        float(uphill),
                     ]
                 )
 
@@ -3317,7 +3588,15 @@ def control_id(
                 out_of_solves = True
                 break
             failure = None
-            if direction_trials >= GLOBALIZATION_MAX_TRIALS:
+            if uphill:
+                failure = (
+                    "f rose in proportion to the step in the last two solves"
+                    " (by"
+                    f" {direction_rejected[-2][1]:e} and"
+                    f" {direction_rejected[-1][1]:e}), so the direction is"
+                    " uphill."
+                )
+            elif direction_trials >= GLOBALIZATION_MAX_TRIALS:
                 failure = (
                     f"{direction_trials} solves along this direction were"
                     " rejected."
@@ -3331,7 +3610,9 @@ def control_id(
                         f" {LINE_SEARCH_MIN_ALPHA:g}."
                     )
             if failure is not None:
-                reset_jacobian(method, failure)
+                fallback(
+                    method, fallback_method, failure, direction_rejected[0][0]
+                )
 
     write_jacobian_row()
     # The control loop ends at the last accepted solve
@@ -3465,6 +3746,25 @@ def _restart_cli_scheduler_defaults():
     help=(
         "Longest step of the scaled free data of a globalization after the"
         " restart, instead of the previous loop's."
+    ),
+)
+@click.option(
+    "--globalization-fallback",
+    type=click.Choice(GLOBALIZATION_FALLBACKS),
+    help=(
+        "What a globalization does after the restart when it finds no"
+        " acceptable step, instead of the previous loop's: reset the Jacobian"
+        " to the initial approximation, or recompute the columns of the"
+        " rejected step's dominant free data by finite differences."
+    ),
+)
+@click.option(
+    "--uphill-detection",
+    is_flag=True,
+    default=None,
+    help=(
+        "After the restart, go to the globalization's fallback as soon as two"
+        " rejected solves show that f rises in proportion to the step."
     ),
 )
 @click.option(

@@ -66,6 +66,12 @@ Next:
 {% if control_max_step | default(None) %}
     control_max_step: {{ "%e" | format(control_max_step) }}
 {% endif %}
+{% if control_globalization_fallback | default("reset") != "reset" %}
+    control_globalization_fallback: {{ control_globalization_fallback }}
+{% endif %}
+{% if control_uphill_detection | default(False) %}
+    control_uphill_detection: True
+{% endif %}
     scheduler: {{ scheduler | default("None") }}
     copy_executable: {{ copy_executable | default("None") }}
     submit_script_template: {{ submit_script_template | default("None") }}
