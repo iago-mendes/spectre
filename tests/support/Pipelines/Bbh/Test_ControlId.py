@@ -1600,6 +1600,36 @@ class TestGlobalization(unittest.TestCase):
                 np.repeat(self.tables["Residuals"][:1], len(rows) + 1, axis=0),
             )
 
+    def test_stopped_loop_runs_final_convergence_test(self):
+        # A loop that a globalization stops runs the convergence test after
+        # the control loop at its last accepted solve, then stops
+        constant_mass = lambda conformal_mass: 0.4
+        tests = []
+
+        def convergence_test(**kwargs):
+            tests.append(kwargs)
+            return kwargs["polynomial_order"]
+
+        with patch(
+            "spectre.Pipelines.Bbh.ControlId._convergence_test",
+            side_effect=convergence_test,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "found no step that decreases"
+            ):
+                self.run_control(
+                    "stopped",
+                    mass=constant_mass,
+                    initial_conformal_mass=0.3,
+                    globalization="trust_region",
+                    run_convergence_tests=True,
+                )
+        self.assertEqual([test["mode"] for test in tests], ["initial", "final"])
+        # No step was accepted, so the test runs at the first solve
+        self.assertEqual(Path(tests[1]["run_dir"]).name, "0000_InitialData")
+        self.assertEqual(tests[1]["free_data"]["conformal_mass_a"], 0.3)
+        self.assertEqual(tests[1]["free_data"]["conformal_mass_b"], 0.3)
+
     def test_finite_difference_fallback(self):
         # The initial Jacobian (the identity in the masses) has the wrong sign
         # in the row of MassA, so the Newton steps go uphill. The line search
@@ -2290,6 +2320,53 @@ class TestRestartControlId(unittest.TestCase):
         self.assertEqual(restart_calls, calls[crash_at:])
         self.assertEqual([call["P"] for call in restart_calls], [7, 8])
         self.assertSameControlParams(restart_dir, reference_dir)
+
+    def test_restart_final_test_only(self):
+        reference_dir, calls, _ = self.run_control(
+            "Reference", run_convergence_tests=True
+        )
+        tables = read_control_params(reference_dir)
+        restart_iteration = 3
+        self.assertGreater(len(tables["FreeData.dat"]), restart_iteration + 1)
+        restart_dir, restart_calls, last_run_dir = self.restart(
+            reference_dir,
+            "FinalTestOnly",
+            restart_iteration=restart_iteration,
+            final_test_only=True,
+        )
+        # Only the convergence test after the control loop solves, at the free
+        # data of the restart iteration
+        self.assertGreater(len(restart_calls), 0)
+        self.assertTrue(
+            all(call["name"].startswith("P") for call in restart_calls)
+        )
+        self.assertEqual(
+            Path(last_run_dir).name, f"{restart_iteration:04d}_InitialData"
+        )
+        restart_tables = read_control_params(restart_dir)
+        npt.assert_array_equal(
+            restart_tables["FreeData.dat"],
+            tables["FreeData.dat"][: restart_iteration + 1],
+        )
+        free_data = restart_tables["FreeData.dat"][restart_iteration]
+        for call in restart_calls:
+            npt.assert_allclose(
+                [call["conformal_mass_a"], call["conformal_mass_b"]],
+                free_data[:2],
+                rtol=1.0e-14,
+            )
+        self.assertTrue((restart_dir / "ConvergenceTest" / "Final").is_dir())
+        record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+        self.assertTrue(record["final_test_only"])
+        # A loop without convergence tests has no final test to run
+        no_tests_dir, _, _ = self.run_control("NoTests")
+        with self.assertRaisesRegex(ValueError, "without convergence tests"):
+            self.restart(
+                no_tests_dir,
+                "NoTestsFinalTestOnly",
+                restart_iteration=restart_iteration,
+                final_test_only=True,
+            )
 
     def test_restart_after_crash_in_initial_convergence_test(self):
         mock_restart_measured_params.order_error = 10.0

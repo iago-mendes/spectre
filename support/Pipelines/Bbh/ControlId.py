@@ -1454,6 +1454,7 @@ def restart_control_id(
     id_dir: Union[str, Path],
     restart_iteration: Optional[int] = None,
     dry_run: bool = False,
+    final_test_only: bool = False,
     scheduler: Optional[Union[str, Sequence[str]]] = None,
     submit_script_template: Optional[Union[str, Path]] = None,
     job_name: Optional[str] = None,
@@ -1502,6 +1503,13 @@ def restart_control_id(
     'restart_iteration' counts solves. A restart from a rejected solve
     continues the iteration that it was part of.
 
+    With 'final_test_only', the restart replays the previous loop up to the
+    'restart_iteration', ends the control loop there and runs only the
+    convergence test after it (see 'run_convergence_tests' in 'control_id'),
+    at the free data of the last accepted solve up to there. This measures
+    how well a loop that stopped without converging is resolved. The previous
+    loop must have run with 'run_convergence_tests'.
+
     With 'dry_run', the restart replays and checks the previous loop, renders
     the input file of its first solve (and checks it with the executable's
     '--check-options'), and stops without solving. The first solve can be one
@@ -1534,7 +1542,20 @@ def restart_control_id(
         "Can restart only from a completed iteration (0 to"
         f" {last_iteration}), not from {restart_iteration}."
     )
-    if control_options.get("max_iterations", DEFAULT_MAX_ITERATIONS) <= (
+    if final_test_only:
+        if not control_options.get("run_convergence_tests", False):
+            raise ValueError(
+                "The previous loop ran without convergence tests, so a restart"
+                " can't run only its final convergence test."
+            )
+        if "max_iterations" in overrides:
+            raise ValueError(
+                "A restart that runs only the final convergence test does no"
+                " control iterations: don't change 'max_iterations'."
+            )
+        # The replay ends the control loop at the restart iteration
+        control_options["max_iterations"] = restart_iteration
+    elif control_options.get("max_iterations", DEFAULT_MAX_ITERATIONS) <= (
         restart_iteration
     ):
         raise ValueError(
@@ -1572,6 +1593,7 @@ def restart_control_id(
             id_dir / RESTART_CHECK_DIR,
             restart_iteration=restart_iteration,
             dry_run=True,
+            final_test_only=final_test_only,
             **overrides,
         )
         restart_command = (
@@ -1599,6 +1621,7 @@ def restart_control_id(
                 if overrides.get("uphill_detection")
                 else []
             )
+            + (["--final-test-only"] if final_test_only else [])
             + ["--no-schedule"]
         )
         submit_script = _render_restart_submit_script(
@@ -1681,6 +1704,7 @@ def restart_control_id(
                 restart_iteration=restart_iteration,
                 restart_run=str(completed[restart_iteration].path.resolve()),
                 dry_run=dry_run,
+                final_test_only=final_test_only,
                 changed_options=changed,
                 options=control_options,
             ),
@@ -1937,10 +1961,13 @@ def control_id(
       run_convergence_tests: Run resolution convergence tests. A test before
         the control loop selects the polynomial order for the control loop,
         and a test after the control loop checks that it was appropriate. The
-        solves of the tests run in the 'ConvergenceTest/Initial' and
-        'ConvergenceTest/Final' directories next to the control-loop runs, and
-        the convergence errors are written to 'ControlParams.h5'. See
-        '_convergence_test' for details. (Default: False)
+        test after the control loop also runs when the loop runs out of
+        solves or a globalization stops it, at the free data of the last
+        accepted solve. The solves of the tests run in the
+        'ConvergenceTest/Initial' and 'ConvergenceTest/Final' directories next
+        to the control-loop runs, and the convergence errors are written to
+        'ControlParams.h5'. See '_convergence_test' for details.
+        (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
       final_convergence_test_tolerance: Tolerance of the convergence test
@@ -3050,6 +3077,41 @@ def control_id(
         line_search["previous"] = (alpha, f_after)
         line_search["alpha"] = max(next_alpha, 0.1 * alpha)
 
+    def final_convergence_test(control_run_dir):
+        """Check the polynomial order that the control loop used, at the
+        free data of its last accepted solve"""
+        if not run_convergence_tests:
+            return
+        final_free_data = initial_free_data.copy()
+        u_iterator = iter(u)
+        for key in [FreeDataFromParams[param] for param in control_params]:
+            if key in ScalarQuantities:
+                final_free_data[key] = next(u_iterator)
+            else:
+                final_free_data[key] = [next(u_iterator) for _ in range(3)]
+        _convergence_test(
+            run_dir=control_run_dir,
+            test_dir=id_dir / "ConvergenceTest" / "Final",
+            polynomial_order=polynomial_order,
+            target_params=target_params,
+            free_data=final_free_data,
+            separation=separation,
+            refinement_level=refinement_level,
+            negative_expansion_bc=negative_expansion_bc,
+            control_params=control_params,
+            tolerance=(
+                convergence_test_tolerance
+                if final_convergence_test_tolerance is None
+                else final_convergence_test_tolerance
+            ),
+            mode="final",
+            output_filename=output_filename,
+            max_polynomial_order=final_convergence_test_max_polynomial_order,
+            numeric_initial_guess=numeric_initial_guess_in_tests,
+            elliptic_absolute_residual=elliptic_absolute_residual,
+            reuse_solves=restart_from is not None,
+        )
+
     iteration = 0
     # Radius of the trust region in scaled free data
     trust_radius = None
@@ -3118,7 +3180,7 @@ def control_id(
             nonlocal J, jacobian_reset, reset_before_step
             nonlocal line_search, direction_trials, direction_rejected
             if jacobian_reset:
-                raise RuntimeError(
+                stop = RuntimeError(
                     f"The {method.replace('_', ' ')} found no step that"
                     f" decreases f = |F|^2 / 2 (now {f_before:e}) from the"
                     " free data of control iteration"
@@ -3133,6 +3195,18 @@ def control_id(
                     )
                     + f": {reason} Stopping the control loop."
                 )
+                # Measure how well the last accepted solve is resolved
+                # before stopping, as a loop that runs out of solves does
+                write_jacobian_row()
+                if not restart_dry_run:
+                    try:
+                        final_convergence_test(accepted_run_dir)
+                    except Exception as test_error:
+                        logger.error(
+                            "The final convergence test of the stopped"
+                            f" control loop failed: {test_error}"
+                        )
+                raise stop
             jacobian_reset = True
             line_search = None
             direction_trials = 0
@@ -3626,37 +3700,7 @@ def control_id(
         )
         raise _RestartDryRun(None)
 
-    # Check the polynomial order that the control loop used
-    if run_convergence_tests:
-        final_free_data = initial_free_data.copy()
-        u_iterator = iter(u)
-        for key in [FreeDataFromParams[param] for param in control_params]:
-            if key in ScalarQuantities:
-                final_free_data[key] = next(u_iterator)
-            else:
-                final_free_data[key] = [next(u_iterator) for _ in range(3)]
-        _convergence_test(
-            run_dir=control_run_dir,
-            test_dir=id_dir / "ConvergenceTest" / "Final",
-            polynomial_order=polynomial_order,
-            target_params=target_params,
-            free_data=final_free_data,
-            separation=separation,
-            refinement_level=refinement_level,
-            negative_expansion_bc=negative_expansion_bc,
-            control_params=control_params,
-            tolerance=(
-                convergence_test_tolerance
-                if final_convergence_test_tolerance is None
-                else final_convergence_test_tolerance
-            ),
-            mode="final",
-            output_filename=output_filename,
-            max_polynomial_order=final_convergence_test_max_polynomial_order,
-            numeric_initial_guess=numeric_initial_guess_in_tests,
-            elliptic_absolute_residual=elliptic_absolute_residual,
-            reuse_solves=restart_from is not None,
-        )
+    final_convergence_test(control_run_dir)
 
     return control_run_dir
 
@@ -3773,6 +3817,15 @@ def _restart_cli_scheduler_defaults():
     help=(
         "Replay and check the previous loop and render the input file of the"
         " first solve, without solving."
+    ),
+)
+@click.option(
+    "--final-test-only",
+    is_flag=True,
+    help=(
+        "End the control loop at the restart iteration and run only the"
+        " convergence test after it, at the free data of the last accepted"
+        " solve up to there."
     ),
 )
 @click.option(
