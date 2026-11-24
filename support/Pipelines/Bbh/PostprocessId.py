@@ -67,6 +67,7 @@ def postprocess_id(
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    initial_convergence_test_max_polynomial_order: Optional[int] = None,
     final_convergence_test_tolerance: Optional[float] = None,
     final_convergence_test_max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
@@ -152,6 +153,9 @@ def postprocess_id(
         (Default: 1e-5)
       final_convergence_test_tolerance: Tolerance of the convergence test
         after the control loop. (Default: the 'convergence_test_tolerance')
+      initial_convergence_test_max_polynomial_order: Highest polynomial order
+        of the convergence test before the control loop. See ControlId.py for
+        details. (Default: 12)
       final_convergence_test_max_polynomial_order: Highest polynomial order
         that the convergence test after the control loop climbs to if none
         meets its tolerance. See ControlId.py for details. (Default: no climb)
@@ -267,6 +271,9 @@ def postprocess_id(
             uphill_detection=control_uphill_detection,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
+            initial_convergence_test_max_polynomial_order=(
+                initial_convergence_test_max_polynomial_order
+            ),
             final_convergence_test_tolerance=final_convergence_test_tolerance,
             final_convergence_test_max_polynomial_order=(
                 final_convergence_test_max_polynomial_order

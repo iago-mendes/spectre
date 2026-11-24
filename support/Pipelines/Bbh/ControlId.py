@@ -1328,6 +1328,9 @@ def _restart_control_options(
         "control_uphill_detection": "uphill_detection",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
+        "initial_convergence_test_max_polynomial_order": (
+            "initial_convergence_test_max_polynomial_order"
+        ),
         "final_convergence_test_tolerance": "final_convergence_test_tolerance",
         "final_convergence_test_max_polynomial_order": (
             "final_convergence_test_max_polynomial_order"
@@ -1759,6 +1762,7 @@ def control_id(
     uphill_detection: bool = False,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
+    initial_convergence_test_max_polynomial_order: Optional[int] = None,
     final_convergence_test_tolerance: Optional[float] = None,
     final_convergence_test_max_polynomial_order: Optional[int] = None,
     numeric_initial_guess: bool = False,
@@ -1970,6 +1974,10 @@ def control_id(
         (Default: False)
       convergence_test_tolerance: Tolerance of the convergence tests.
         (Default: 1e-5)
+      initial_convergence_test_max_polynomial_order: Highest polynomial order
+        of the convergence test before the control loop. If no polynomial
+        order up to it meets the tolerance, the control loop runs at it.
+        (Default: 'CONVERGENCE_TEST_MAX_POLYNOMIAL_ORDER', 12)
       final_convergence_test_tolerance: Tolerance of the convergence test
         after the control loop. (Default: the 'convergence_test_tolerance')
       final_convergence_test_max_polynomial_order: If no polynomial order of
@@ -2560,6 +2568,7 @@ def control_id(
             negative_expansion_bc=negative_expansion_bc,
             control_params=control_params,
             tolerance=convergence_test_tolerance,
+            max_polynomial_order=initial_convergence_test_max_polynomial_order,
             mode="initial",
             output_filename=output_filename,
             numeric_initial_guess=numeric_initial_guess_in_tests,
