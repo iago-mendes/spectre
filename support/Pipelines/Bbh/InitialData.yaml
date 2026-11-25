@@ -141,7 +141,7 @@ DomainCreator:
               - {{ HorizonRotationRight_x }}
               - {{ HorizonRotationRight_y }}
               - {{ HorizonRotationRight_z }}
-            Lapse: *kerr_right
+            Lapse: *background
             {% if negative_expansion_bc %}
             NegativeExpansion: *kerr_right
             {% else %}
@@ -161,7 +161,7 @@ DomainCreator:
               - {{ HorizonRotationLeft_x }}
               - {{ HorizonRotationLeft_y }}
               - {{ HorizonRotationLeft_z }}
-            Lapse: *kerr_left
+            Lapse: *background
             {% if negative_expansion_bc %}
             NegativeExpansion: *kerr_left
             {% else %}
