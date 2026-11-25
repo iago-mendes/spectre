@@ -17,11 +17,13 @@ from spectre.Pipelines.Bbh.ControlId import (
     DEFAULT_GLOBALIZATION,
     DEFAULT_GLOBALIZATION_FALLBACK,
     DEFAULT_MAX_ITERATIONS,
+    DEFAULT_NEAR_SINGULAR_STEP,
     DEFAULT_RESIDUAL_TOLERANCE,
     DEFAULT_STEP_SIZE_CONSTRAINTS,
     BroydenUpdate,
     Globalization,
     GlobalizationFallback,
+    NearSingularStep,
     StepSizeConstraint,
     TargetParams,
     check_elliptic_solve_converged,
@@ -61,6 +63,8 @@ def postprocess_id(
         DEFAULT_GLOBALIZATION_FALLBACK
     ),
     control_uphill_detection: bool = False,
+    control_near_singular_step: NearSingularStep = DEFAULT_NEAR_SINGULAR_STEP,
+    control_condition_threshold: Optional[float] = None,
     evolve: bool = False,
     eccentricity_control: bool = False,
     negative_expansion_bc: bool = True,
@@ -142,6 +146,13 @@ def postprocess_id(
         See ControlId.py for details. (Default: 'reset')
       control_uphill_detection: Go to that fallback as soon as two rejected
         solves show an uphill direction. See ControlId.py. (Default: False)
+      control_near_singular_step: Safeguard of the globalization's Newton
+        step when the scaled Jacobian is nearly singular, 'none',
+        'levenberg_marquardt' or 'truncated_svd'. See ControlId.py.
+        (Default: 'none')
+      control_condition_threshold: Condition number above which that
+        safeguard acts. See ControlId.py. (Default: None, Dennis & Schnabel's
+        macheps^(-1/2))
       evolve: Evolve the initial data after postprocessing (default: False).
       negative_expansion_bc: Place the excisions inside of apparent horizons.
       pipeline_dir: Directory of the simulation, in which the pipeline
@@ -269,6 +280,8 @@ def postprocess_id(
             max_step=control_max_step,
             globalization_fallback=control_globalization_fallback,
             uphill_detection=control_uphill_detection,
+            near_singular_step=control_near_singular_step,
+            condition_threshold=control_condition_threshold,
             run_convergence_tests=run_convergence_tests,
             convergence_test_tolerance=convergence_test_tolerance,
             initial_convergence_test_max_polynomial_order=(

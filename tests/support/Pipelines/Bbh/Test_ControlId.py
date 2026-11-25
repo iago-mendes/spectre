@@ -21,12 +21,15 @@ from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import to_dataframe
 from spectre.Pipelines.Bbh.ControlId import (
     BROYDEN_RESIDUAL_NOISE,
+    DEFAULT_CONDITION_THRESHOLD,
+    DEFAULT_MAX_ITERATIONS,
     FINITE_DIFFERENCE_STEP,
     GLOBALIZATION_LEGEND,
     GLOBALIZATION_MAX_TRIALS,
     GLOBALIZATIONS,
     LEGACY_GLOBALIZATION_COLUMNS,
     MAX_EFFECTIVE_SPIN,
+    NEAR_SINGULAR_STEPS,
     UnconvergedSolveError,
     _convergence_errors,
     _convergence_test,
@@ -39,6 +42,7 @@ from spectre.Pipelines.Bbh.ControlId import (
     effective_spin,
     elliptic_solve_convergence,
     excision_move,
+    near_singular_newton_step,
     restart_control_id,
     spin_step_size_constraint,
 )
@@ -298,6 +302,86 @@ class TestSpinStepSizeConstraint(unittest.TestCase):
 
 # Synthetic physical parameters that converge exponentially with the
 # polynomial order P, except for the center of mass, which converges slowly
+class TestNearSingularNewtonStep(unittest.TestCase):
+    """The safeguard of the Newton step at a nearly singular Jacobian"""
+
+    def jacobian(self, singular_values):
+        """J = U diag(singular_values) V^T with fixed rotations U, V"""
+        rotation = lambda angle: np.array(
+            [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+        )
+        U, V = rotation(0.3), rotation(-1.1)
+        return U @ np.diag(singular_values) @ V.T, U, V
+
+    def test_well_conditioned(self):
+        J, _, _ = self.jacobian([3.0, 1.0])
+        F = np.array([0.2, -0.7])
+        for method in NEAR_SINGULAR_STEPS:
+            step, info = near_singular_newton_step(J, F, method, 10.0)
+            npt.assert_allclose(step, -np.linalg.solve(J, F), rtol=1e-14)
+            self.assertFalse(info["regularized"])
+            self.assertAlmostEqual(info["condition"], 3.0)
+            self.assertTrue(np.isnan(info["mu"]) and np.isnan(info["rank"]))
+
+    def test_nearly_singular(self):
+        # The residual lies mostly along the image of the nearly null
+        # direction, as in the control loops that stall at spin 0.999: the
+        # Newton step goes almost only along it
+        J, U, V = self.jacobian([10.0, 1.0e-3])
+        F = 0.1 * U[:, 0] + 1.0 * U[:, 1]
+        newton, info = near_singular_newton_step(J, F, "none", 1.0e3)
+        self.assertFalse(info["regularized"])
+        self.assertAlmostEqual(info["condition"], 1.0e4, delta=1.0e-6)
+        self.assertGreater(
+            abs(newton @ V[:, 1]), 0.999 * np.linalg.norm(newton)
+        )
+        gradient = J.T @ F
+        # The truncated SVD leaves the nearly null direction out
+        step, info = near_singular_newton_step(J, F, "truncated_svd", 1.0e3)
+        self.assertTrue(info["regularized"])
+        self.assertEqual(info["rank"], 1)
+        npt.assert_allclose(step, -0.1 / 10.0 * V[:, 0], atol=1e-15)
+        self.assertLess(gradient @ step, 0.0)
+        # Levenberg-Marquardt damps it with mu = (sigma_max / threshold)^2
+        step, info = near_singular_newton_step(
+            J, F, "levenberg_marquardt", 1.0e3
+        )
+        self.assertTrue(info["regularized"])
+        self.assertAlmostEqual(info["mu"], 1.0e-4, delta=1.0e-16)
+        npt.assert_allclose(
+            step,
+            -(10.0 * 0.1 / (100.0 + 1.0e-4)) * V[:, 0]
+            - (1.0e-3 * 1.0 / (1.0e-6 + 1.0e-4)) * V[:, 1],
+            rtol=1e-9,
+        )
+        self.assertLess(gradient @ step, 0.0)
+        # Below the threshold nothing changes
+        for method in NEAR_SINGULAR_STEPS:
+            step, info = near_singular_newton_step(J, F, method, 1.0e5)
+            self.assertFalse(info["regularized"])
+            npt.assert_allclose(step, newton, rtol=1e-12)
+
+    def test_dennis_schnabel_defaults(self):
+        # Dennis & Schnabel's threshold macheps^(-1/2) and their mu,
+        # (n macheps)^(1/2) |J^T J|_1
+        self.assertAlmostEqual(
+            DEFAULT_CONDITION_THRESHOLD, np.finfo(float).eps ** -0.5
+        )
+        J, U, _ = self.jacobian([1.0, 1.0e-9])
+        step, info = near_singular_newton_step(
+            J, U[:, 1], "levenberg_marquardt"
+        )
+        self.assertTrue(info["regularized"])
+        self.assertAlmostEqual(
+            info["mu"],
+            np.sqrt(2.0 * np.finfo(float).eps) * np.linalg.norm(J.T @ J, 1),
+            delta=1e-22,
+        )
+        J, _, _ = self.jacobian([1.0, 1.0e-7])
+        _, info = near_singular_newton_step(J, U[:, 1], "levenberg_marquardt")
+        self.assertFalse(info["regularized"])
+
+
 def measured_params_at(P: int):
     return {
         "MassA": 0.5 + 1.0e-2**P,
@@ -1732,6 +1816,131 @@ class TestGlobalization(unittest.TestCase):
             column(with_detection["Globalization"], "Uphill"), 0.0
         )
 
+    def test_near_singular_step(self):
+        # Measured masses that depend almost only on their sum: the true
+        # Jacobian is nearly singular (condition number 4e3). The initial
+        # Jacobian has the wrong sign, so the trust region falls back to the
+        # finite-difference columns, i.e., the true Jacobian.
+        jacobian = np.array([[-1.0, -1.0], [-1.0, -1.0 + 1.0e-3]])
+        offset = np.array([1.2, 0.3])
+        linear_masses = lambda mass_a, mass_b: tuple(
+            offset + jacobian @ np.array([mass_a, mass_b])
+        )
+        kwargs = dict(
+            measured_masses=linear_masses,
+            initial_conformal_mass=0.3,
+            globalization="trust_region",
+            globalization_fallback="finite_difference",
+        )
+        # Without the safeguard, the Newton step of the true Jacobian goes
+        # along the nearly null direction, so far (scaled length 70) that the
+        # spin step-size constraint shortens it to 9 %, and from there the
+        # loop finds no step. The table records the condition numbers.
+        with self.assertRaisesRegex(RuntimeError, "found no step"):
+            self.run_control("none", **kwargs)
+        tables = self.tables
+        lowest_f_newton = np.min(column(tables["Globalization"], "FAfter"))
+        rows = tables["Globalization"]
+        npt.assert_array_equal(column(rows, "NearSingularStep"), 0.0)
+        npt.assert_array_equal(column(rows, "Regularized"), 0.0)
+        npt.assert_array_equal(
+            column(rows, "ConditionThreshold"), DEFAULT_CONDITION_THRESHOLD
+        )
+        trials = column(rows, "Kind") == 0.0
+        npt.assert_allclose(
+            column(rows, "Condition")[trials],
+            [
+                np.linalg.cond(tables["Jacobian"][int(solve) - 1].reshape(8, 8))
+                for solve in column(rows, "Solve")[trials]
+            ],
+            rtol=1e-10,
+        )
+        self.assertTrue(np.all(np.isnan(column(rows, "Condition")[~trials])))
+        # The explicit default changes nothing
+        with self.assertRaisesRegex(RuntimeError, "found no step"):
+            self.run_control(
+                "explicit_none", near_singular_step="none", **kwargs
+            )
+        default = self.tables
+        for name, table in tables.items():
+            npt.assert_array_equal(default[name], table, name)
+        # The truncated SVD leaves the nearly null direction out of the step
+        # after the finite-difference columns: f drops by the residual's part
+        # along the other direction, lower than the Newton step got, and the
+        # part along the nearly null one stays, so the loop stops
+        with self.assertRaisesRegex(RuntimeError, "found no step"):
+            self.run_control(
+                "truncated_svd",
+                near_singular_step="truncated_svd",
+                condition_threshold=100.0,
+                **kwargs,
+            )
+        tables = self.tables
+        rows = tables["Globalization"]
+        npt.assert_array_equal(
+            column(rows, "NearSingularStep"),
+            NEAR_SINGULAR_STEPS.index("truncated_svd"),
+        )
+        npt.assert_array_equal(column(rows, "ConditionThreshold"), 100.0)
+        regularized = np.flatnonzero(column(rows, "Regularized") == 1.0)
+        self.assertGreater(len(regularized), 0)
+        first = regularized[0]
+        solve = int(column(rows, "Solve")[first])
+        self.assertGreater(column(rows, "Condition")[first], 100.0)
+        self.assertEqual(column(rows, "Rank")[first], 7.0)
+        self.assertEqual(column(rows, "Accepted")[first], 1.0)
+        self.assertLess(column(rows, "FAfter")[first], 0.7 * lowest_f_newton)
+        J = tables["Jacobian"][solve - 1].reshape(8, 8)
+        npt.assert_allclose(J[:2, :2], jacobian, atol=1.0e-9)
+        u_scale = tables["ControlScales"][0][:8]
+        scaled_step = (
+            tables["FreeData"][solve] - tables["FreeData"][solve - 1]
+        ) / u_scale
+        # Only the steepest-descent part of the dogleg step has a component
+        # along the nearly null direction, of order sigma_min / sigma_max
+        null_direction = np.linalg.svd(J)[2][-1]
+        self.assertLess(
+            abs(scaled_step @ null_direction),
+            1.0e-3 * np.linalg.norm(scaled_step),
+        )
+        # Levenberg-Marquardt damps that direction instead: f falls slowly.
+        # It records its mu.
+        self.run_control(
+            "levenberg_marquardt",
+            near_singular_step="levenberg_marquardt",
+            condition_threshold=100.0,
+            max_iterations=10,
+            **kwargs,
+        )
+        rows = self.tables["Globalization"]
+        npt.assert_array_less(
+            np.diff(np.max(np.abs(self.tables["Residuals"][6:]), axis=1)), 0.0
+        )
+        regularized = np.flatnonzero(column(rows, "Regularized") == 1.0)
+        self.assertGreater(len(regularized), 0)
+        for row in regularized:
+            J = self.tables["Jacobian"][
+                int(column(rows, "Solve")[row]) - 1
+            ].reshape(8, 8)
+            singular_values = np.linalg.svd(J, compute_uv=False)
+            self.assertAlmostEqual(
+                column(rows, "Mu")[row],
+                max(
+                    np.sqrt(8.0 * np.finfo(float).eps)
+                    * np.linalg.norm(J.T @ J, 1),
+                    (singular_values[0] / 100.0) ** 2,
+                ),
+                delta=1e-14,
+            )
+        # The safeguard needs a globalization
+        # (checked before the control loop reads anything)
+        with self.assertRaisesRegex(AssertionError, "needs a 'globalization'"):
+            control_id(
+                id_input_file_path=self.test_dir / "unused.yaml",
+                control_params=SEEDING_CONTROL_PARAMS,
+                near_singular_step="truncated_svd",
+            )
+
     def test_max_step(self):
         # The line search shortens the Newton step to the 'max_step'
         max_step = 0.05
@@ -2194,6 +2403,15 @@ class TestRestartControlId(unittest.TestCase):
                     ),
                     uphill_detection=next_with.get(
                         "control_uphill_detection", False
+                    ),
+                    near_singular_step=next_with.get(
+                        "control_near_singular_step", "none"
+                    ),
+                    condition_threshold=next_with.get(
+                        "control_condition_threshold"
+                    ),
+                    max_iterations=next_with.get(
+                        "control_max_iterations", DEFAULT_MAX_ITERATIONS
                     ),
                 )
             except SimulatedCrash:
@@ -2822,6 +3040,69 @@ class TestRestartControlId(unittest.TestCase):
         npt.assert_array_equal(
             read_control_params(restart_dir)["Globalization.dat"], rows
         )
+
+    def test_restart_with_near_singular_step(self):
+        # A loop whose Levenberg-Marquardt safeguard acts at almost every
+        # step (a threshold of 2 on the condition number), restarted from
+        # before, at and after a safeguarded step, reproduces itself
+        next_with = dict(
+            control_globalization="trust_region",
+            control_near_singular_step="levenberg_marquardt",
+            control_condition_threshold=2.0,
+            control_max_iterations=8,
+        )
+        id_dir, calls, _ = self.run_control("Safeguarded", **next_with)
+        rows = read_control_params(id_dir)["Globalization.dat"]
+        regularized = column(rows, "Solve")[column(rows, "Regularized") == 1.0]
+        self.assertGreater(len(regularized), 2)
+        for restart_iteration in [
+            int(regularized[0]) - 1,
+            int(regularized[1]),
+            int(regularized[-1]) - 1,
+        ]:
+            restart_dir, restart_calls, _ = self.restart(
+                id_dir,
+                f"Restart{restart_iteration}",
+                restart_iteration=restart_iteration,
+            )
+            self.assertEqual(
+                without_globs(restart_calls),
+                without_globs(calls[restart_iteration:]),
+            )
+            self.assertSameControlParams(restart_dir, id_dir)
+        # A loop without it, restarted with it: the new solves record the
+        # option in their input files and their rows
+        id_dir, _, _ = self.run_control(
+            "Plain", control_globalization="trust_region"
+        )
+        restart_dir, _, _ = self.restart(
+            id_dir,
+            "RestartSafeguarded",
+            restart_iteration=2,
+            near_singular_step="truncated_svd",
+            condition_threshold=50.0,
+        )
+        record = yaml.safe_load((restart_dir / "Restart.yaml").read_text())
+        self.assertEqual(
+            record["changed_options"],
+            {
+                "control_near_singular_step": {
+                    "old": "none",
+                    "new": "truncated_svd",
+                },
+                "control_condition_threshold": {"old": None, "new": 50.0},
+            },
+        )
+        rows = read_control_params(restart_dir)["Globalization.dat"]
+        new_rows = column(rows, "Solve") > 2
+        npt.assert_array_equal(
+            column(rows, "NearSingularStep")[new_rows],
+            NEAR_SINGULAR_STEPS.index("truncated_svd"),
+        )
+        npt.assert_array_equal(
+            column(rows, "ConditionThreshold")[new_rows], 50.0
+        )
+        npt.assert_array_equal(column(rows, "NearSingularStep")[~new_rows], 0.0)
 
     def test_replay_mismatch(self):
         id_dir, calls, _ = self.run_control("Uninterrupted")

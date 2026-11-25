@@ -276,6 +276,8 @@ def generate_id(
     control_max_step: Optional[float] = None,
     control_globalization_fallback: str = "reset",
     control_uphill_detection: bool = False,
+    control_near_singular_step: str = "none",
+    control_condition_threshold: Optional[float] = None,
     initial_guess_file_glob: Optional[str] = None,
     pipeline_dir: Optional[Union[str, Path]] = None,
     run_dir: Optional[Union[str, Path]] = None,
@@ -375,6 +377,13 @@ def generate_id(
       control_uphill_detection: Go to that fallback as soon as two rejected
         solves show an uphill direction. See 'support.Pipelines.Bbh.ControlId'.
         (default: False)
+      control_near_singular_step: Safeguard of the globalization's Newton
+        step when the scaled Jacobian is nearly singular, 'none',
+        'levenberg_marquardt' or 'truncated_svd'. See
+        'support.Pipelines.Bbh.ControlId'. (default: 'none')
+      control_condition_threshold: Condition number of the scaled Jacobian
+        above which that safeguard acts. (default: None, Dennis & Schnabel's
+        macheps^(-1/2))
       initial_guess_file_glob: Volume data files of a previous solve to
         interpolate the initial guess of this solve from. If not set, the
         initial guess is the background. Set by the control loop when
@@ -566,6 +575,8 @@ def generate_id(
         control_max_step=control_max_step,
         control_globalization_fallback=control_globalization_fallback,
         control_uphill_detection=control_uphill_detection,
+        control_near_singular_step=control_near_singular_step,
+        control_condition_threshold=control_condition_threshold,
         initial_guess_file_glob=initial_guess_file_glob,
         pipeline_dir=pipeline_dir,
         run_dir=run_dir,
@@ -856,6 +867,26 @@ def generate_id(
         "Go to the globalization's fallback as soon as two rejected solves"
         " show an uphill direction."
     ),
+)
+@click.option(
+    "--control-near-singular-step",
+    type=click.Choice(["none", "levenberg_marquardt", "truncated_svd"]),
+    default="none",
+    show_default=True,
+    help=(
+        "Safeguard of the control loop's Newton step when the scaled Jacobian"
+        " is nearly singular: a Levenberg-Marquardt step, or a truncated-SVD"
+        " step that leaves out the nearly null directions."
+    ),
+)
+@click.option(
+    "--control-condition-threshold",
+    type=click.FloatRange(1.0, None, min_open=True),
+    help=(
+        "Condition number of the scaled Jacobian above which the near-singular"
+        " safeguard acts."
+    ),
+    show_default="Dennis & Schnabel's macheps^(-1/2)",
 )
 @click.option(
     "--pipeline-dir",

@@ -126,6 +126,23 @@ FINITE_DIFFERENCE_MAX_COLUMNS = 6
 # overshoot). The lengths must differ by at least the minimum ratio.
 UPHILL_MAX_RATE_RATIO = 3.0
 UPHILL_MIN_LENGTH_RATIO = 1.5
+# Safeguard of the globalizations' Newton step when the scaled Jacobian is
+# nearly singular, i.e., when its condition number sigma_max / sigma_min
+# exceeds a threshold (see 'near_singular_newton_step'):
+# - none: the Newton step -J^{-1} F.
+# - levenberg_marquardt: -(J^T J + mu I)^{-1} J^T F (Dennis & Schnabel, Sec.
+#   6.5).
+# - truncated_svd: -J^+ F over the singular directions with sigma >=
+#   sigma_max / threshold, i.e., the step leaves out the nearly null ones.
+NearSingularStep = Literal["none", "levenberg_marquardt", "truncated_svd"]
+NEAR_SINGULAR_STEPS: List[NearSingularStep] = [
+    "none",
+    "levenberg_marquardt",
+    "truncated_svd",
+]
+DEFAULT_NEAR_SINGULAR_STEP: NearSingularStep = "none"
+# Dennis & Schnabel's threshold of the condition number, macheps^(-1/2)
+DEFAULT_CONDITION_THRESHOLD = float(np.finfo(float).eps ** -0.5)
 # Columns of 'Globalization.dat', one row per solve with a globalization or
 # the 'secant' update. Codes: index in GLOBALIZATIONS and BROYDEN_UPDATES. NaN
 # where a column doesn't apply.
@@ -153,6 +170,17 @@ GLOBALIZATION_LEGEND = [
     "Kind",
     # Whether the direction counted as uphill after this solve
     "Uphill",
+    # Appended later: the near-singular safeguard of the Newton step (codes:
+    # index in NEAR_SINGULAR_STEPS), its threshold, the condition number of
+    # the scaled Jacobian of the controlled rows, whether the step was
+    # regularized, its mu (Levenberg-Marquardt) or the number of singular
+    # directions kept (truncated SVD). NaN where it doesn't apply.
+    "NearSingularStep",
+    "ConditionThreshold",
+    "Condition",
+    "Regularized",
+    "Mu",
+    "Rank",
 ]
 # Columns of 'Globalization.dat' before the finite-difference fallback
 LEGACY_GLOBALIZATION_COLUMNS = 16
@@ -399,6 +427,71 @@ def spin_step_size_constraint(
 # background have raised it by up to 1.2 (q = 20 with spins, first step), the
 # stalled solve from a numeric guess by 2e5.
 SEEDED_SOLVE_MAX_RESIDUAL_GROWTH = 10.0
+
+
+def near_singular_newton_step(
+    jacobian: np.ndarray,
+    residual: np.ndarray,
+    method: NearSingularStep = DEFAULT_NEAR_SINGULAR_STEP,
+    condition_threshold: float = DEFAULT_CONDITION_THRESHOLD,
+) -> Tuple[np.ndarray, Dict]:
+    """Newton step -J^{-1} F of the scaled control variables, safeguarded when
+    J is nearly singular.
+
+    The safeguard acts when the condition number kappa = sigma_max / sigma_min
+    of J (its singular values) exceeds the 'condition_threshold':
+    - 'levenberg_marquardt': the step -(J^T J + mu I)^{-1} J^T F of Dennis &
+      Schnabel (Sec. 6.5, p. 151), with mu = max((n macheps)^{1/2}
+      |J^T J|_1, (sigma_max / threshold)^2). The first is their mu; the
+      second damps the singular directions with sigma < sigma_max / threshold
+      by sigma^2 / (sigma^2 + mu) <= 1/2, so a threshold below theirs
+      (macheps^{-1/2}) damps more.
+    - 'truncated_svd': the pseudo-inverse step -sum_i v_i (u_i . F) / sigma_i
+      over the singular directions with sigma_i >= sigma_max / threshold.
+    Both are descent directions of f = |F|^2 / 2. Dennis & Schnabel estimate
+    the condition number of J from its QR factorization; here it is computed
+    exactly, since J is small.
+
+    Returns the step and a dict with the 'condition' number, whether the step
+    was 'regularized', and the 'mu' (Levenberg-Marquardt) or the 'rank' (the
+    number of singular directions kept by the truncated SVD), NaN otherwise.
+    """
+    assert method in NEAR_SINGULAR_STEPS, (
+        f"Unknown near-singular step '{method}'. Choose from"
+        f" {NEAR_SINGULAR_STEPS}."
+    )
+    jacobian = np.asarray(jacobian, dtype=float)
+    residual = np.asarray(residual, dtype=float)
+    U, singular_values, Vt = np.linalg.svd(jacobian)
+    condition = (
+        singular_values[0] / singular_values[-1]
+        if singular_values[-1] > 0.0
+        else np.inf
+    )
+    info = dict(condition=condition, regularized=False, mu=np.nan, rank=np.nan)
+    if method == "none" or condition <= condition_threshold:
+        return -np.linalg.solve(jacobian, residual), info
+    info["regularized"] = True
+    if method == "levenberg_marquardt":
+        normal_matrix = np.dot(jacobian.T, jacobian)
+        size = len(residual)
+        mu = max(
+            np.sqrt(size * np.finfo(float).eps)
+            * np.linalg.norm(normal_matrix, 1),
+            (singular_values[0] / condition_threshold) ** 2,
+        )
+        info["mu"] = mu
+        step = -np.linalg.solve(
+            normal_matrix + mu * np.identity(size),
+            np.dot(jacobian.T, residual),
+        )
+    else:
+        kept = singular_values >= singular_values[0] / condition_threshold
+        info["rank"] = int(np.count_nonzero(kept))
+        step = -np.dot(
+            Vt[kept].T, np.dot(U[:, kept].T, residual) / singular_values[kept]
+        )
+    return step, info
 
 
 def excision_move(previous_id_params: Dict, id_params: Dict) -> float:
@@ -1215,6 +1308,8 @@ RESTART_OPTIONS = {
     "max_step": "control_max_step",
     "globalization_fallback": "control_globalization_fallback",
     "uphill_detection": "control_uphill_detection",
+    "near_singular_step": "control_near_singular_step",
+    "condition_threshold": "control_condition_threshold",
 }
 # Options that the input file template renders itself when 'generate_id' gets
 # them, so a restart passes them to 'generate_id' instead of adding them to
@@ -1225,6 +1320,8 @@ RESTART_OPTIONS_IN_TEMPLATE = {
     "control_max_step",
     "control_globalization_fallback",
     "control_uphill_detection",
+    "control_near_singular_step",
+    "control_condition_threshold",
 }
 # The line of the input file template after which a restart records the
 # options it changed
@@ -1326,6 +1423,8 @@ def _restart_control_options(
         "control_max_step": "max_step",
         "control_globalization_fallback": "globalization_fallback",
         "control_uphill_detection": "uphill_detection",
+        "control_near_singular_step": "near_singular_step",
+        "control_condition_threshold": "condition_threshold",
         "run_convergence_tests": "run_convergence_tests",
         "convergence_test_tolerance": "convergence_test_tolerance",
         "initial_convergence_test_max_polynomial_order": (
@@ -1361,6 +1460,8 @@ def _restart_control_options(
         max_step=None,
         globalization_fallback=DEFAULT_GLOBALIZATION_FALLBACK,
         uphill_detection=False,
+        near_singular_step=DEFAULT_NEAR_SINGULAR_STEP,
+        condition_threshold=None,
     )
     changed = {}
     for option, value in overrides.items():
@@ -1491,7 +1592,9 @@ def restart_control_id(
     'overrides', see 'RESTART_OPTIONS'): 'step_size_constraints',
     'max_iterations', 'final_convergence_test_tolerance',
     'final_convergence_test_max_polynomial_order', 'broyden_update',
-    'globalization' and 'max_step'. The restart refuses if the new
+    'globalization', 'max_step', 'globalization_fallback',
+    'uphill_detection', 'near_singular_step' and 'condition_threshold'. The
+    restart refuses if the new
     step-size constraints would have changed a replayed iteration (e.g., a
     constraint that binds on a replayed step), and names it. The new
     'broyden_update', 'globalization' and 'max_step' act on the solves after
@@ -1581,6 +1684,8 @@ def restart_control_id(
         ("max_step", None),
         ("globalization_fallback", DEFAULT_GLOBALIZATION_FALLBACK),
         ("uphill_detection", False),
+        ("near_singular_step", DEFAULT_NEAR_SINGULAR_STEP),
+        ("condition_threshold", None),
     ]:
         key = RESTART_OPTIONS[option]
         previous_options[option] = (
@@ -1616,6 +1721,8 @@ def restart_control_id(
                     "globalization",
                     "max_step",
                     "globalization_fallback",
+                    "near_singular_step",
+                    "condition_threshold",
                 ]
                 if option in overrides
             ]
@@ -1760,6 +1867,8 @@ def control_id(
         DEFAULT_GLOBALIZATION_FALLBACK
     ),
     uphill_detection: bool = False,
+    near_singular_step: NearSingularStep = DEFAULT_NEAR_SINGULAR_STEP,
+    condition_threshold: Optional[float] = None,
     run_convergence_tests: bool = False,
     convergence_test_tolerance: float = DEFAULT_CONVERGENCE_TEST_TOLERANCE,
     initial_convergence_test_max_polynomial_order: Optional[int] = None,
@@ -1957,6 +2066,25 @@ def control_id(
         step lengths (which must be >= 1.5): f rises linearly with the step,
         i.e., the direction is uphill, rather than quadratically, as after an
         overshoot. Shrinking the step can't help then. (Default: False)
+      near_singular_step: Safeguard of a globalization's Newton step when the
+        scaled Jacobian of the controlled rows is nearly singular, i.e., when
+        its condition number exceeds the 'condition_threshold' (see
+        'near_singular_newton_step'): 'levenberg_marquardt' takes
+        -(J^T J + mu I)^{-1} J^T F (Dennis & Schnabel, Sec. 6.5), and
+        'truncated_svd' the pseudo-inverse step over the singular directions
+        with sigma >= sigma_max / threshold, leaving out the nearly null ones.
+        The safeguarded step replaces the Newton step everywhere: it is the
+        direction of the line search, and the end of the trust region's
+        dogleg path (the Cauchy point and the model f of the acceptance test
+        keep J^T J, whereas Dennis & Schnabel's perturbed model uses
+        J^T J + mu I for both). At a near-null direction of the true Jacobian
+        a Broyden Jacobian can put the residual along that direction, so that
+        the Newton step goes almost only along it. 'Globalization.dat' records
+        the condition number at every trial. Needs a 'globalization'.
+        (Default: 'none')
+      condition_threshold: Condition number above which the
+        'near_singular_step' acts. (Default: None, i.e., Dennis & Schnabel's
+        macheps^(-1/2), about 6.7e7)
       max_step: Longest step of the scaled free data u / u_scale of a
         globalization: the line search shortens longer Newton steps to it, and
         the trust radius never exceeds it. (Default: None, i.e., 100 times
@@ -2056,13 +2184,14 @@ def control_id(
         the restart iteration (see 'restart_control_id'). (Default: the
         pipeline's)
       restart_previous_options: The 'broyden_update', 'globalization',
-        'max_step', 'globalization_fallback' and 'uphill_detection' of the
-        previous loop (see 'restart_from'), with which the
-        replay steps to and updates with its solves if it recorded no
-        'Globalization.dat'. Otherwise the replay takes each solve's methods
-        from that table. The 'broyden_update', 'globalization' and
-        'max_step' of this loop act on the solves after the restart
-        iteration only. (Default: this loop's options)
+        'max_step', 'globalization_fallback', 'uphill_detection',
+        'near_singular_step' and 'condition_threshold' of the previous loop
+        (see 'restart_from'), with which the replay steps to and updates with
+        its solves if it recorded no 'Globalization.dat'. Otherwise the
+        replay takes each solve's methods from that table. The
+        'broyden_update', 'globalization' and 'max_step' of this loop act on
+        the solves after the restart iteration only. (Default: this loop's
+        options)
     """
 
     assert (
@@ -2085,6 +2214,22 @@ def control_id(
         f"Unknown globalization fallback '{globalization_fallback}'. Choose"
         f" from {GLOBALIZATION_FALLBACKS}."
     )
+    assert near_singular_step in NEAR_SINGULAR_STEPS, (
+        f"Unknown near-singular step '{near_singular_step}'. Choose from"
+        f" {NEAR_SINGULAR_STEPS}."
+    )
+    assert near_singular_step == "none" or globalization != "none", (
+        "The 'near_singular_step' safeguards the Newton step of a"
+        " globalization, so it needs a 'globalization'."
+    )
+    assert (
+        condition_threshold is None or condition_threshold > 1.0
+    ), "The 'condition_threshold' must be > 1."
+    resolved_condition_threshold = (
+        DEFAULT_CONDITION_THRESHOLD
+        if condition_threshold is None
+        else float(condition_threshold)
+    )
     if restart_previous_options is None:
         restart_previous_options = {}
     # The input files of the solves record the options that differ from the
@@ -2102,6 +2247,12 @@ def control_id(
         )
     if uphill_detection:
         globalization_options["control_uphill_detection"] = True
+    if near_singular_step != DEFAULT_NEAR_SINGULAR_STEP:
+        globalization_options["control_near_singular_step"] = near_singular_step
+    if condition_threshold is not None:
+        globalization_options["control_condition_threshold"] = (
+            condition_threshold
+        )
 
     # Read input file
     if id_run_dir is None:
@@ -2834,8 +2985,9 @@ def control_id(
         return alphas
 
     def method_of(step_solve):
-        """Globalization, Broyden update, maximum step (option), fallback and
-        uphill detection of the solve 'step_solve', i.e., of the step to it,
+        """Globalization, Broyden update, maximum step (option), fallback,
+        uphill detection, near-singular step and condition threshold of the
+        solve 'step_solve', i.e., of the step to it,
         of its acceptance, of the Jacobian update with it, and of what follows
         its rejection. A restarted loop replays the solves of the previous
         loop with the methods they ran with: the ones recorded in its
@@ -2848,6 +3000,8 @@ def control_id(
                 max_step,
                 globalization_fallback,
                 uphill_detection,
+                near_singular_step,
+                resolved_condition_threshold,
             )
         recorded = recorded_data.get("Globalization")
         if recorded is None or recorded.size == 0:
@@ -2858,6 +3012,9 @@ def control_id(
                 previous.get("max_step", max_step),
                 previous.get("globalization_fallback", globalization_fallback),
                 previous.get("uphill_detection", uphill_detection),
+                previous.get("near_singular_step", near_singular_step),
+                previous.get("condition_threshold", condition_threshold)
+                or DEFAULT_CONDITION_THRESHOLD,
             )
         rows = recorded[recorded[:, 0] == step_solve]
         if len(rows) == 0:
@@ -2867,6 +3024,8 @@ def control_id(
                 None,
                 DEFAULT_GLOBALIZATION_FALLBACK,
                 False,
+                DEFAULT_NEAR_SINGULAR_STEP,
+                DEFAULT_CONDITION_THRESHOLD,
             )
         row = dict(zip(GLOBALIZATION_LEGEND, rows[0]))
         return (
@@ -2875,6 +3034,8 @@ def control_id(
             None if np.isnan(row["MaxStep"]) else float(row["MaxStep"]),
             GLOBALIZATION_FALLBACKS[int(row.get("Fallback", 0))],
             bool(row.get("UphillDetection", 0.0)),
+            NEAR_SINGULAR_STEPS[int(row.get("NearSingularStep", 0))],
+            float(row.get("ConditionThreshold", DEFAULT_CONDITION_THRESHOLD)),
         )
 
     def constrain_step(Delta_u):
@@ -2963,12 +3124,14 @@ def control_id(
                 )
             check_replay("StepSizeConstraints", step_solve - 1, step_size_row)
         elif replaying(step_solve - 1) and (
-            method_of(step_solve)[0:3:2] == method_of(step_solve - 1)[0:3:2]
+            [method_of(step_solve)[i] for i in (0, 2, 5, 6)]
+            == [method_of(step_solve - 1)[i] for i in (0, 2, 5, 6)]
         ):
             # The first new step: its alphas (of every constraint, enforced
             # or not) are computed from the replayed state, so they are the
             # recorded ones. The applied alpha may differ. A new
-            # globalization or maximum step changes the step itself.
+            # globalization, maximum step or near-singular step changes the
+            # step itself.
             check_replay(
                 "StepSizeConstraints",
                 step_solve - 1,
@@ -3321,6 +3484,8 @@ def control_id(
                 max_step_option,
                 fallback_method,
                 detect_uphill,
+                near_singular_method,
+                near_singular_threshold,
             ) = method_of(solve + 1)
             if probes:
                 # A finite-difference solve: one column of the Jacobian
@@ -3373,6 +3538,12 @@ def control_id(
                         float(detect_uphill),
                         1.0,
                         0.0,
+                        NEAR_SINGULAR_STEPS.index(near_singular_method),
+                        near_singular_threshold,
+                        np.nan,
+                        0.0,
+                        np.nan,
+                        np.nan,
                     ]
                 )
                 pending_jacobian_row = True
@@ -3407,6 +3578,9 @@ def control_id(
             )
             line_search_alpha = np.nan
             radius = np.nan
+            near_singular = dict(
+                condition=np.nan, regularized=False, mu=np.nan, rank=np.nan
+            )
             if method == "none":
                 # Update the free parameters using a quasi-Newton-Raphson
                 # method
@@ -3445,9 +3619,28 @@ def control_id(
                 # Newton step and gradient of f of the controlled rows
                 active_jacobian = J[np.ix_(active, active)]
                 newton_step = np.zeros(len(u))
-                newton_step[active] = -np.linalg.solve(
-                    active_jacobian, scaled_F[active]
+                newton_step[active], near_singular = near_singular_newton_step(
+                    active_jacobian,
+                    scaled_F[active],
+                    near_singular_method,
+                    near_singular_threshold,
                 )
+                if near_singular["regularized"]:
+                    logger.info(
+                        "The scaled Jacobian is nearly singular (condition"
+                        f" number {near_singular['condition']:e} >"
+                        f" {near_singular_threshold:e}): the Newton step is"
+                        f" replaced by the {near_singular_method} step"
+                        + (
+                            f" (mu = {near_singular['mu']:e})."
+                            if near_singular_method == "levenberg_marquardt"
+                            else (
+                                f" ({near_singular['rank']} of"
+                                f" {np.count_nonzero(active)} singular"
+                                " directions kept)."
+                            )
+                        )
+                    )
                 gradient = np.zeros(len(u))
                 gradient[active] = np.dot(active_jacobian.T, scaled_F[active])
                 if method == "line_search":
@@ -3524,7 +3717,10 @@ def control_id(
                     continue
                 record_step(alpha, binding, alphas, step_size_row)
                 is_newton_step = (
-                    is_newton_step and alpha == 1.0 and not delay_control
+                    is_newton_step
+                    and alpha == 1.0
+                    and not delay_control
+                    and not near_singular["regularized"]
                 )
                 if is_newton_step:
                     # A full Newton step solves J du = -F, so the linear model
@@ -3631,6 +3827,12 @@ def control_id(
                         float(detect_uphill),
                         0.0,
                         float(uphill),
+                        NEAR_SINGULAR_STEPS.index(near_singular_method),
+                        near_singular_threshold,
+                        near_singular["condition"],
+                        float(near_singular["regularized"]),
+                        near_singular["mu"],
+                        near_singular["rank"],
                     ]
                 )
 
@@ -3818,6 +4020,24 @@ def _restart_cli_scheduler_defaults():
     help=(
         "After the restart, go to the globalization's fallback as soon as two"
         " rejected solves show that f rises in proportion to the step."
+    ),
+)
+@click.option(
+    "--near-singular-step",
+    type=click.Choice(NEAR_SINGULAR_STEPS),
+    help=(
+        "Safeguard of the globalization's Newton step after the restart when"
+        " the scaled Jacobian is nearly singular, instead of the previous"
+        " loop's: a Levenberg-Marquardt step or a truncated-SVD step."
+    ),
+)
+@click.option(
+    "--condition-threshold",
+    type=click.FloatRange(1.0, None, min_open=True),
+    help=(
+        "Condition number of the scaled Jacobian above which the"
+        " near-singular safeguard acts after the restart, instead of the"
+        " previous loop's."
     ),
 )
 @click.option(
