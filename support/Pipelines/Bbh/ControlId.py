@@ -2760,7 +2760,8 @@ def control_id(
         # The expressions below come from differentiating the Kerr expressions
         # chi = - 2 r Omega and r = M (1 + sqrt(1 - chi^2)), where chi is the
         # dimensionless spin, r is the horizon radius, Omega is the horizon
-        # rotation, and M is the mass.
+        # rotation, and M is the mass. A spin that is not controlled has no
+        # row, and a mass that is not controlled has no column.
         for spin_key, mass_key, horizon_rotation in zip(
             ["DimensionlessSpinA", "DimensionlessSpinB"],
             ["conformal_mass_a", "conformal_mass_b"],
@@ -2769,18 +2770,21 @@ def control_id(
                 free_data_at(u, "horizon_rotation_b"),
             ],
         ):
-            conformal_mass = u[param_index_map[mass_key]]
+            if spin_key not in control_params:
+                continue
+            conformal_mass = free_data_at(u, mass_key)
             conformal_spin = target_params[spin_key]
             spin_term = 1.0 + np.sqrt(
                 1 - np.dot(conformal_spin, conformal_spin)
             )
             for i in range(3):
-                J[
-                    param_index_map[spin_key] + i,
-                    param_index_map[mass_key],
-                ] = (
-                    -2.0 * horizon_rotation[i] * spin_term
-                )
+                if mass_key in param_index_map:
+                    J[
+                        param_index_map[spin_key] + i,
+                        param_index_map[mass_key],
+                    ] = (
+                        -2.0 * horizon_rotation[i] * spin_term
+                    )
                 J[
                     param_index_map[spin_key] + i,
                     param_index_map[spin_key] + i,

@@ -898,11 +898,40 @@ class TestNumericInitialGuessInControl(unittest.TestCase):
         ):
             last_run_dir = control_id(
                 id_input_file_path=self.input_file,
-                control_params=SEEDING_CONTROL_PARAMS,
                 residual_tolerance=1.0e-8,
-                **{"numeric_initial_guess": True, **kwargs},
+                **{
+                    "control_params": SEEDING_CONTROL_PARAMS,
+                    "numeric_initial_guess": True,
+                    **kwargs,
+                },
             )
         return Path(last_run_dir), mock_control_generate_id.calls
+
+    def test_subset_of_horizon_params(self):
+        # A spin or a mass that is not controlled has no row or column in the
+        # initial Jacobian, and its free data keeps its initial value
+        for control_params in [
+            ["MassA", "MassB", "DimensionlessSpinA"],
+            ["MassA", "DimensionlessSpinB"],
+            ["DimensionlessSpinA"],
+        ]:
+            with self.subTest(control_params=control_params):
+                self.tearDown()
+                self.setUp()
+                _, calls = self.run_control(control_params=control_params)
+                for mass_key, free_data_key in [
+                    ("MassA", "conformal_mass_a"),
+                    ("MassB", "conformal_mass_b"),
+                ]:
+                    if mass_key in control_params:
+                        self.assertAlmostEqual(
+                            mock_mass(calls[-1][free_data_key]), 0.5, places=7
+                        )
+                    else:
+                        for call in calls:
+                            self.assertEqual(
+                                call[free_data_key], INITIAL_CONFORMAL_MASS
+                            )
 
     def test_excision_move(self):
         params = lambda x_right, y, radius_right, radius_left: {
